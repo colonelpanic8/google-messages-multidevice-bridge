@@ -1,0 +1,785 @@
+diff --git a/upstream/pkg/libgm/client.go b/local/pkg/libgm/client.go
+index d385f4b..8b08bc0 100644
+--- a/upstream/pkg/libgm/client.go
++++ b/local/pkg/libgm/client.go
+@@ -44,8 +44,87 @@ type AuthData struct {
+ 	DestRegID uuid.UUID `json:"dest_reg_id,omitempty"`
+ 	PairingID uuid.UUID `json:"pairing_id,omitempty"`
+ 
+-	Cookies     map[string]string `json:"cookies,omitempty"`
+-	CookiesLock sync.RWMutex      `json:"-"`
++	Cookies map[string]string `json:"cookies,omitempty"`
++	// CookiesLock guards serialized AuthData fields that can change after a
++	// client is published. Callers taking a JSON snapshot hold its read lock.
++	CookiesLock sync.RWMutex `json:"-"`
++}
++
++// TachyonToken returns the current auth token under the lock. Callers must not
++// hold CookiesLock.
++func (ad *AuthData) TachyonToken() []byte {
++	ad.CookiesLock.RLock()
++	defer ad.CookiesLock.RUnlock()
++	return ad.TachyonAuthToken
++}
++
++// requestCrypto returns the phone-session cipher. Pairing replaces it while the
++// pairing long poll is already delivering encrypted data.
++func (ad *AuthData) requestCrypto() *crypto.AESCTRHelper {
++	ad.CookiesLock.RLock()
++	defer ad.CookiesLock.RUnlock()
++	return ad.RequestCrypto
++}
++
++func (ad *AuthData) finishPairing(aesKey, hmacKey []byte, pairingID uuid.UUID) {
++	ad.CookiesLock.Lock()
++	defer ad.CookiesLock.Unlock()
++	ad.RequestCrypto.SetKeys(aesKey, hmacKey)
++	ad.PairingID = pairingID
++}
++
++func (ad *AuthData) tachyonTTL() int64 {
++	ad.CookiesLock.RLock()
++	defer ad.CookiesLock.RUnlock()
++	return ad.TachyonTTL
++}
++
++func (ad *AuthData) tachyonExpiry() time.Time {
++	ad.CookiesLock.RLock()
++	defer ad.CookiesLock.RUnlock()
++	return ad.TachyonExpiry
++}
++
++func (ad *AuthData) devices() (mobile, browser *gmproto.Device) {
++	ad.CookiesLock.RLock()
++	defer ad.CookiesLock.RUnlock()
++	return ad.Mobile, ad.Browser
++}
++
++func (ad *AuthData) setDevices(mobile, browser *gmproto.Device) {
++	ad.CookiesLock.Lock()
++	ad.Mobile, ad.Browser = mobile, browser
++	ad.CookiesLock.Unlock()
++}
++
++func (ad *AuthData) sessionUUID() uuid.UUID {
++	ad.CookiesLock.RLock()
++	defer ad.CookiesLock.RUnlock()
++	return ad.SessionID
++}
++
++func (ad *AuthData) setSessionUUID(sessionID uuid.UUID) {
++	ad.CookiesLock.Lock()
++	ad.SessionID = sessionID
++	ad.CookiesLock.Unlock()
++}
++
++func (ad *AuthData) setDestRegID(destRegID uuid.UUID) {
++	ad.CookiesLock.Lock()
++	ad.DestRegID = destRegID
++	ad.CookiesLock.Unlock()
++}
++
++func (ad *AuthData) destRegID() uuid.UUID {
++	ad.CookiesLock.RLock()
++	defer ad.CookiesLock.RUnlock()
++	return ad.DestRegID
++}
++
++func (ad *AuthData) pairingID() uuid.UUID {
++	ad.CookiesLock.RLock()
++	defer ad.CookiesLock.RUnlock()
++	return ad.PairingID
+ }
+ 
+ func (ad *AuthData) SetCookies(cookies map[string]string) {
+@@ -92,7 +171,7 @@ func (ad *AuthData) HasCookies() bool {
+ }
+ 
+ func (ad *AuthData) IsGoogleAccount() bool {
+-	return ad.DestRegID != uuid.Nil
++	return ad.destRegID() != uuid.Nil
+ }
+ 
+ func (ad *AuthData) AuthNetwork() string {
+@@ -178,11 +257,24 @@ func NewClient(authData *AuthData, pk *PushKeys, logger zerolog.Logger, httpSett
+ 		dataReceiveCheckInterval: DefaultBugleDefaultCheckInterval,
+ 	}
+ 	sessionHandler.client = cli
++	// A redirected POST would replay the body; surface the 3xx as an error instead.
++	cli.http.CheckRedirect = refusePOSTRedirect
++	cli.lphttp.CheckRedirect = refusePOSTRedirect
+ 	return cli
+ }
+ 
++func refusePOSTRedirect(req *http.Request, via []*http.Request) error {
++	if len(via) > 0 && via[0].Method != http.MethodGet {
++		return http.ErrUseLastResponse
++	}
++	if len(via) >= 10 {
++		return errors.New("stopped after 10 redirects")
++	}
++	return nil
++}
++
+ func (c *Client) CurrentSessionID() string {
+-	return c.sessionHandler.sessionID
++	return c.sessionHandler.SessionID()
+ }
+ 
+ // SetEventHandler sets the global event handler for all received data.
+@@ -213,9 +305,9 @@ func (c *Client) SetDataReceiveCheckInterval(interval time.Duration) {
+ }
+ 
+ func (c *Client) checkLoggedIn() error {
+-	if c.AuthData.TachyonAuthToken == nil {
++	if c.AuthData.TachyonToken() == nil {
+ 		return fmt.Errorf("no auth token")
+-	} else if c.AuthData.Browser == nil {
++	} else if _, browser := c.AuthData.devices(); browser == nil {
+ 		return fmt.Errorf("not logged in")
+ 	}
+ 	return nil
+@@ -328,6 +420,7 @@ func (c *Client) shouldCheckBugleDefault() bool {
+ 
+ func (c *Client) Disconnect() {
+ 	c.closeLongPolling()
++	c.sessionHandler.stopAckInterval()
+ 	// Fail any requests that are still waiting for a response from the phone:
+ 	// the responses are delivered over the long polling connection, so they can
+ 	// never arrive after it has been torn down.
+@@ -341,7 +434,11 @@ func (c *Client) IsConnected() bool {
+ }
+ 
+ func (c *Client) IsLoggedIn() bool {
+-	return c != nil && c.AuthData != nil && c.AuthData.Browser != nil && c.AuthData.HasCookies()
++	if c == nil || c.AuthData == nil {
++		return false
++	}
++	_, browser := c.AuthData.devices()
++	return browser != nil && c.AuthData.HasCookies()
+ }
+ 
+ func (c *Client) Reconnect(ctx context.Context) error {
+@@ -369,9 +466,12 @@ func (c *Client) FetchConfig(ctx context.Context) error {
+ 		return fmt.Errorf("failed to fetch config: %w", err)
+ 	}
+ 	if deviceID := config.GetDeviceInfo().GetDeviceID(); deviceID != "" && c.AuthData != nil {
+-		c.AuthData.SessionID, err = uuid.Parse(deviceID)
++		var sessionID uuid.UUID
++		sessionID, err = uuid.Parse(deviceID)
+ 		if err != nil {
+ 			c.Logger.Err(err).Str("device_id", deviceID).Msg("Failed to parse device ID")
++		} else {
++			c.AuthData.setSessionUUID(sessionID)
+ 		}
+ 	}
+ 	c.Config = config
+@@ -419,15 +519,18 @@ func (c *Client) diffVersionFormat(curr *gmproto.ConfigVersion, latest *gmproto.
+ }
+ 
+ func (c *Client) updateTachyonAuthToken(data *gmproto.TokenData) {
+-	c.AuthData.TachyonAuthToken = data.GetTachyonAuthToken()
+ 	validForDuration := time.Duration(data.GetTTL()) * time.Microsecond
+ 	if validForDuration == 0 {
+ 		validForDuration = 24 * time.Hour
+ 	}
+-	c.AuthData.TachyonExpiry = time.Now().UTC().Add(validForDuration)
++	expiry := time.Now().UTC().Add(validForDuration)
++	c.AuthData.CookiesLock.Lock()
++	c.AuthData.TachyonAuthToken = data.GetTachyonAuthToken()
++	c.AuthData.TachyonExpiry = expiry
+ 	c.AuthData.TachyonTTL = validForDuration.Microseconds()
++	c.AuthData.CookiesLock.Unlock()
+ 	c.Logger.Debug().
+-		Time("tachyon_expiry", c.AuthData.TachyonExpiry).
++		Time("tachyon_expiry", expiry).
+ 		Int64("valid_for", data.GetTTL()).
+ 		Msg("Updated tachyon token")
+ }
+@@ -472,7 +575,8 @@ func isFatalRefreshError(err error) bool {
+ }
+ 
+ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
+-	if c.AuthData.Browser == nil || (time.Until(c.AuthData.TachyonExpiry) > RefreshTachyonBuffer && pushKeyOverride == nil) {
++	_, browser := c.AuthData.devices()
++	if browser == nil || (time.Until(c.AuthData.tachyonExpiry()) > RefreshTachyonBuffer && pushKeyOverride == nil) {
+ 		return nil
+ 	}
+ 	jwk := c.AuthData.RefreshKey
+@@ -506,7 +610,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
+ 		}
+ 	}
+ 	c.Logger.Debug().
+-		Time("tachyon_expiry", c.AuthData.TachyonExpiry).
++		Time("tachyon_expiry", c.AuthData.tachyonExpiry()).
+ 		Bool("force_refresh", pushKeyOverride != nil).
+ 		Bool("include_push_keys", moreParams.GetPushReg() != nil).
+ 		Msg("Refreshing auth token")
+@@ -514,11 +618,11 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
+ 	payload := &gmproto.RegisterRefreshRequest{
+ 		MessageAuth: &gmproto.AuthMessage{
+ 			RequestID:        requestID,
+-			TachyonAuthToken: c.AuthData.TachyonAuthToken,
++			TachyonAuthToken: c.AuthData.TachyonToken(),
+ 			Network:          c.AuthData.AuthNetwork(),
+ 			ConfigVersion:    util.ConfigMessage,
+ 		},
+-		CurrBrowserDevice: c.AuthData.Browser,
++		CurrBrowserDevice: browser,
+ 		UnixTimestamp:     timestamp,
+ 		Signature:         sig,
+ 		Parameters: &gmproto.RegisterRefreshRequest_Parameters{
+diff --git a/upstream/pkg/libgm/crypto/aesctr.go b/local/pkg/libgm/crypto/aesctr.go
+index 77a7107..f784d85 100644
+--- a/upstream/pkg/libgm/crypto/aesctr.go
++++ b/local/pkg/libgm/crypto/aesctr.go
+@@ -6,11 +6,14 @@ import (
+ 	"crypto/hmac"
+ 	"crypto/rand"
+ 	"crypto/sha256"
++	"encoding/json"
+ 	"errors"
+ 	"io"
++	"sync"
+ )
+ 
+ type AESCTRHelper struct {
++	lock    sync.RWMutex
+ 	AESKey  []byte `json:"aes_key"`
+ 	HMACKey []byte `json:"hmac_key"`
+ }
+@@ -22,7 +25,31 @@ func NewAESCTRHelper() *AESCTRHelper {
+ 	}
+ }
+ 
++func (c *AESCTRHelper) SetKeys(aesKey, hmacKey []byte) {
++	c.lock.Lock()
++	c.AESKey = append(c.AESKey[:0], aesKey...)
++	c.HMACKey = append(c.HMACKey[:0], hmacKey...)
++	c.lock.Unlock()
++}
++
++func (c *AESCTRHelper) Keys() (aesKey, hmacKey []byte) {
++	c.lock.RLock()
++	defer c.lock.RUnlock()
++	return append([]byte(nil), c.AESKey...), append([]byte(nil), c.HMACKey...)
++}
++
++func (c *AESCTRHelper) MarshalJSON() ([]byte, error) {
++	aesKey, hmacKey := c.Keys()
++	return json.Marshal(struct {
++		AESKey  []byte `json:"aes_key"`
++		HMACKey []byte `json:"hmac_key"`
++	}{AESKey: aesKey, HMACKey: hmacKey})
++}
++
+ func (c *AESCTRHelper) Encrypt(plaintext []byte) ([]byte, error) {
++	c.lock.RLock()
++	defer c.lock.RUnlock()
++
+ 	iv := make([]byte, aes.BlockSize)
+ 	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+ 		return nil, err
+@@ -47,6 +74,9 @@ func (c *AESCTRHelper) Encrypt(plaintext []byte) ([]byte, error) {
+ }
+ 
+ func (c *AESCTRHelper) Decrypt(encryptedData []byte) ([]byte, error) {
++	c.lock.RLock()
++	defer c.lock.RUnlock()
++
+ 	if len(encryptedData) < 48 {
+ 		return nil, errors.New("input data is too short")
+ 	}
+diff --git a/upstream/pkg/libgm/event_handler.go b/local/pkg/libgm/event_handler.go
+index 44d04c0..6a757c9 100644
+--- a/upstream/pkg/libgm/event_handler.go
++++ b/local/pkg/libgm/event_handler.go
+@@ -90,7 +90,7 @@ func (c *Client) decryptInternalMessage(data *gmproto.IncomingRPCMessage) (*Inco
+ 			msg.DecryptedMessage = responseStruct.ProtoReflect().New().Interface()
+ 		}
+ 		if msg.Message.EncryptedData != nil {
+-			msg.DecryptedData, err = c.AuthData.RequestCrypto.Decrypt(msg.Message.EncryptedData)
++			msg.DecryptedData, err = c.AuthData.requestCrypto().Decrypt(msg.Message.EncryptedData)
+ 			if err != nil {
+ 				return nil, fmt.Errorf("failed to decrypt data event: %w", err)
+ 			}
+@@ -104,7 +104,7 @@ func (c *Client) decryptInternalMessage(data *gmproto.IncomingRPCMessage) (*Inco
+ 				}
+ 			}
+ 		} else if msg.Message.EncryptedData2 != nil {
+-			msg.DecryptedData, err = c.AuthData.RequestCrypto.Decrypt(msg.Message.EncryptedData2)
++			msg.DecryptedData, err = c.AuthData.requestCrypto().Decrypt(msg.Message.EncryptedData2)
+ 			if err != nil {
+ 				return nil, fmt.Errorf("failed to decrypt field 2 in data event: %w", err)
+ 			}
+diff --git a/upstream/pkg/libgm/http.go b/local/pkg/libgm/http.go
+index fa0590b..a764dff 100644
+--- a/upstream/pkg/libgm/http.go
++++ b/local/pkg/libgm/http.go
+@@ -28,10 +28,13 @@ const ServerErrorRetryInterval = 1 * time.Second
+ 
+ func (c *Client) makeProtobufHTTPRequest(url string, data proto.Message, contentType string) (*http.Response, error) {
+ 	ctx := c.Logger.WithContext(context.TODO())
+-	return c.makeProtobufHTTPRequestContext(ctx, url, data, contentType, false)
++	return c.makeProtobufHTTPRequestContext(ctx, url, data, contentType, false, false)
+ }
+ 
+-func (c *Client) makeProtobufHTTPRequestContext(ctx context.Context, url string, data proto.Message, contentType string, longPoll bool) (*http.Response, error) {
++// noRetry disables the automatic re-POST on server errors. Mutating requests
++// must never be replayed transparently: the phone may have processed the first
++// attempt even when the relay answered with a server error.
++func (c *Client) makeProtobufHTTPRequestContext(ctx context.Context, url string, data proto.Message, contentType string, longPoll, noRetry bool) (*http.Response, error) {
+ 	var body []byte
+ 	var err error
+ 	switch contentType {
+@@ -61,7 +64,7 @@ func (c *Client) makeProtobufHTTPRequestContext(ctx context.Context, url string,
+ 			return res, reqErr
+ 		}
+ 		c.AuthData.UpdateCookiesFromResponse(res)
+-		if longPoll || res.StatusCode < 500 || attempt >= ServerErrorMaxAttempts {
++		if longPoll || noRetry || res.StatusCode < 500 || attempt >= ServerErrorMaxAttempts {
+ 			return res, nil
+ 		}
+ 		retryIn := time.Duration(attempt) * ServerErrorRetryInterval
+diff --git a/upstream/pkg/libgm/longpoll.go b/local/pkg/libgm/longpoll.go
+index b3dbb40..a124970 100644
+--- a/upstream/pkg/libgm/longpoll.go
++++ b/local/pkg/libgm/longpoll.go
+@@ -420,7 +420,7 @@ func (c *Client) requestUpdatesAfterGap(log *zerolog.Logger, reason string) {
+ 	err := c.sessionHandler.sendMessageNoResponse(log.WithContext(context.TODO()), SendMessageParams{
+ 		Action:    gmproto.ActionType_GET_UPDATES,
+ 		OmitTTL:   true,
+-		RequestID: c.sessionHandler.sessionID,
++		RequestID: c.sessionHandler.SessionID(),
+ 	})
+ 	if err != nil {
+ 		log.Err(err).Str("reason", reason).Msg("Failed to send extra GET_UPDATES call")
+@@ -511,7 +511,7 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
+ 		payload := &gmproto.ReceiveMessagesRequest{
+ 			Auth: &gmproto.AuthMessage{
+ 				RequestID:        listenReqID,
+-				TachyonAuthToken: c.AuthData.TachyonAuthToken,
++				TachyonAuthToken: c.AuthData.TachyonToken(),
+ 				Network:          c.AuthData.AuthNetwork(),
+ 				ConfigVersion:    util.ConfigMessage,
+ 			},
+@@ -524,7 +524,7 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
+ 			url = util.ReceiveMessagesURLGoogle
+ 		}
+ 		connCtx, cancel := context.WithCancel(ctx)
+-		resp, err := c.makeProtobufHTTPRequestContext(connCtx, url, payload, ContentTypePBLite, true)
++		resp, err := c.makeProtobufHTTPRequestContext(connCtx, url, payload, ContentTypePBLite, true, false)
+ 		if err != nil {
+ 			cancel()
+ 			if loggedIn {
+diff --git a/upstream/pkg/libgm/media.go b/local/pkg/libgm/media.go
+index 8fe2775..9d0aae1 100644
+--- a/upstream/pkg/libgm/media.go
++++ b/local/pkg/libgm/media.go
+@@ -242,15 +242,16 @@ func (c *Client) StartUploadMedia(encryptedImageBytes []byte, mime string) (*Sta
+ }
+ 
+ func (c *Client) buildStartUploadPayload() (string, error) {
++	mobile, _ := c.AuthData.devices()
+ 	protoData := &gmproto.StartMediaUploadRequest{
+ 		AttachmentType: 1,
+ 		AuthData: &gmproto.AuthMessage{
+ 			RequestID:        uuid.NewString(),
+-			TachyonAuthToken: c.AuthData.TachyonAuthToken,
++			TachyonAuthToken: c.AuthData.TachyonToken(),
+ 			Network:          c.AuthData.AuthNetwork(),
+ 			ConfigVersion:    util.ConfigMessage,
+ 		},
+-		Mobile: c.AuthData.Mobile,
++		Mobile: mobile,
+ 	}
+ 
+ 	protoDataBytes, err := proto.Marshal(protoData)
+@@ -263,6 +264,10 @@ func (c *Client) buildStartUploadPayload() (string, error) {
+ }
+ 
+ func (c *Client) DownloadMedia(mediaID string, key []byte) (io.ReadCloser, error) {
++	return c.DownloadMediaContext(context.Background(), mediaID, key)
++}
++
++func (c *Client) DownloadMediaContext(ctx context.Context, mediaID string, key []byte) (io.ReadCloser, error) {
+ 	cryptor, err := crypto.NewAESGCMHelper(key)
+ 	if err != nil {
+ 		return nil, err
+@@ -274,7 +279,7 @@ func (c *Client) DownloadMedia(mediaID string, key []byte) (io.ReadCloser, error
+ 		},
+ 		AuthData: &gmproto.AuthMessage{
+ 			RequestID:        uuid.NewString(),
+-			TachyonAuthToken: c.AuthData.TachyonAuthToken,
++			TachyonAuthToken: c.AuthData.TachyonToken(),
+ 			Network:          c.AuthData.AuthNetwork(),
+ 			ConfigVersion:    util.ConfigMessage,
+ 		},
+@@ -284,7 +289,7 @@ func (c *Client) DownloadMedia(mediaID string, key []byte) (io.ReadCloser, error
+ 		return nil, fmt.Errorf("failed to marshal download request: %w", err)
+ 	}
+ 	downloadMetadataEncoded := base64.StdEncoding.EncodeToString(downloadMetadataBytes)
+-	req, err := http.NewRequest(http.MethodGet, util.UploadMediaURL, nil)
++	req, err := http.NewRequestWithContext(ctx, http.MethodGet, util.UploadMediaURL, nil)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("failed to prepare request: %w", err)
+ 	}
+diff --git a/upstream/pkg/libgm/methods.go b/local/pkg/libgm/methods.go
+index 947ed69..ab8032b 100644
+--- a/upstream/pkg/libgm/methods.go
++++ b/local/pkg/libgm/methods.go
+@@ -144,7 +144,7 @@ func (c *Client) SetActiveSession(ctx context.Context) error {
+ 	return c.sessionHandler.sendMessageNoResponse(ctx, SendMessageParams{
+ 		Action:    gmproto.ActionType_GET_UPDATES,
+ 		OmitTTL:   true,
+-		RequestID: c.sessionHandler.sessionID,
++		RequestID: c.sessionHandler.SessionID(),
+ 	})
+ }
+ 
+diff --git a/upstream/pkg/libgm/pair.go b/local/pkg/libgm/pair.go
+index 811b2b1..51489ca 100644
+--- a/upstream/pkg/libgm/pair.go
++++ b/local/pkg/libgm/pair.go
+@@ -30,10 +30,11 @@ func (c *Client) StartLogin(ctx context.Context) (string, error) {
+ }
+ 
+ func (c *Client) GenerateQRCodeData(pairingKey []byte) (string, error) {
++	aesKey, hmacKey := c.AuthData.requestCrypto().Keys()
+ 	urlData := &gmproto.URLData{
+ 		PairingKey: pairingKey,
+-		AESKey:     c.AuthData.RequestCrypto.AESKey,
+-		HMACKey:    c.AuthData.RequestCrypto.HMACKey,
++		AESKey:     aesKey,
++		HMACKey:    hmacKey,
+ 	}
+ 	encodedURLData, err := proto.Marshal(urlData)
+ 	if err != nil {
+@@ -56,8 +57,7 @@ func (c *Client) handlePairingEvent(msg *IncomingRPCMessage) {
+ 
+ func (c *Client) completePairing(data *gmproto.PairedData) {
+ 	c.updateTachyonAuthToken(data.GetTokenData())
+-	c.AuthData.Mobile = data.Mobile
+-	c.AuthData.Browser = data.Browser
++	c.AuthData.setDevices(data.Mobile, data.Browser)
+ 
+ 	if cb := c.PairCallback.Load(); cb != nil {
+ 		(*cb)(data)
+@@ -113,7 +113,7 @@ func (c *Client) RefreshPhoneRelay() (string, error) {
+ 		AuthMessage: &gmproto.AuthMessage{
+ 			RequestID:        uuid.NewString(),
+ 			Network:          util.QRNetwork,
+-			TachyonAuthToken: c.AuthData.TachyonAuthToken,
++			TachyonAuthToken: c.AuthData.TachyonToken(),
+ 			ConfigVersion:    util.ConfigMessage,
+ 		},
+ 	}
+@@ -134,7 +134,7 @@ func (c *Client) GetWebEncryptionKey() (*gmproto.WebEncryptionKeyResponse, error
+ 	payload := &gmproto.AuthenticationContainer{
+ 		AuthMessage: &gmproto.AuthMessage{
+ 			RequestID:        uuid.NewString(),
+-			TachyonAuthToken: c.AuthData.TachyonAuthToken,
++			TachyonAuthToken: c.AuthData.TachyonToken(),
+ 			ConfigVersion:    util.ConfigMessage,
+ 		},
+ 	}
+@@ -144,16 +144,17 @@ func (c *Client) GetWebEncryptionKey() (*gmproto.WebEncryptionKeyResponse, error
+ }
+ 
+ func (c *Client) UnpairBugle() (*gmproto.RevokeRelayPairingResponse, error) {
+-	if c.AuthData.TachyonAuthToken == nil || c.AuthData.Browser == nil {
++	_, browser := c.AuthData.devices()
++	if c.AuthData.TachyonToken() == nil || browser == nil {
+ 		return nil, nil
+ 	}
+ 	payload := &gmproto.RevokeRelayPairingRequest{
+ 		AuthMessage: &gmproto.AuthMessage{
+ 			RequestID:        uuid.NewString(),
+-			TachyonAuthToken: c.AuthData.TachyonAuthToken,
++			TachyonAuthToken: c.AuthData.TachyonToken(),
+ 			ConfigVersion:    util.ConfigMessage,
+ 		},
+-		Browser: c.AuthData.Browser,
++		Browser: browser,
+ 	}
+ 	return typedHTTPResponse[*gmproto.RevokeRelayPairingResponse](
+ 		c.makeProtobufHTTPRequest(util.RevokeRelayPairingURL, payload, ContentTypeProtobuf),
+diff --git a/upstream/pkg/libgm/pair_google.go b/local/pkg/libgm/pair_google.go
+index a1d2147..0230a92 100644
+--- a/upstream/pkg/libgm/pair_google.go
++++ b/local/pkg/libgm/pair_google.go
+@@ -52,6 +52,7 @@ func (c *Client) handleGaiaPairingEvent(msg *IncomingRPCMessage) {
+ }
+ 
+ func (c *Client) baseSignInGaiaPayload() *gmproto.SignInGaiaRequest {
++	sessionID := c.AuthData.sessionUUID()
+ 	return &gmproto.SignInGaiaRequest{
+ 		AuthMessage: &gmproto.AuthMessage{
+ 			RequestID:     uuid.NewString(),
+@@ -61,7 +62,7 @@ func (c *Client) baseSignInGaiaPayload() *gmproto.SignInGaiaRequest {
+ 		Inner: &gmproto.SignInGaiaRequest_Inner{
+ 			DeviceID: &gmproto.SignInGaiaRequest_Inner_DeviceID{
+ 				UnknownInt1: 3,
+-				DeviceID:    fmt.Sprintf("messages-web-%x", c.AuthData.SessionID[:]),
++				DeviceID:    fmt.Sprintf("messages-web-%x", sessionID[:]),
+ 			},
+ 		},
+ 		Network: util.GoogleNetwork,
+@@ -73,7 +74,7 @@ func (c *Client) signInGaiaInitial(ctx context.Context) (*gmproto.SignInGaiaResp
+ 	payload := c.baseSignInGaiaPayload()
+ 	payload.UnknownInt3 = 1
+ 	return typedHTTPResponse[*gmproto.SignInGaiaResponse](
+-		c.makeProtobufHTTPRequestContext(ctx, util.SignInGaiaURL, payload, ContentTypePBLite, false),
++		c.makeProtobufHTTPRequestContext(ctx, util.SignInGaiaURL, payload, ContentTypePBLite, false, false),
+ 	)
+ }
+ 
+@@ -92,7 +93,7 @@ func (c *Client) signInGaiaGetToken(ctx context.Context) (*gmproto.SignInGaiaRes
+ 		SomeData: key,
+ 	}
+ 	resp, err := typedHTTPResponse[*gmproto.SignInGaiaResponse](
+-		c.makeProtobufHTTPRequestContext(ctx, util.SignInGaiaURL, payload, ContentTypePBLite, false),
++		c.makeProtobufHTTPRequestContext(ctx, util.SignInGaiaURL, payload, ContentTypePBLite, false, false),
+ 	)
+ 	if err != nil {
+ 		return nil, err
+@@ -101,8 +102,7 @@ func (c *Client) signInGaiaGetToken(ctx context.Context) (*gmproto.SignInGaiaRes
+ 	device := resp.GetDeviceData().GetDeviceWrapper().GetDevice()
+ 	lowercaseDevice := proto.Clone(device).(*gmproto.Device)
+ 	lowercaseDevice.SourceID = strings.ToLower(device.SourceID)
+-	c.AuthData.Mobile = lowercaseDevice
+-	c.AuthData.Browser = device
++	c.AuthData.setDevices(lowercaseDevice, device)
+ 	return resp, nil
+ }
+ 
+@@ -371,7 +371,7 @@ func (c *Client) StartGaiaPairing(ctx, bgCtx context.Context) (string, *PairingS
+ 	if err != nil {
+ 		return "", nil, fmt.Errorf("failed to parse destination UUID: %w", err)
+ 	}
+-	c.AuthData.DestRegID = destRegUUID
++	c.AuthData.setDestRegID(destRegUUID)
+ 	var longPollConnectWait sync.WaitGroup
+ 	longPollConnectWait.Add(1)
+ 	go c.doLongPoll(bgCtx, false, false, longPollConnectWait.Done)
+@@ -445,8 +445,7 @@ func (c *Client) FinishGaiaPairing(ctx context.Context, ps *PairingSession) (str
+ 	ukey2ServerKey := doHKDF(ps.NextKey, encryptionKeyInfo, []byte("server"))
+ 	switch ps.ServerInit.GetConfirmedKeyDerivationVersion() {
+ 	case 0:
+-		c.AuthData.RequestCrypto.AESKey = ukey2ClientKey
+-		c.AuthData.RequestCrypto.HMACKey = ukey2ServerKey
++		c.AuthData.finishPairing(ukey2ClientKey, ukey2ServerKey, ps.UUID)
+ 	case 1:
+ 		concattedUkeys := make([]byte, 3*32)
+ 		copy(concattedUkeys[0:32], encryptionKeyInfo)
+@@ -458,13 +457,16 @@ func (c *Client) FinishGaiaPairing(ctx context.Context, ps *PairingSession) (str
+ 			copy(concattedUkeys[64:96], ukey2ClientKey)
+ 		}
+ 		concattedHash := sha256.Sum256(concattedUkeys)
+-		c.AuthData.RequestCrypto.AESKey = doHKDF(concattedHash[:], []byte("Ditto salt 1"), []byte("Ditto info 1"))
+-		c.AuthData.RequestCrypto.HMACKey = doHKDF(concattedHash[:], []byte("Ditto salt 2"), []byte("Ditto info 2"))
++		c.AuthData.finishPairing(
++			doHKDF(concattedHash[:], []byte("Ditto salt 1"), []byte("Ditto info 1")),
++			doHKDF(concattedHash[:], []byte("Ditto salt 2"), []byte("Ditto info 2")),
++			ps.UUID,
++		)
+ 	default:
+ 		return "", fmt.Errorf("unsupported key derivation version %d", ps.ServerInit.GetConfirmedKeyDerivationVersion())
+ 	}
+-	c.AuthData.PairingID = ps.UUID
+-	return fmt.Sprintf("%s/%d", c.AuthData.Mobile.GetSourceID(), ps.DestRegDevice.UnknownInt), nil
++	mobile, _ := c.AuthData.devices()
++	return fmt.Sprintf("%s/%d", mobile.GetSourceID(), ps.DestRegDevice.UnknownInt), nil
+ }
+ 
+ func byteHash(bytes []byte) (out int32) {
+@@ -530,7 +532,7 @@ func (c *Client) UnpairGaia(ctx context.Context) error {
+ 	return c.sessionHandler.sendMessageNoResponse(ctx, SendMessageParams{
+ 		Action: gmproto.ActionType_UNPAIR_GAIA_PAIRING,
+ 		Data: &gmproto.RevokeGaiaPairingRequest{
+-			PairingAttemptID: c.AuthData.PairingID.String(),
++			PairingAttemptID: c.AuthData.pairingID().String(),
+ 		},
+ 	})
+ }
+diff --git a/upstream/pkg/libgm/session_handler.go b/local/pkg/libgm/session_handler.go
+index ba2e484..19bcdb6 100644
+--- a/upstream/pkg/libgm/session_handler.go
++++ b/local/pkg/libgm/session_handler.go
+@@ -43,13 +43,25 @@ type SessionHandler struct {
+ 
+ 	ackMapLock sync.Mutex
+ 	ackMap     []string
++	ackRunLock sync.Mutex
+ 	ackTicker  *time.Ticker
++	ackStop    chan struct{}
++	ackDone    chan struct{}
+ 
+-	sessionID string
++	sessionIDLock sync.RWMutex
++	sessionID     string
+ }
+ 
+ func (s *SessionHandler) ResetSessionID() {
++	s.sessionIDLock.Lock()
+ 	s.sessionID = uuid.NewString()
++	s.sessionIDLock.Unlock()
++}
++
++func (s *SessionHandler) SessionID() string {
++	s.sessionIDLock.RLock()
++	defer s.sessionIDLock.RUnlock()
++	return s.sessionID
+ }
+ 
+ func (s *SessionHandler) sendMessageNoResponse(ctx context.Context, params SendMessageParams) error {
+@@ -67,7 +79,7 @@ func (s *SessionHandler) sendMessageNoResponse(ctx context.Context, params SendM
+ 		Str("message_id", requestID).
+ 		Msg("Sending request to phone (not expecting response)")
+ 	_, err = typedHTTPResponse[*gmproto.OutgoingRPCResponse](
+-		s.client.makeProtobufHTTPRequestContext(ctx, url, payload, ContentTypePBLite, false),
++		s.client.makeProtobufHTTPRequestContext(ctx, url, payload, ContentTypePBLite, false, params.NoRetry),
+ 	)
+ 	return err
+ }
+@@ -93,7 +105,7 @@ func (s *SessionHandler) sendAsyncMessageWithID(ctx context.Context, params Send
+ 		Str("message_id", requestID).
+ 		Msg("Sending request to phone")
+ 	_, err = typedHTTPResponse[*gmproto.OutgoingRPCResponse](
+-		s.client.makeProtobufHTTPRequestContext(ctx, url, payload, ContentTypePBLite, false),
++		s.client.makeProtobufHTTPRequestContext(ctx, url, payload, ContentTypePBLite, false, params.NoRetry),
+ 	)
+ 	if err != nil {
+ 		s.cancelResponse(requestID, ch)
+@@ -245,6 +257,7 @@ func (s *SessionHandler) sendUserMessage(ctx context.Context, actionType gmproto
+ 		Action:        actionType,
+ 		Data:          encryptedData,
+ 		UserInitiated: true,
++		NoRetry:       true,
+ 	})
+ }
+ 
+@@ -259,11 +272,15 @@ type SendMessageParams struct {
+ 	MessageType gmproto.MessageType
+ 
+ 	UserInitiated bool
++	// NoRetry sends exactly one HTTP request, even on relay server errors.
++	NoRetry bool
+ }
+ 
+ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.Message, error) {
+ 	var err error
+-	sessionID := s.client.sessionHandler.sessionID
++	sessionID := s.SessionID()
++	mobile, _ := s.client.AuthData.devices()
++	destRegID := s.client.AuthData.destRegID()
+ 
+ 	requestID := params.RequestID
+ 	if requestID == "" {
+@@ -275,7 +292,7 @@ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.M
+ 	}
+ 
+ 	message := &gmproto.OutgoingRPCMessage{
+-		Mobile: s.client.AuthData.Mobile,
++		Mobile: mobile,
+ 		Data: &gmproto.OutgoingRPCMessage_Data{
+ 			RequestID:  requestID,
+ 			BugleRoute: gmproto.BugleRoute_DataEvent,
+@@ -286,18 +303,18 @@ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.M
+ 		},
+ 		Auth: &gmproto.OutgoingRPCMessage_Auth{
+ 			RequestID:        requestID,
+-			TachyonAuthToken: s.client.AuthData.TachyonAuthToken,
++			TachyonAuthToken: s.client.AuthData.TachyonToken(),
+ 			ConfigVersion:    util.ConfigMessage,
+ 		},
+ 		DestRegistrationIDs: []string{},
+ 	}
+-	if s.client.AuthData != nil && s.client.AuthData.DestRegID != uuid.Nil {
+-		message.DestRegistrationIDs = append(message.DestRegistrationIDs, s.client.AuthData.DestRegID.String())
++	if destRegID != uuid.Nil {
++		message.DestRegistrationIDs = append(message.DestRegistrationIDs, destRegID.String())
+ 	}
+ 	if params.CustomTTL != 0 {
+ 		message.TTL = params.CustomTTL
+ 	} else if !params.OmitTTL {
+-		message.TTL = s.client.AuthData.TachyonTTL
++		message.TTL = s.client.AuthData.tachyonTTL()
+ 	}
+ 	var encryptedData, unencryptedData []byte
+ 	if params.Data != nil {
+@@ -309,7 +326,7 @@ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.M
+ 		if params.DontEncrypt {
+ 			unencryptedData = serializedData
+ 		} else {
+-			encryptedData, err = s.client.AuthData.RequestCrypto.Encrypt(serializedData)
++			encryptedData, err = s.client.AuthData.requestCrypto().Encrypt(serializedData)
+ 			if err != nil {
+ 				return "", nil, err
+ 			}
+@@ -341,18 +358,42 @@ func (s *SessionHandler) queueMessageAck(messageID string) {
+ }
+ 
+ func (s *SessionHandler) startAckInterval() {
++	s.ackRunLock.Lock()
++	defer s.ackRunLock.Unlock()
+ 	if s.ackTicker != nil {
+ 		return
+ 	}
+ 	ticker := time.NewTicker(5 * time.Second)
+-	s.ackTicker = ticker
++	stop, done := make(chan struct{}), make(chan struct{})
++	s.ackTicker, s.ackStop, s.ackDone = ticker, stop, done
+ 	go func() {
+-		for range ticker.C {
+-			s.sendAckRequest()
++		defer close(done)
++		for {
++			select {
++			case <-ticker.C:
++				s.sendAckRequest()
++			case <-stop:
++				return
++			}
+ 		}
+ 	}()
+ }
+ 
++// stopAckInterval stops the ack goroutine and waits for it to exit. Acks still
++// queued are kept for a later startAckInterval.
++func (s *SessionHandler) stopAckInterval() {
++	s.ackRunLock.Lock()
++	defer s.ackRunLock.Unlock()
++	ticker, stop, done := s.ackTicker, s.ackStop, s.ackDone
++	if ticker == nil {
++		return
++	}
++	ticker.Stop()
++	close(stop)
++	<-done
++	s.ackTicker, s.ackStop, s.ackDone = nil, nil, nil
++}
++
+ func (s *SessionHandler) sendAckRequest() {
+ 	s.ackMapLock.Lock()
+ 	dataToAck := s.ackMap
+@@ -362,16 +403,17 @@ func (s *SessionHandler) sendAckRequest() {
+ 		return
+ 	}
+ 	ackMessages := make([]*gmproto.AckMessageRequest_Message, len(dataToAck))
++	_, browser := s.client.AuthData.devices()
+ 	for i, reqID := range dataToAck {
+ 		ackMessages[i] = &gmproto.AckMessageRequest_Message{
+ 			RequestID: reqID,
+-			Device:    s.client.AuthData.Browser,
++			Device:    browser,
+ 		}
+ 	}
+ 	payload := &gmproto.AckMessageRequest{
+ 		AuthData: &gmproto.AuthMessage{
+ 			RequestID:        uuid.NewString(),
+-			TachyonAuthToken: s.client.AuthData.TachyonAuthToken,
++			TachyonAuthToken: s.client.AuthData.TachyonToken(),
+ 			Network:          s.client.AuthData.AuthNetwork(),
+ 			ConfigVersion:    util.ConfigMessage,
+ 		},

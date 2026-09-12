@@ -1,0 +1,2 @@
+go.mau.fi/mautrix-gmessages v0.2608.1-0.20260911171723-e6cc29974f92
+subset: pkg/libgm (gmtest, manualdecrypt and events/ready_test.go removed)

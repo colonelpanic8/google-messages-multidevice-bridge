@@ -6,23 +6,30 @@ One always-on Google Messages connection, available to all your devices.
 
 Google Messages Multi-Device Bridge is a personal messaging service built on
 [`mautrix-gmessages/pkg/libgm`](https://github.com/mautrix/gmessages/tree/main/pkg/libgm).
-It does not run a Matrix server or require a Matrix account.
+It does not run a Matrix server or require a Matrix account. The libgm source is
+pinned to `e6cc29974f92` and carried in `third_party/mautrix-gmessages` with narrow
+reliability patches; see its [patch notes](third_party/mautrix-gmessages/PATCHES.md).
 
-## Current milestone: receiving bridge
+## Current milestone: shared history and text sending
 
 - Google account pairing with the phone's emoji confirmation.
-- Encrypted storage for pairing credentials and received message/conversation snapshots.
-- Authenticated HTTP history API with persistent, increasing cursors.
-- Server-sent events (SSE) with replay and live updates for multiple clients.
-- Live typing notifications, kept out of persistent history.
-- Consecutive identical snapshots are suppressed; changes to the same message are retained.
-- Connection status and upstream reconnect handling through libgm.
+- Encrypted pairing credentials, message snapshots, outbox, and downloaded attachments.
+- A responsive web client with shared conversations, message history, receipt/reaction
+  display, live typing, explicit mark-read, text sending, and queued-send cancellation.
+- An authenticated project-owned HTTP API and resumable SSE for simultaneous clients.
+- Bounded recent-history reconciliation on connection recovery and periodically.
+- Durable idempotency keys and explicit ambiguous-send handling across crashes.
 
-This is a prototype, not yet a replacement for Google Messages. Sending, historical
-backfill/reconciliation, downloading attachment bytes, a client UI, and unattended
-deployment are next steps. Incoming attachment metadata, reactions, and receipts
-are retained where present in upstream message snapshots. Their client rendering
-is not implemented. Live Google pairing and phone behavior have not yet been tested.
+This is an unverified live integration, not yet a replacement for Google Messages.
+Tests and browser checks use synthetic data. Real pairing, SIM selection, Google
+reconnection, delivery, receipt/reaction behavior, and media downloads still need
+phone validation. No real messages were sent during implementation.
+
+The first sending flow replies to **existing stored conversations**. Creating new
+conversations, outgoing media, outgoing reactions/typing, full historical import,
+and unattended deployment are not implemented. Incoming MMS/RCS attachment
+metadata is displayed; supported attachments can be downloaded on demand, up to
+20 MiB, and cached encrypted. Unavailable phone-side media remains unavailable.
 
 Your phone must remain online for new traffic. Stored history remains available
 without it. Upstream Google session/authentication changes can require pairing again.
@@ -99,59 +106,84 @@ use a private encrypted network such as Tailscale, or put TLS authentication in
 front of the service. Plain HTTP bearer tokens should not traverse an untrusted
 network. No existing server is stopped or reused.
 
+Missing or expired pairing and provider failures leave the API and stored history
+available. Check the displayed status, then pair again or restart the connection
+as indicated.
+
 `serve --offline` serves already persisted history without a Google connection.
 It can also start against a fresh database to test the HTTP API before pairing.
 
-## API
+## Web client and API
 
-Every endpoint requires `Authorization: Bearer <token>`. Tokens in query strings
-are rejected. No CORS access is enabled. Responses use `Cache-Control: no-store`.
+Open the service address in a browser and paste the API token to unlock it. The
+client keeps the token in memory for that tab; locking or reloading requires
+unlocking again. Each computer uses the same service, history, and outbox.
+The web assets are public; every `/v1/` endpoint requires bearer authentication.
+There are no external fonts, scripts, CDNs, or analytics.
 
-| Endpoint | Result |
-| --- | --- |
-| `GET /v1/status` | Current provider state and when it changed |
-| `GET /v1/events?after=0&limit=100` | Durable snapshots and `next_cursor`; limit 1–1000 |
-| `GET /v1/stream?after=0` | Replay followed by live SSE events |
+Choose a conversation to read and reply. When the phone is offline, a send is
+queued durably until the connection returns; cancel it before sending starts if
+you change your mind. `accepted` means Google accepted the request, and
+`confirmed` means its message was observed in history. Neither substitutes for
+the message's delivery/read status. `ambiguous` means the outcome is unknown:
+inspect the phone before deliberately sending another message. The bridge never
+automatically retries an attempted ambiguous send.
 
-Durable events contain `id`, `type`, `entity_id`, `time`, and `data`. `data` currently
-uses the pinned upstream protobuf JSON schema; it is not a stable application API.
-`time` is ingestion time, not the original message timestamp. Clients should apply
-snapshots by entity ID, rather than displaying every update as a new message.
+If the browser loses the HTTP response, **Retry same request** preserves the
+idempotency key. That retries submission to the local outbox, not an uncertain
+Google send. Do not create another request merely because the first response was
+lost. Incoming typing expires after five seconds. Mark read is an explicit button;
+opening a conversation does not itself send a read receipt.
 
-SSE `message` and `conversation` events have durable IDs. Reconnect using
-`Last-Event-ID` (which takes precedence over `after`). The last ID is exclusive.
-Typing events have no SSE ID, are not stored or replayed, and expire from the live
-queue after five seconds. Clients should also expire their displayed typing state.
-Use fetch-based streaming in a browser to provide the Authorization header; native
-EventSource does not support custom headers.
-
-Slow clients cannot block ingestion. Durable notifications are coalesced and read
-from disk; clients overwhelmed by ephemeral events are disconnected and can resume
-from their last durable ID. Upstream ingestion uses a bounded queue and exits with
-an error on overflow instead of pretending history is complete.
+See [the schema 1 API contract](docs/api.md) for routes, send states, pagination,
+SSE replay, and snapshot cursor semantics. The record definitions live in
+[`internal/model/model.go`](internal/model/model.go). Legacy prototype events are
+normalized before replay, excluding provider attachment credentials.
 
 ## Reliability boundaries
 
-- There is no full-history import or gap reconciliation yet. This cannot be used
-  as a complete archive of the phone.
-- libgm may acknowledge upstream events before Google Messages Multi-Device Bridge commits them to disk.
-  A crash or overflow can therefore leave a gap; backfill/reconciliation is needed
-  before relying on the service for archival completeness.
-- A cursor resumes events in this database, not a Google-side event position.
-- Message deletion snapshots do not erase prior versions from this archive.
-- The status endpoint is a coarse connection indicator, not a delivery guarantee.
-- The storage format and upstream JSON API are experimental; retain the pinned
-  source revision with backups until migrations are implemented.
+- Reconciliation covers a recent window: up to 30 inbox conversations and 50
+  recent messages per conversation. Archive/spam folders and older gaps are not
+  comprehensively imported. A completed recent check is not an archival guarantee.
+- libgm can acknowledge upstream events before the bridge commits them locally.
+  Reconciliation reduces gaps but does not establish exactly-once delivery or a
+  complete archive of the phone.
+- A history response cannot overwrite an entity observed locally after that fetch
+  began, including identical live snapshots suppressed from the event log. Google
+  supplies no reliable revision for every snapshot; original message
+  timestamps cannot order subsequent receipt/reaction changes.
+- An outbox attempt is durable before a send call. Interrupted attempts become
+  ambiguous on startup. Matching transaction and conversation IDs can resolve them;
+  matching text or timestamps cannot. Google acceptance is distinct from delivery.
+- A cursor resumes this database's event log, not a Google-side event position.
+  Restoring an older backup can require clients to reload their initial state.
+- Message deletion snapshots do not erase older event versions or cached media.
+  This is an encrypted local archive, not a remote-deletion mirror.
+- The connection status separates transport and phone responsiveness from history
+  reconciliation. It cannot guarantee the next message will arrive.
+- Upstream diagnostics are disabled because they may contain private message data
+  or credentials. Synthetic race tests cannot prove untested live protocol behavior.
+- Some upstream poll/reconnect helpers remain unjoined and have unsynchronized
+  fields. The bridge gates callbacks after shutdown; this does not make all
+  upstream live paths race-free. See the precise [remaining limits](third_party/mautrix-gmessages/PATCHES.md).
+- Storage keys are not rotatable by replacing the environment value. Retain the key
+  and pinned source revision with protected backups. Database identifiers, sizes,
+  and event counts remain visible even though payloads are encrypted.
 
-## Next milestones
+## Synthetic browser fixture
 
-1. Verify pairing, reconnection, typing, and receipts against a real phone.
-2. Import recent history and reconcile gaps after reconnects.
-3. Add text sending with persistent idempotency keys and explicit ambiguous-send
-   states; never blindly retry a send whose acknowledgement was lost.
-4. Add attachment transfer and a focused web client.
+For development only, a separate opt-in test starts a server with fake
+conversations and no Google connection:
+
+```sh
+BRIDGE_BROWSER_TEST=1 go test ./internal/api -run '^TestBrowserFixture$' -v -timeout 30m
+```
+
+It binds all interfaces on a fresh OS-selected port and prints the port. The token
+is `synthetic-browser-test-token-only`; this fixture contains no real secrets or
+messages. Text sends only enter its temporary local queue. Normal tests skip it.
 
 ## License
 
-AGPL-3.0-or-later. This project depends on mautrix-gmessages; its source and license
-are included by reference through the pinned Go module dependency.
+AGPL-3.0-or-later. This project depends on mautrix-gmessages; retain its source and
+license notices with distributed builds.

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -51,8 +52,14 @@ func Open(path string, key []byte) (*Store, error) {
 	}
 	s := &Store{db: db, cipher: aead}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, name := range []string{"meta", "events", "latest"} {
+		for _, name := range []string{"meta", "events", "latest", "versions", "outbox", "private", "media", "outbox-txn"} {
 			if _, err := tx.CreateBucketIfNotExists([]byte(name)); err != nil {
+				return err
+			}
+		}
+		versions := tx.Bucket([]byte("versions"))
+		if versions.Sequence() < tx.Bucket([]byte("events")).Sequence() {
+			if err := versions.SetSequence(tx.Bucket([]byte("events")).Sequence()); err != nil {
 				return err
 			}
 		}
@@ -113,45 +120,100 @@ func (s *Store) Append(event Event) (bool, error) {
 	if event.Type == "" || event.EntityID == "" || !json.Valid(event.Data) {
 		return false, errors.New("invalid event")
 	}
+	return s.appendConditional(event, nil)
+}
+
+// AppendIfUnchanged fences history against live observations made after
+// HistoryWatermark, including observations suppressed by event deduplication.
+func (s *Store) AppendIfUnchanged(event Event, watermark uint64) (bool, error) {
+	return s.appendConditional(event, &watermark)
+}
+func (s *Store) appendConditional(event Event, watermark *uint64) (bool, error) {
+	return s.Apply(event, nil, watermark)
+}
+
+// Apply commits the snapshot, private attachment metadata and any matching send
+// observation together. watermark is captured before a history request begins.
+func (s *Store) Apply(event Event, private map[string][]byte, watermark *uint64) (bool, error) {
+	changed := false
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		key := event.Type + ":" + event.EntityID
+		stale := false
+		if watermark != nil {
+			v := tx.Bucket([]byte("versions")).Get([]byte(key))
+			stale = len(v) == 8 && binary.BigEndian.Uint64(v) > *watermark
+		}
+		if !stale {
+			var err error
+			changed, err = s.appendTx(tx, event)
+			if err != nil {
+				return err
+			}
+			revision, err := tx.Bucket([]byte("versions")).NextSequence()
+			if err != nil {
+				return err
+			}
+			if err = tx.Bucket([]byte("versions")).Put([]byte(key), sequence(revision)); err != nil {
+				return err
+			}
+			for id, data := range private {
+				if err = tx.Bucket([]byte("private")).Put([]byte(id), s.encrypt(data, "private:"+id)); err != nil {
+					return err
+				}
+			}
+		}
+		if event.Type == "message" {
+			var m model.Message
+			if err := json.Unmarshal(event.Data, &m); err != nil {
+				return err
+			}
+			observed, err := s.confirmSendTx(tx, m)
+			if err != nil {
+				return err
+			}
+			changed = changed || observed
+		}
+		return nil
+	})
+	return changed, err
+}
+func (s *Store) appendTx(tx *bolt.Tx, event Event) (bool, error) {
+	if event.Type == "" || event.EntityID == "" || !json.Valid(event.Data) {
+		return false, errors.New("invalid event")
+	}
 	var canonical bytes.Buffer
 	if err := json.Compact(&canonical, event.Data); err != nil {
 		return false, err
 	}
 	event.Data = canonical.Bytes()
-	added := false
-	err := s.db.Update(func(tx *bolt.Tx) error {
-		latest := tx.Bucket([]byte("latest"))
-		key := event.Type + ":" + event.EntityID
-		if previous := latest.Get([]byte(key)); previous != nil {
-			plain, err := s.decrypt(previous, key)
-			if err != nil {
-				return err
-			}
-			if bytes.Equal(plain, event.Data) {
-				return nil
-			}
-		}
-		b := tx.Bucket([]byte("events"))
-		id, err := b.NextSequence()
+	latest := tx.Bucket([]byte("latest"))
+	key := event.Type + ":" + event.EntityID
+	if previous := latest.Get([]byte(key)); previous != nil {
+		plain, err := s.decrypt(previous, key)
 		if err != nil {
-			return err
+			return false, err
 		}
-		event.ID = id
-		event.Time = time.Now().UTC()
-		data, err := json.Marshal(event)
-		if err != nil {
-			return err
+		if bytes.Equal(plain, event.Data) {
+			return false, nil
 		}
-		if err := b.Put(sequence(id), s.encrypt(data, fmt.Sprint("event:", id))); err != nil {
-			return err
-		}
-		if err := latest.Put([]byte(key), s.encrypt(event.Data, key)); err != nil {
-			return err
-		}
-		added = true
-		return nil
-	})
-	return added, err
+	}
+	b := tx.Bucket([]byte("events"))
+	id, err := b.NextSequence()
+	if err != nil {
+		return false, err
+	}
+	event.ID, event.Time = id, time.Now().UTC()
+	data, err := json.Marshal(event)
+	if err != nil {
+		return false, err
+	}
+	if err = b.Put(sequence(id), s.encrypt(data, fmt.Sprint("event:", id))); err != nil {
+		return false, err
+	}
+	if err = latest.Put([]byte(key), s.encrypt(event.Data, key)); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Store) Events(after uint64, limit int) ([]Event, error) {

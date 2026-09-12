@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -78,28 +79,79 @@ func run() error {
 	if len(token) < 32 {
 		return errors.New("GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_API_TOKEN must contain at least 32 characters")
 	}
+	if err := b.Prepare(); err != nil {
+		return err
+	}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return err
 	}
-	server := &http.Server{Handler: api.New(b, token), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 16 << 10}
+	return serve(ctx, b, *offline, token, listener)
+}
+
+func serve(parent context.Context, b *bridge.Bridge, offline bool, token string, listener net.Listener) error {
+	if err := b.Prepare(); err != nil {
+		_ = listener.Close()
+		return err
+	}
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	var err error
+	var handlers sync.WaitGroup
+	var handlerMu sync.Mutex
+	closing := false
+	handler := api.New(b, token)
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerMu.Lock()
+		if closing {
+			handlerMu.Unlock()
+			http.Error(w, "service stopping", http.StatusServiceUnavailable)
+			return
+		}
+		handlers.Add(1)
+		handlerMu.Unlock()
+		defer handlers.Done()
+		handler.ServeHTTP(w, r)
+	}), BaseContext: func(net.Listener) context.Context { return ctx }, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 16 << 10}
 	serverErr := make(chan error, 1)
 	go func() { serverErr <- server.Serve(listener) }()
 	bridgeErr := make(chan error, 1)
-	go func() { bridgeErr <- b.Run(ctx, *offline, nil, nil) }()
+	go func() { bridgeErr <- b.Run(ctx, offline, nil, nil) }()
 	fmt.Fprintln(os.Stderr, "Google Messages Multi-Device Bridge listening on", listener.Addr())
 	bridgeFinished := false
-	select {
-	case err = <-bridgeErr:
-		bridgeFinished = true
-	case err = <-serverErr:
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
+serveLoop:
+	for {
+		select {
+		case failure := <-bridgeErr:
+			bridgeFinished = true
+			bridgeErr = nil
+			if errors.Is(failure, bridge.ErrStorage) {
+				err = failure
+				break serveLoop
+			}
+			if failure != nil {
+				fmt.Fprintln(os.Stderr, "Google connection stopped; stored history remains available. Check status and re-pair or restart when ready.")
+			}
+		case err = <-serverErr:
+			if errors.Is(err, http.ErrServerClosed) {
+				err = nil
+			}
+			break serveLoop
+		case <-ctx.Done():
+			break serveLoop
 		}
-	case <-ctx.Done():
 	}
+
 	cancel()
-	_ = server.Close()
+	shutdownCtx, finishShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	if shutdownErr := server.Shutdown(shutdownCtx); shutdownErr != nil {
+		_ = server.Close()
+	}
+	finishShutdown()
+	handlerMu.Lock()
+	closing = true
+	handlerMu.Unlock()
+	handlers.Wait()
 	if !bridgeFinished {
 		if bridgeFailure := <-bridgeErr; err == nil {
 			err = bridgeFailure

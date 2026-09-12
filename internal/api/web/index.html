@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Google Messages Multi-Device Bridge</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <header>
+      <div>
+        <span class="brand-mark" aria-hidden="true">◌</span
+        ><strong>Google Messages</strong
+        ><span class="subtitle">Multi-Device Bridge</span>
+      </div>
+      <div class="connection">
+        <span id="status">Locked</span><button id="logout" hidden>Lock</button>
+      </div>
+    </header>
+    <section id="login" class="login">
+      <p class="eyebrow">YOUR MESSAGES, TOGETHER</p>
+      <h1>One connection.<br />All your computers.</h1>
+      <p>
+        Connect to your bridge to read shared history and send through your
+        Android phone.
+      </p>
+      <form id="login-form">
+        <label for="token">Bridge API token</label
+        ><input
+          type="password"
+          id="token"
+          autocomplete="off"
+          required
+          placeholder="Paste your API token"
+        /><button type="submit">Unlock messages</button>
+      </form>
+      <p class="hint">
+        Your token stays in this tab’s memory. Use a private network or HTTPS.
+      </p>
+    </section>
+    <div id="app" hidden>
+      <div id="notice" role="status" aria-live="polite"></div>
+      <div class="workspace">
+        <aside>
+          <div class="section-heading">
+            <h2>Conversations</h2>
+            <button id="sync" title="Reconcile recent history">Sync</button>
+          </div>
+          <label class="sr-only" for="search">Search conversations</label
+          ><input id="search" type="search" placeholder="Find a conversation" />
+          <p id="provider-detail" class="hint"></p>
+          <p id="sync-status" class="hint"></p>
+          <nav id="conversations" aria-label="Conversations"></nav>
+        </aside>
+        <main>
+          <div id="empty" class="empty">
+            <div class="empty-mark">◌</div>
+            <h2>Your conversations live here</h2>
+            <p>
+              Choose a conversation to read or reply.<br />Recent history will
+              appear after your phone connects.
+            </p>
+          </div>
+          <section id="thread" hidden>
+            <div class="thread-heading">
+              <div>
+                <h1 id="thread-title"></h1>
+                <p id="thread-info" class="hint"></p>
+              </div>
+              <button id="mark-read">Mark read</button>
+            </div>
+            <button id="older" hidden>Load older stored messages</button>
+            <div id="messages" aria-live="polite"></div>
+            <div id="typing" role="status"></div>
+            <div id="outbox"></div>
+            <form id="compose">
+              <label class="sr-only" for="text">Message</label
+              ><textarea
+                id="text"
+                rows="3"
+                maxlength="16000"
+                placeholder="Write a message…"
+                required
+              ></textarea>
+              <div class="compose-footer">
+                <span id="send-hint" class="hint"
+                  >Your phone handles delivery.</span
+                ><button id="send" type="submit">Send message</button>
+              </div>
+            </form>
+          </section>
+        </main>
+      </div>
+    </div>
+    <footer>
+      Google Messages Multi-Device Bridge · Recent history, shared across
+      devices · Unofficial client
+    </footer>
+  </body>
+</html>

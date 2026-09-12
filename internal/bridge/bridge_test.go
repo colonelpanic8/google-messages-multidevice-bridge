@@ -71,14 +71,16 @@ func TestSlowSubscriberCannotBlockIngestion(t *testing.T) {
 	}
 }
 
-func TestOverflowFailsInsteadOfSilentlyLosingHistory(t *testing.T) {
-	b := New(nil)
-	for i := 0; i < cap(b.queue)+1; i++ {
-		b.enqueue(pending{})
+func TestStoppedHandlerCannotWriteAfterDatabaseCloses(t *testing.T) {
+	b := testBridge(t)
+	b.closeHandler()
+	if err := b.Store.Close(); err != nil {
+		t.Fatal(err)
 	}
+	b.Handle(&gmproto.Message{MessageID: "late"})
 	select {
-	case <-b.fatal:
+	case err := <-b.fatal:
+		t.Fatalf("late callback touched storage: %v", err)
 	default:
-		t.Fatal("overflow not reported")
 	}
 }

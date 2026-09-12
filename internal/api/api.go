@@ -15,11 +15,19 @@ import (
 
 func New(b *bridge.Bridge, token string) http.Handler {
 	mux := http.NewServeMux()
+	registerRecords(mux, b)
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, b.Status()) })
 	mux.HandleFunc("GET /v1/events", func(w http.ResponseWriter, r *http.Request) {
 		after, err := cursor(r)
+		if err == nil {
+			var mark uint64
+			mark, err = b.Store.Watermark()
+			if err == nil && after > mark {
+				err = fmt.Errorf("cursor ahead of store")
+			}
+		}
 		if err != nil {
-			http.Error(w, "invalid cursor", 400)
+			http.Error(w, "invalid cursor", http.StatusBadRequest)
 			return
 		}
 		limit := 100
@@ -27,13 +35,20 @@ func New(b *bridge.Bridge, token string) http.Handler {
 			limit, err = strconv.Atoi(q)
 		}
 		if err != nil || limit < 1 || limit > 1000 {
-			http.Error(w, "limit must be 1..1000", 400)
+			http.Error(w, "limit must be 1..1000", http.StatusBadRequest)
 			return
 		}
 		events, err := b.Store.Events(after, limit)
 		if err != nil {
 			http.Error(w, "storage unavailable", http.StatusServiceUnavailable)
 			return
+		}
+		for i, event := range events {
+			events[i], err = publicEvent(event)
+			if err != nil {
+				http.Error(w, "unsupported stored event", http.StatusServiceUnavailable)
+				return
+			}
 		}
 		next := after
 		if len(events) > 0 {
@@ -43,8 +58,15 @@ func New(b *bridge.Bridge, token string) http.Handler {
 	})
 	mux.HandleFunc("GET /v1/stream", func(w http.ResponseWriter, r *http.Request) {
 		after, err := cursor(r)
+		if err == nil {
+			var mark uint64
+			mark, err = b.Store.Watermark()
+			if err == nil && after > mark {
+				err = fmt.Errorf("cursor ahead of store")
+			}
+		}
 		if err != nil {
-			http.Error(w, "invalid cursor", 400)
+			http.Error(w, "invalid cursor", http.StatusBadRequest)
 			return
 		}
 		sub, unsubscribe := b.Hub.Subscribe()
@@ -70,6 +92,10 @@ func New(b *bridge.Bridge, token string) http.Handler {
 				return
 			}
 			for _, event := range events {
+				event, err = publicEvent(event)
+				if err != nil {
+					return
+				}
 				data, err := json.Marshal(event)
 				if err != nil {
 					return
@@ -122,12 +148,21 @@ func New(b *bridge.Bridge, token string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if serveAsset(w, r) {
+			return
+		}
 		value, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		got := sha256.Sum256([]byte(value))
 		if token == "" || !ok || subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
+		}
+		if r.Method != "GET" && r.Method != "HEAD" {
+			if origin := r.Header.Get("Origin"); origin != "" && origin != "http://"+r.Host && origin != "https://"+r.Host {
+				http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+				return
+			}
 		}
 		mux.ServeHTTP(w, r)
 	})

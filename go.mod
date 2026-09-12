@@ -20,3 +20,5 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 )
+
+replace go.mau.fi/mautrix-gmessages => ./third_party/mautrix-gmessages

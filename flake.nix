@@ -26,7 +26,14 @@
             src = ./.;
 
             go = pkgs.go_1_26;
-            vendorHash = "sha256-dBn+gREbDGlHJ7hNmvw9zhhzg3AX2s17hcbtPvH0iHI=";
+            subPackages = [ "cmd/google-messages-multidevice-bridge" ];
+            checkPhase = ''
+              runHook preCheck
+              go test ./...
+              runHook postCheck
+            '';
+
+            vendorHash = "sha256-rKfwqmtYvb5b13SvglO+bai/QAmkUXegX8LOqajHW2Y=";
 
             meta = {
               description = "One Google Messages connection for all your devices";
@@ -65,6 +72,8 @@
               gopls
               just
               nixfmt
+              nodejs
+              prettier
             ];
           };
         }

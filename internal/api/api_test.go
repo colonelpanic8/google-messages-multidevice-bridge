@@ -59,7 +59,7 @@ func TestSSEReplayLiveAndResume(t *testing.T) {
 	b, server := fixture(t)
 	appendEvent := func(id string) {
 		t.Helper()
-		if _, err := b.Store.Append(store.Event{Type: "message", EntityID: id, Data: json.RawMessage(`{"text":"hi"}`)}); err != nil {
+		if _, err := b.Store.Append(store.Event{Type: "message", EntityID: id, Data: json.RawMessage(`{"schema":1,"text":"hi"}`)}); err != nil {
 			t.Fatal(err)
 		}
 		b.Hub.Notify()

@@ -16,8 +16,6 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 go.etcd.io/bbolt v1.4.3 h1:dEadXpI6G79deX5prL3QRNP6JB8UxVkqo4UPnHaNXJo=
 go.etcd.io/bbolt v1.4.3/go.mod h1:tKQlpPaYCVFctUIgFKFnAlvbmB3tpy1vkTnDWohtc0E=
-go.mau.fi/mautrix-gmessages v0.2608.1-0.20260911171723-e6cc29974f92 h1:O+Y7xyn5KiOKx1UkCAbLhsqO/FwiiCP1cSSjq5Wwq0k=
-go.mau.fi/mautrix-gmessages v0.2608.1-0.20260911171723-e6cc29974f92/go.mod h1:uOxhgAmYRXG82eTGVCBLjKeg4T4wzZsJoDsYz1rKIeI=
 go.mau.fi/util v0.10.1-0.20260911104403-8d876c168769 h1:N3UbDlQduVw0XAJLrTiNdtz5HStEaXplOwx9CUfFErs=
 go.mau.fi/util v0.10.1-0.20260911104403-8d876c168769/go.mod h1:z0ZZNt4hq3FZbUKnunexE/QscCx7VkLvQSvtggc/aE8=
 golang.org/x/crypto v0.55.0 h1:+KWHjbgOaAQ66dh/YlkZKHlz9ZUlq61AFirAR9ntP8M=
