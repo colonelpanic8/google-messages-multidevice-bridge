@@ -1,0 +1,14 @@
+/.direnv/
+/bin/
+/data/
+/result
+/result-*
+
+*.db
+*.db-shm
+*.db-wal
+coverage.out
+
+.env
+.env.*
+!.env.example
