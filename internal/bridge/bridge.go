@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/colonelpanic8/multiconnect-bridge/internal/store"
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
 	"github.com/rs/zerolog"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"

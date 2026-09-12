@@ -15,9 +15,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/colonelpanic8/multiconnect-bridge/internal/api"
-	"github.com/colonelpanic8/multiconnect-bridge/internal/bridge"
-	"github.com/colonelpanic8/multiconnect-bridge/internal/store"
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/api"
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/bridge"
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
 )
 
 func main() {
@@ -28,14 +28,14 @@ func main() {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: multiconnect-bridge <pair|serve> [flags]")
+		return errors.New("usage: google-messages-multidevice-bridge <pair|serve> [flags]")
 	}
 	command := os.Args[1]
 	if command != "pair" && command != "serve" {
 		return errors.New("expected pair or serve")
 	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
-	dbPath := flags.String("db", "data/multiconnect-bridge.db", "encrypted database path")
+	dbPath := flags.String("db", "data/google-messages-multidevice-bridge.db", "encrypted database path")
 	listen := flags.String("listen", "127.0.0.1:0", "API listen address (port 0 selects a free port)")
 	offline := flags.Bool("offline", false, "serve stored history without connecting to Google")
 	if err := flags.Parse(os.Args[2:]); err != nil {
@@ -44,9 +44,9 @@ func run() error {
 		}
 		return err
 	}
-	key, err := base64.StdEncoding.DecodeString(os.Getenv("MULTICONNECT_BRIDGE_STORAGE_KEY"))
+	key, err := base64.StdEncoding.DecodeString(os.Getenv("GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_STORAGE_KEY"))
 	if err != nil || len(key) != 32 {
-		return errors.New("MULTICONNECT_BRIDGE_STORAGE_KEY must be a base64-encoded 32-byte key")
+		return errors.New("GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_STORAGE_KEY must be a base64-encoded 32-byte key")
 	}
 	s, err := store.Open(*dbPath, key)
 	if err != nil {
@@ -70,13 +70,13 @@ func run() error {
 		}
 		err = b.Run(ctx, false, cookies, func(code string) { fmt.Fprintln(os.Stderr, "Choose this emoji in Google Messages:", code) })
 		if err == nil && ctx.Err() == nil {
-			fmt.Fprintln(os.Stderr, "Encrypted pairing session saved. Start multiconnect-bridge serve.")
+			fmt.Fprintln(os.Stderr, "Encrypted pairing session saved. Start google-messages-multidevice-bridge serve.")
 		}
 		return err
 	}
-	token := os.Getenv("MULTICONNECT_BRIDGE_API_TOKEN")
+	token := os.Getenv("GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_API_TOKEN")
 	if len(token) < 32 {
-		return errors.New("MULTICONNECT_BRIDGE_API_TOKEN must contain at least 32 characters")
+		return errors.New("GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_API_TOKEN must contain at least 32 characters")
 	}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
@@ -87,7 +87,7 @@ func run() error {
 	go func() { serverErr <- server.Serve(listener) }()
 	bridgeErr := make(chan error, 1)
 	go func() { bridgeErr <- b.Run(ctx, *offline, nil, nil) }()
-	fmt.Fprintln(os.Stderr, "Multiconnect Bridge listening on", listener.Addr())
+	fmt.Fprintln(os.Stderr, "Google Messages Multi-Device Bridge listening on", listener.Addr())
 	bridgeFinished := false
 	select {
 	case err = <-bridgeErr:

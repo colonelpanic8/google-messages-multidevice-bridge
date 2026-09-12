@@ -1,4 +1,4 @@
-module github.com/colonelpanic8/multiconnect-bridge
+module github.com/colonelpanic8/google-messages-multidevice-bridge
 
 go 1.26.7
 

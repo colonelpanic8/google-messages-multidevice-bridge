@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/colonelpanic8/multiconnect-bridge/internal/bridge"
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/bridge"
 )
 
 func New(b *bridge.Bridge, token string) http.Handler {

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/colonelpanic8/multiconnect-bridge/internal/bridge"
-	"github.com/colonelpanic8/multiconnect-bridge/internal/store"
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/bridge"
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
 )
 
 func fixture(t *testing.T) (*bridge.Bridge, *httptest.Server) {

@@ -1,7 +1,7 @@
 package bridge
 
 import (
-	"github.com/colonelpanic8/multiconnect-bridge/internal/store"
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
 	"sync"
 )
 

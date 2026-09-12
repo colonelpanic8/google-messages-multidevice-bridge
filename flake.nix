@@ -21,7 +21,7 @@
         in
         {
           default = pkgs.buildGoModule {
-            pname = "multiconnect-bridge";
+            pname = "google-messages-multidevice-bridge";
             version = "0.1.0-dev";
             src = ./.;
 
@@ -30,9 +30,9 @@
 
             meta = {
               description = "One Google Messages connection for all your devices";
-              homepage = "https://github.com/colonelpanic8/multiconnect-bridge";
+              homepage = "https://github.com/colonelpanic8/google-messages-multidevice-bridge";
               license = pkgs.lib.licenses.agpl3Plus;
-              mainProgram = "multiconnect-bridge";
+              mainProgram = "google-messages-multidevice-bridge";
               platforms = supportedSystems;
             };
           };
@@ -43,7 +43,7 @@
         default = {
           type = "app";
           program = nixpkgs.lib.getExe self.packages.${system}.default;
-          meta.description = "Run Multiconnect Bridge";
+          meta.description = "Run Google Messages Multi-Device Bridge";
         };
       });
 
@@ -73,7 +73,7 @@
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixfmt);
 
       overlays.default = final: _prev: {
-        multiconnect-bridge = self.packages.${final.stdenv.hostPlatform.system}.default;
+        google-messages-multidevice-bridge = self.packages.${final.stdenv.hostPlatform.system}.default;
       };
     };
 }

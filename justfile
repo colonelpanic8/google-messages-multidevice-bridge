@@ -17,4 +17,4 @@ test:
 check: fmt-check lint test
 
 build:
-    go build -o bin/multiconnect-bridge ./cmd/multiconnect-bridge
+    go build -o bin/google-messages-multidevice-bridge ./cmd/google-messages-multidevice-bridge

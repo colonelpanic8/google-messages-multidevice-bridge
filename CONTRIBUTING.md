@@ -1,6 +1,6 @@
 # Contributing
 
-Multiconnect Bridge is an early prototype built against an unofficial and
+Google Messages Multi-Device Bridge is an early prototype built against an unofficial and
 evolving Google Messages protocol. Keep changes focused, preserve the explicit
 reliability boundaries in the README, and add tests for behavioral changes.
 

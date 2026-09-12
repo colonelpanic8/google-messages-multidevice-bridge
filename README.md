@@ -1,10 +1,10 @@
-# Multiconnect Bridge
+# Google Messages Multi-Device Bridge
 
-[![CI](https://github.com/colonelpanic8/multiconnect-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/colonelpanic8/multiconnect-bridge/actions/workflows/ci.yml)
+[![CI](https://github.com/colonelpanic8/google-messages-multidevice-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/colonelpanic8/google-messages-multidevice-bridge/actions/workflows/ci.yml)
 
 One always-on Google Messages connection, available to all your devices.
 
-Multiconnect Bridge is a personal messaging service built on
+Google Messages Multi-Device Bridge is a personal messaging service built on
 [`mautrix-gmessages/pkg/libgm`](https://github.com/mautrix/gmessages/tree/main/pkg/libgm).
 It does not run a Matrix server or require a Matrix account.
 
@@ -55,9 +55,9 @@ for the language decision.
 
 Provide these at runtime:
 
-- `MULTICONNECT_BRIDGE_STORAGE_KEY`: base64 encoding of 32 random bytes. Keep it permanently
+- `GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_STORAGE_KEY`: base64 encoding of 32 random bytes. Keep it permanently
   in a password manager; it is needed to reopen the database.
-- `MULTICONNECT_BRIDGE_API_TOKEN`: a random bearer token of at least 32 characters.
+- `GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_API_TOKEN`: a random bearer token of at least 32 characters.
 
 Neither secret belongs in this repository, a command-line flag, or a plaintext
 environment file. On this machine use `pass` and inject secrets through environment
@@ -75,11 +75,11 @@ because it can include message bodies and credentials.
 Follow the upstream [Google account login instructions](https://docs.mau.fi/bridges/go/gmessages/authentication.html)
 to obtain a JSON object mapping Google cookie names to values from a separate browser
 session. Account pairing must be enabled in Google Messages. A Google password is
-not a substitute for these cookies. Multiconnect Bridge accepts the JSON object, not a cURL
+not a substitute for these cookies. Google Messages Multi-Device Bridge accepts the JSON object, not a cURL
 command. Pipe it from a secure source:
 
 ```sh
-your-secure-cookie-source | bin/multiconnect-bridge pair --db data/multiconnect-bridge.db
+your-secure-cookie-source | bin/google-messages-multidevice-bridge pair --db data/google-messages-multidevice-bridge.db
 ```
 
 Select the displayed emoji on the phone. Pairing saves the encrypted session and
@@ -89,7 +89,7 @@ the database lock prevents two processes from using the same session/store.
 ## Serve
 
 ```sh
-bin/multiconnect-bridge serve --db data/multiconnect-bridge.db
+bin/google-messages-multidevice-bridge serve --db data/google-messages-multidevice-bridge.db
 ```
 
 The default address is `127.0.0.1:0`: the OS picks an unused port and the service
@@ -134,7 +134,7 @@ an error on overflow instead of pretending history is complete.
 
 - There is no full-history import or gap reconciliation yet. This cannot be used
   as a complete archive of the phone.
-- libgm may acknowledge upstream events before Multiconnect Bridge commits them to disk.
+- libgm may acknowledge upstream events before Google Messages Multi-Device Bridge commits them to disk.
   A crash or overflow can therefore leave a gap; backfill/reconciliation is needed
   before relying on the service for archival completeness.
 - A cursor resumes events in this database, not a Google-side event position.

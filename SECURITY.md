@@ -1,6 +1,6 @@
 # Security Policy
 
-Multiconnect Bridge handles Google session credentials and private message data.
+Google Messages Multi-Device Bridge handles Google session credentials and private message data.
 Do not open a public issue for a suspected vulnerability or include real
 credentials, database files, or message contents in a report.
 

@@ -61,7 +61,7 @@ func Open(path string, key []byte) (*Store, error) {
 			_, err := s.decrypt(value, "key-check")
 			return err
 		}
-		return b.Put([]byte("key-check"), s.encrypt([]byte("multiconnect-bridge-v1"), "key-check"))
+		return b.Put([]byte("key-check"), s.encrypt([]byte("google-messages-multidevice-bridge-v1"), "key-check"))
 	})
 	if err != nil {
 		db.Close()
