@@ -596,6 +596,7 @@ function maybeSelectCreatedConversation() {
     void select(conversationID);
   });
 }
+let pendingConversationFromLink = "";
 async function select(id) {
   if (pendingSend && id !== selected) {
     notice(
@@ -650,6 +651,14 @@ async function refresh() {
     outbox = os.outbox || [];
     historyJobs = hs.jobs || [];
     renderConnection(status);
+    if (
+      pendingConversationFromLink &&
+      conversations.some((c) => c.id === pendingConversationFromLink)
+    ) {
+      const wanted = pendingConversationFromLink;
+      pendingConversationFromLink = "";
+      void select(wanted);
+    }
     if (id === selected && ms) {
       const expanded = messages.length > 100;
       messages = mergeMessages(
@@ -1349,3 +1358,22 @@ setInterval(() => {
     void refresh().catch((error) => notice(error.message));
   }
 }, 500);
+
+// The service worker backs the installed app: an offline shell and, once a
+// subscription exists, notifications delivered while no window is open.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {
+    notice("Background updates are unavailable in this browser.");
+  });
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event.data?.type === "open-conversation" && event.data.conversation)
+      void select(event.data.conversation);
+  });
+}
+{
+  const requested = new URLSearchParams(location.search).get("conversation");
+  if (requested) {
+    history.replaceState(null, "", location.pathname);
+    pendingConversationFromLink = requested;
+  }
+}

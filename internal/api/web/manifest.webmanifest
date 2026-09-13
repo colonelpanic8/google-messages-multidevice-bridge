@@ -1,0 +1,22 @@
+{
+  "name": "Google Messages Multi-Device Bridge",
+  "short_name": "Messages",
+  "description": "Read shared SMS, MMS, and RCS history and send through your Android phone.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f3f6f5",
+  "theme_color": "#186a65",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
