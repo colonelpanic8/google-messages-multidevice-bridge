@@ -6,6 +6,7 @@ import (
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/provider"
 	"io"
 	"net/http"
+	"strings"
 )
 
 func registerFeatures(mux *http.ServeMux, b *bridge.Bridge) {
@@ -48,6 +49,18 @@ func registerFeatures(mux *http.ServeMux, b *bridge.Bridge) {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /v1/attachments/{id}/request", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if len(id) != 64 || strings.ContainsAny(id, "/\\.") {
+			apiError(w, bridge.ErrInvalid)
+			return
+		}
+		if err := b.RequestAttachment(r.Context(), id); err != nil {
+			apiError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
 	})
 	mux.HandleFunc("POST /v1/uploads", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, provider.MaxAttachmentBytes)

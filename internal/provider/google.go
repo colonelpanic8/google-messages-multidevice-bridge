@@ -38,6 +38,7 @@ type googleClient interface {
 	SendReaction(context.Context, *gmproto.SendReactionRequest) (*gmproto.SendReactionResponse, error)
 	SetTyping(context.Context, string, *gmproto.SIMPayload) error
 	MarkRead(context.Context, string, string) error
+	GetFullSizeImage(context.Context, string, string) (*gmproto.GetFullSizeImageResponse, error)
 }
 
 type contextMediaUploader interface {
@@ -103,8 +104,17 @@ func SnapshotOf(msg proto.Message) (Snapshot, error) {
 					mime = "application/octet-stream"
 				}
 				remoteID, _ := remoteMedia(media)
+				full := media.GetMediaID() != "" && len(media.GetDecryptionKey()) == 32
 				available := remoteID != "" || len(media.GetMediaData()) > 0
-				out.Attachments = append(out.Attachments, model.Attachment{ID: aid, Name: media.GetMediaName(), MIME: mime, Size: media.GetSize(), Available: available})
+				requestable := !full && info.GetActionMessageID() != ""
+				if requestable {
+					part, err := json.Marshal(mediaPart{MessageID: id, ActionMessageID: info.GetActionMessageID()})
+					if err != nil {
+						return Snapshot{}, err
+					}
+					private[aid+partSuffix] = part
+				}
+				out.Attachments = append(out.Attachments, model.Attachment{ID: aid, Name: media.GetMediaName(), MIME: mime, Size: media.GetSize(), Available: available, Preview: available && !full, Requestable: requestable})
 			}
 		}
 		for _, r := range m.GetReactions() {
@@ -468,6 +478,29 @@ func (g *Google) Attachment(ctx context.Context, data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("%w: download: %v", ErrUnavailable, err)
 	}
 	return ReadBounded(ctx, r)
+}
+
+// PartSuffix names the private record that ties an attachment to its message part.
+const partSuffix = ".part"
+
+func PartKey(attachmentID string) string { return attachmentID + partSuffix }
+
+type mediaPart struct {
+	MessageID       string `json:"message_id"`
+	ActionMessageID string `json:"action_message_id"`
+}
+
+// RequestMedia issues GET_FULL_SIZE_IMAGE; the phone answers with a message
+// update carrying a downloadable media ID, which arrives through ingestion.
+func (g *Google) RequestMedia(ctx context.Context, data []byte) error {
+	var part mediaPart
+	if err := json.Unmarshal(data, &part); err != nil || part.MessageID == "" || part.ActionMessageID == "" {
+		return ErrRejected
+	}
+	if _, err := g.Client.GetFullSizeImage(ctx, part.MessageID, part.ActionMessageID); err != nil {
+		return fmt.Errorf("%w: media request: %v", ErrUnavailable, err)
+	}
+	return nil
 }
 
 // remoteMedia prefers the full upload over its thumbnail, matching upstream.

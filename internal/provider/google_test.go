@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"google.golang.org/protobuf/proto"
 	"io"
 	"strings"
 	"sync/atomic"
@@ -26,6 +27,11 @@ type fakeGoogleClient struct {
 	markRead      func(context.Context, string, string) error
 	upload        func(context.Context, []byte, string, string) (*gmproto.MediaContent, error)
 	downloadMedia func(context.Context, string, []byte) (io.ReadCloser, error)
+	fullSize      func(context.Context, string, string) (*gmproto.GetFullSizeImageResponse, error)
+}
+
+func (f *fakeGoogleClient) GetFullSizeImage(ctx context.Context, messageID, actionMessageID string) (*gmproto.GetFullSizeImageResponse, error) {
+	return f.fullSize(ctx, messageID, actionMessageID)
 }
 
 func (f *fakeGoogleClient) ListConversations(ctx context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
@@ -541,5 +547,50 @@ func TestAttachmentPrefersFullMediaThenThumbnailOverInlinePreview(t *testing.T) 
 	fake.downloadMedia = func(context.Context, string, []byte) (io.ReadCloser, error) { return nil, errors.New("http 500") }
 	if _, err := g.Attachment(context.Background(), both); !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "http 500") {
 		t.Fatalf("download failure: %v", err)
+	}
+}
+
+func TestThumbnailOnlyMediaIsPreviewAndRequestable(t *testing.T) {
+	key := bytes.Repeat([]byte{9}, 32)
+	msg := &gmproto.Message{
+		MessageID: "m9", ConversationID: "c1", ParticipantID: "p2", Timestamp: 1_700_000_000_000_000,
+		MessageStatus: &gmproto.MessageStatus{Status: gmproto.MessageStatusType_INCOMING_COMPLETE},
+		MessageInfo: []*gmproto.MessageInfo{
+			{ActionMessageID: proto.String("part-1"), Data: &gmproto.MessageInfo_MediaContent{MediaContent: &gmproto.MediaContent{ThumbnailMediaID: "thumb-1", ThumbnailDecryptionKey: key, MimeType: "image/jpeg", Size: 5000}}},
+			{ActionMessageID: proto.String("part-2"), Data: &gmproto.MessageInfo_MediaContent{MediaContent: &gmproto.MediaContent{MediaID: "full-2", DecryptionKey: key, MimeType: "image/jpeg"}}},
+			{ActionMessageID: proto.String("part-3"), Data: &gmproto.MessageInfo_MediaContent{MediaContent: &gmproto.MediaContent{MimeType: "image/jpeg"}}},
+		},
+	}
+	snap, err := SnapshotOf(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out model.Message
+	if err = json.Unmarshal(snap.Event.Data, &out); err != nil || len(out.Attachments) != 3 {
+		t.Fatalf("%+v %v", out, err)
+	}
+	thumb, full, pending := out.Attachments[0], out.Attachments[1], out.Attachments[2]
+	if !thumb.Available || !thumb.Preview || !thumb.Requestable {
+		t.Fatalf("thumbnail-only: %+v", thumb)
+	}
+	if !full.Available || full.Preview || full.Requestable {
+		t.Fatalf("full media: %+v", full)
+	}
+	if pending.Available || pending.Preview || !pending.Requestable {
+		t.Fatalf("pending media: %+v", pending)
+	}
+	if _, ok := snap.Private[PartKey(full.ID)]; ok {
+		t.Fatal("full media should not carry a part record")
+	}
+	var called []string
+	g := &Google{Client: &fakeGoogleClient{fullSize: func(_ context.Context, messageID, actionMessageID string) (*gmproto.GetFullSizeImageResponse, error) {
+		called = append(called, messageID+"/"+actionMessageID)
+		return &gmproto.GetFullSizeImageResponse{}, nil
+	}}}
+	if err = g.RequestMedia(context.Background(), snap.Private[PartKey(thumb.ID)]); err != nil || len(called) != 1 || called[0] != "m9/part-1" {
+		t.Fatalf("request: %v %v", called, err)
+	}
+	if err = g.RequestMedia(context.Background(), []byte("{}")); !errors.Is(err, ErrRejected) {
+		t.Fatalf("empty part: %v", err)
 	}
 }

@@ -53,4 +53,6 @@ type Provider interface {
 	Send(context.Context, SendTarget, model.Outbox) error
 	MarkRead(context.Context, string, string) error
 	Attachment(context.Context, []byte) ([]byte, error)
+	// RequestMedia asks the phone to upload full media for a stored part record.
+	RequestMedia(context.Context, []byte) error
 }

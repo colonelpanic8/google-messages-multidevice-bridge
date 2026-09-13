@@ -481,6 +481,43 @@ func (b *Bridge) Attachment(ctx context.Context, id string) ([]byte, error) {
 	return data, nil
 }
 
+// RequestAttachment asks the phone for full media once per minute per
+// attachment. The result arrives later as a message update.
+func (b *Bridge) RequestAttachment(ctx context.Context, id string) error {
+	if len(id) != 64 {
+		return ErrInvalid
+	}
+	part, err := b.Store.Private(provider.PartKey(id))
+	if err != nil {
+		return err
+	}
+	p, ctx, release := b.borrowProvider(ctx)
+	defer release()
+	if p == nil || b.Status().State != "connected" {
+		return provider.ErrUnavailable
+	}
+	b.mu.Lock()
+	now := time.Now()
+	if last := b.mediaRequested[id]; now.Sub(last) < time.Minute {
+		b.mu.Unlock()
+		return nil
+	}
+	if b.mediaRequested == nil {
+		b.mediaRequested = make(map[string]time.Time)
+	}
+	b.mediaRequested[id] = now
+	b.mu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err = p.RequestMedia(ctx, part); err != nil {
+		b.mu.Lock()
+		delete(b.mediaRequested, id)
+		b.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
 func (b *Bridge) claimSend(id string) (model.Outbox, error) {
 	b.mutationMu.Lock()
 	defer b.mutationMu.Unlock()

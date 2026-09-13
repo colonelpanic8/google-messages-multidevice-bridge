@@ -193,9 +193,11 @@ history states, pagination, pairing, and SSE replay.
   clients to reload. Remote deletion snapshots do not erase older event versions or
   cached media from this encrypted local archive.
 - Attachment downloads prefer the full upload, then its thumbnail, then the inline
-  preview. Google serves web clients a compressed rendition, so downloaded bytes can
-  be smaller than the declared size and HEIC originals arrive as JPEG. Requesting
-  the original through `GET_FULL_SIZE_IMAGE` is not exposed yet.
+  preview; `preview` marks the latter two. Google serves web clients a compressed
+  rendition, so downloaded bytes can be smaller than the declared size and HEIC
+  originals arrive as JPEG. A `requestable` attachment can ask the phone to upload
+  its full media; the message updates when the phone answers, which older MMS may
+  never do.
 
 ## Synthetic browser fixture
 

@@ -26,6 +26,14 @@ type fakeProvider struct {
 	send             func(context.Context, model.Outbox) error
 	conversations    func(context.Context) ([]provider.Snapshot, error)
 	messages         func(context.Context, string) ([]provider.Snapshot, error)
+	requestMedia     func(context.Context, []byte) error
+}
+
+func (f *fakeProvider) RequestMedia(ctx context.Context, part []byte) error {
+	if f.requestMedia != nil {
+		return f.requestMedia(ctx, part)
+	}
+	return provider.ErrUnavailable
 }
 
 func (f *fakeProvider) Prepare(ctx context.Context, id string) (provider.SendTarget, error) {

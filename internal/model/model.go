@@ -32,6 +32,10 @@ type Attachment struct {
 	MIME      string `json:"mime"`
 	Size      int64  `json:"size"`
 	Available bool   `json:"available"`
+	// Preview means only a thumbnail or inline preview can be downloaded.
+	Preview bool `json:"preview"`
+	// Requestable means the phone can be asked to upload the full media.
+	Requestable bool `json:"requestable"`
 }
 type Reaction struct {
 	Emoji        string   `json:"emoji"`

@@ -45,6 +45,7 @@ type Bridge struct {
 	reconnectDelay   time.Duration
 	historyWake      chan struct{}
 	typingSent       map[string]time.Time
+	mediaRequested   map[string]time.Time
 	Store            *store.Store
 	Hub              *Hub
 	client           *libgm.Client

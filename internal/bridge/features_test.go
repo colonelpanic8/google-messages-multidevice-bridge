@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -241,5 +243,35 @@ func TestMessageCarriesTextOrAttachmentsNotBoth(t *testing.T) {
 	}
 	if _, _, err = b.Queue("blank-and-media-key-1", model.SendRequest{ConversationID: "c", Text: "  ", AttachmentIDs: []string{u.ID}}); err != nil {
 		t.Fatalf("blank text with attachments: %v", err)
+	}
+}
+
+func TestRequestAttachmentUsesPartRecordAndRateLimits(t *testing.T) {
+	b := testBridge(t)
+	var calls [][]byte
+	b.setProvider(&fakeProvider{requestMedia: func(_ context.Context, part []byte) error {
+		calls = append(calls, part)
+		return nil
+	}})
+	b.mu.Lock()
+	b.status.State = "connected"
+	b.mu.Unlock()
+	id := strings.Repeat("a", 64)
+	if err := b.RequestAttachment(context.Background(), id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing part: %v", err)
+	}
+	snap := snapshot(t, "message", "m", model.Message{Schema: 1, ID: "m", ConversationID: "c"})
+	snap.Private = map[string][]byte{provider.PartKey(id): []byte(`{"message_id":"m","action_message_id":"p"}`)}
+	b.persist(snap)
+	for i := 0; i < 2; i++ {
+		if err := b.RequestAttachment(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(calls) != 1 || string(calls[0]) != `{"message_id":"m","action_message_id":"p"}` {
+		t.Fatalf("calls: %q", calls)
+	}
+	if err := b.RequestAttachment(context.Background(), "short"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("invalid id: %v", err)
 	}
 }

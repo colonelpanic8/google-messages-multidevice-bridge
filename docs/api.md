@@ -40,6 +40,7 @@ commit time. Unknown normalized Google status strings must remain displayable.
 | `GET /v1/history`                                                   | Durable history jobs and snapshot `cursor`                                                     |
 | `POST /v1/history/{id}/pause`                                       | Pause a job; an in-flight page may finish but cannot advance the paused checkpoint             |
 | `GET /v1/attachments/{id}`                                          | Download a stored attachment, fetching and caching it encrypted when necessary; at most 20 MiB |
+| `POST /v1/attachments/{id}/request`                                 | Ask the phone to upload full media for a `requestable` attachment; returns 202, once a minute  |
 | `GET /v1/events?after=0&limit=100`                                  | Durable events and `next_cursor`; limit 1–1000                                                 |
 | `GET /v1/stream?after=0`                                            | Durable event replay followed by SSE notifications and ephemeral typing                        |
 

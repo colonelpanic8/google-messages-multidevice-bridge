@@ -204,9 +204,29 @@ function renderPreview(container, attachment) {
   if (previewObserver) previewObserver.observe(img);
   else loadPreview(img);
 }
+function renderMediaRequest(container, attachment) {
+  if (!attachment.requestable) return;
+  const button = el("button", "Request full media from phone", "attachment");
+  button.type = "button";
+  button.onclick = async () => {
+    button.disabled = true;
+    try {
+      await request(
+        `/v1/attachments/${encodeURIComponent(attachment.id)}/request`,
+        { method: "POST" },
+      );
+      notice("Requested. The message updates when the phone uploads it.");
+    } catch (error) {
+      notice(error.message);
+      button.disabled = false;
+    }
+  };
+  container.append(button);
+}
 function renderAttachment(container, attachment) {
   renderPreview(container, attachment);
-  const label = `${attachment.name || "Attachment"} · ${formatSize(attachment.size || 0)}${attachment.available ? " · Download" : " · Unavailable"}`;
+  const quality = attachment.preview ? " · Preview" : "";
+  const label = `${attachment.name || "Attachment"} · ${formatSize(attachment.size || 0)}${quality}${attachment.available ? " · Download" : " · Unavailable"}`;
   const button = el("button", label, "attachment");
   button.type = "button";
   button.disabled = !attachment.available;
@@ -237,6 +257,7 @@ function renderAttachment(container, attachment) {
     }
   };
   container.append(button);
+  renderMediaRequest(container, attachment);
 }
 function outboxDescription(item) {
   const body = item.request || {};
