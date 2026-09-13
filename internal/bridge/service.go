@@ -333,7 +333,10 @@ func (b *Bridge) syncLoop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if b.Status().State != "connected" {
+		before := b.Status()
+		// A fresh libgm session may never emit ClientReady. A read-only history
+		// request establishes phone liveness without allowing queued mutations.
+		if !before.Transport || (before.State != "connected" && before.State != "degraded") {
 			continue
 		}
 		b.mu.Lock()
@@ -347,8 +350,18 @@ func (b *Bridge) syncLoop(ctx context.Context) {
 			now := time.Now().UTC()
 			b.status.SyncState = "recent_window_complete"
 			b.status.LastSync = &now
+			if b.status.Updated.Equal(before.Updated) && ctx.Err() == nil {
+				b.status.State = "connected"
+				b.status.Phone = true
+				b.status.Detail = ""
+				b.status.Updated = now
+			}
 		}
 		b.mu.Unlock()
+		if err == nil {
+			wake(b.sendWake)
+			wake(b.historyWake)
+		}
 	}
 }
 func (b *Bridge) apply(snap provider.Snapshot, watermark uint64) error {

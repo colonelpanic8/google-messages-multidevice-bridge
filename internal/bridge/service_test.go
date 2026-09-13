@@ -428,3 +428,48 @@ func (f *fakeProvider) ConversationPage(ctx context.Context, folder string, curs
 	}
 	return nil, nil, provider.ErrUnavailable
 }
+
+func TestHistoryBootstrapsPhoneWithoutClientReady(t *testing.T) {
+	for _, outcome := range []string{"success", "unavailable", "newer-disconnect"} {
+		t.Run(outcome, func(t *testing.T) {
+			b := testBridge(t)
+			b.setStatus("connecting", "")
+			b.provider = &fakeProvider{conversations: func(context.Context) ([]provider.Snapshot, error) {
+				if outcome == "unavailable" {
+					return nil, provider.ErrUnavailable
+				}
+				if outcome == "newer-disconnect" {
+					if err := b.Handle(&events.ListenTemporaryError{}); err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			}}
+			if err := b.Handle(&events.ListenRecovered{}); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() { defer close(done); b.syncLoop(ctx) }()
+			defer func() { cancel(); <-done }()
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				status := b.Status()
+				if status.SyncState == "failed" || status.SyncState == "recent_window_complete" {
+					if outcome == "success" {
+						if status.State != "connected" || !status.Phone || status.LastSync == nil {
+							t.Fatalf("history did not establish liveness: %+v", status)
+						}
+					} else if status.State == "connected" || status.Phone {
+						t.Fatalf("history invented liveness: %+v", status)
+					}
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("history never ran without ClientReady: %+v", status)
+				}
+				time.Sleep(time.Millisecond)
+			}
+		})
+	}
+}

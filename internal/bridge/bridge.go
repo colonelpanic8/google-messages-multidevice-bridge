@@ -340,6 +340,7 @@ func (b *Bridge) Run(ctx context.Context, offline bool, cookies map[string]strin
 		return nil
 	}
 	b.setProvider(provider.NewGoogle(b.client))
+	b.RequestSync()
 	owned.Add(3)
 	go func() { defer owned.Done(); b.syncLoop(providerCtx) }()
 	go func() { defer owned.Done(); b.sendLoop(providerCtx) }()

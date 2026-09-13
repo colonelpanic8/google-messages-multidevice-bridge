@@ -24,9 +24,12 @@ reliability patches; see its [patch notes](third_party/mautrix-gmessages/PATCHES
   connection supervisor that retains the local service while reconnecting.
 - A Nix package and Home Manager user service with direct `pass` integration.
 
-This remains an **unverified live integration**, not yet a replacement for Google
-Messages. Automated tests use fake providers, synthetic protocol messages, and local
-HTTP servers. Real Google sign-in, phone pairing, SIM selection, conversation
+This remains a **partially verified live integration**, not yet a replacement for
+Google Messages. Guided Google sign-in, helper credential handoff, phone emoji
+confirmation, and paired-session persistence have passed a live check. Initial
+history sync exposed a startup readiness bug; the fix has focused fake-provider
+coverage but still needs live validation. Other automated tests use fake providers,
+synthetic protocol messages, and local HTTP servers. SIM selection, conversation
 creation, media upload/download, sending, reactions, receipts, history pagination,
 and reconnection still require phone validation. No real messages were sent during
 implementation.
