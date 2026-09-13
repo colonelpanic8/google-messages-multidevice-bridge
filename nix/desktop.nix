@@ -48,6 +48,16 @@ rustPlatform.buildRustPackage {
     DESKTOP
   '';
 
+  # The tray-icon stack loads libayatana-appindicator3 via dlopen, which Nix's
+  # RPATH does not cover, so the library must be discoverable at runtime.
+  # WEBKIT_DISABLE_DMABUF_RENDERER avoids the explicit-sync dmabuf path that
+  # kills WebKitGTK surfaces on NVIDIA ("Missing acquire timeline").
+  postFixup = ''
+    wrapProgram $out/bin/google-messages-desktop \
+      --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath [ libayatana-appindicator ]}" \
+      --set-default WEBKIT_DISABLE_DMABUF_RENDERER 1
+  '';
+
   meta = {
     description = "Desktop window for the Google Messages Multi-Device Bridge";
     license = lib.licenses.agpl3Plus;
