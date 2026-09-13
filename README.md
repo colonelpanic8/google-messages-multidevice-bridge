@@ -31,10 +31,12 @@ persistence across restarts, initial history sync, inbox history import across
 hundreds of conversations, SSE replay, attachment download, full-media requests,
 and, in a conversation with the owner's own number over RCS, conversation creation,
 text sends, image sends, a caption queued as a second message, a reaction, typing,
-and mark-read, each confirmed through Google's history echo and delivery status.
-Not yet live-verified: incoming traffic from other parties beyond the sender's own
-echo, SMS/MMS sends to non-RCS recipients, multi-SIM selection, RCS group creation,
-and authentication expiry handling. Automated tests use fake providers, synthetic
+and mark-read, each confirmed through Google's history echo and delivery status. A
+message composed elsewhere on the phone appeared in a running client within seconds
+over the live stream, which is the same event path incoming messages use.
+Not yet live-verified: messages received from other parties, SMS/MMS sends to
+non-RCS recipients, multi-SIM selection, RCS group creation, and authentication
+expiry handling. Automated tests use fake providers, synthetic
 protocol messages, and local HTTP servers. No messages were sent to other people
 during implementation.
 
