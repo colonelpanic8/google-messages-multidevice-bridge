@@ -36,6 +36,15 @@ export function newRequest(conversationID, text, attachmentIDs = []) {
   };
 }
 
+// Media and text never share one send; a caption follows as its own message.
+export function splitRequests(conversationID, text, attachmentIDs = []) {
+  const requests = [];
+  if (attachmentIDs.length)
+    requests.push(newRequest(conversationID, "", attachmentIDs));
+  if (text.trim()) requests.push(newRequest(conversationID, text));
+  return requests;
+}
+
 export function newConversationRequest(recipients) {
   return {
     key: idempotencyKey(),

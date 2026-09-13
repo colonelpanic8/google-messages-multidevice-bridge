@@ -51,7 +51,9 @@ func validateRequest(req *model.SendRequest) error {
 	if req.Kind != "" || req.MessageID != "" || req.Emoji != "" || req.Remove || len(req.Text) > 16000 || !utf8.ValidString(req.Text) || len(req.AttachmentIDs) > 10 {
 		return ErrInvalid
 	}
-	if strings.TrimSpace(req.Text) == "" && len(req.AttachmentIDs) == 0 {
+	// The phone drops media when text rides in the same send, so a message
+	// carries either text or attachments; clients queue a caption separately.
+	if (strings.TrimSpace(req.Text) == "") == (len(req.AttachmentIDs) == 0) {
 		return ErrInvalid
 	}
 	seen := map[string]bool{}

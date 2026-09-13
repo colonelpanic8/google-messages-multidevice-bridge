@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  splitRequests,
   createParser,
   newConversationRequest,
   newReactionRequest,
@@ -83,4 +84,19 @@ test("recipient and attachment limits are checked before network activity", () =
     () => validateAttachments([{ size: 20 * 1024 * 1024 + 1 }]),
     /20 MiB/,
   );
+});
+
+test("captions are queued after attachments as separate requests", () => {
+  const both = splitRequests("c1", " caption ", ["upload-1"]);
+  assert.deepEqual(
+    both.map((r) => r.body),
+    [
+      { conversation_id: "c1", text: "", attachment_ids: ["upload-1"] },
+      { conversation_id: "c1", text: " caption ", attachment_ids: [] },
+    ],
+  );
+  assert.notEqual(both[0].key, both[1].key);
+  assert.equal(splitRequests("c1", "   ", ["upload-1"]).length, 1);
+  assert.equal(splitRequests("c1", "hi").length, 1);
+  assert.equal(splitRequests("c1", "").length, 0);
 });

@@ -134,14 +134,16 @@ returns 409. Reusing a different key authorizes a distinct operation.
 ```json
 {
   "conversation_id": "stored-conversation-id",
-  "text": "Message text may be empty when attachments are present",
+  "text": "Message text; empty when attachments are present",
   "attachment_ids": ["opaque-upload-id"]
 }
 ```
 
 `conversation_id` is required and limited to 256 bytes. Text must be valid UTF-8 and
-at most 16,000 bytes. A request needs nonblank text or at least one attachment. It may
-reference at most ten distinct stored upload IDs, totaling at most 20 MiB.
+at most 16,000 bytes. A request carries either nonblank text or one to ten distinct
+stored upload IDs totaling at most 20 MiB, never both: the phone delivers only the
+text when media and text share one send. Queue a caption as a second message with
+its own key. The web client does this automatically.
 
 ### Conversation creation
 

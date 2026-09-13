@@ -228,3 +228,18 @@ func TestUnsupportedHistoryCursorStopsImport(t *testing.T) {
 		t.Fatalf("job=%+v calls=%d", got, calls)
 	}
 }
+
+func TestMessageCarriesTextOrAttachmentsNotBoth(t *testing.T) {
+	b := testBridge(t)
+	b.persist(snapshot(t, "conversation", "c", model.Conversation{Schema: 1, ID: "c"}))
+	u, err := b.SaveUpload("sample.txt", "text/plain", []byte("synthetic"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = b.Queue("text-and-media-key-1", model.SendRequest{ConversationID: "c", Text: "caption", AttachmentIDs: []string{u.ID}}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("text with attachments: %v", err)
+	}
+	if _, _, err = b.Queue("blank-and-media-key-1", model.SendRequest{ConversationID: "c", Text: "  ", AttachmentIDs: []string{u.ID}}); err != nil {
+		t.Fatalf("blank text with attachments: %v", err)
+	}
+}

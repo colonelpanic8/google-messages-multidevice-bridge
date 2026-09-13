@@ -3,7 +3,7 @@ import {
   mergeMessages,
   newConversationRequest,
   newReactionRequest,
-  newRequest,
+  splitRequests,
   parseRecipients,
   validateAttachments,
 } from "/stream.mjs";
@@ -848,7 +848,6 @@ async function uploadFiles(pending) {
     );
     if (!upload?.id) throw new Error("Upload response did not include an ID.");
     pending.uploadIDs.push(upload.id);
-    pending.request.body.attachment_ids = [...pending.uploadIDs];
   }
 }
 async function sendMessage() {
@@ -869,7 +868,8 @@ async function sendMessage() {
       conversationID: selected,
       files: [...selectedFiles],
       uploadIDs: [],
-      request: newRequest(selected, text),
+      text,
+      requests: undefined,
       progress: "",
     };
   }
@@ -879,12 +879,25 @@ async function sendMessage() {
   renderThread();
   try {
     await uploadFiles(pending);
-    pending.progress = "Queueing message…";
-    await request("/v1/messages", {
-      method: "POST",
-      headers: { "Idempotency-Key": pending.request.key },
-      body: JSON.stringify(pending.request.body),
-    });
+    pending.requests ||= splitRequests(
+      pending.conversationID,
+      pending.text,
+      pending.uploadIDs,
+    );
+    for (const item of pending.requests) {
+      if (item.queued) continue;
+      pending.progress =
+        pending.requests.length > 1
+          ? `Queueing ${item.body.attachment_ids.length ? "attachments" : "caption"}…`
+          : "Queueing message…";
+      renderSelectedAttachments();
+      await request("/v1/messages", {
+        method: "POST",
+        headers: { "Idempotency-Key": item.key },
+        body: JSON.stringify(item.body),
+      });
+      item.queued = true;
+    }
     if (sendGeneration !== generation || pendingSend !== pending) return;
     pendingSend = undefined;
     selectedFiles = [];
@@ -898,7 +911,7 @@ async function sendMessage() {
     if (sendGeneration !== generation || pendingSend !== pending) return;
     pending.progress = "";
     notice(
-      `${error.message} Retry same request preserves the message key, body, and completed uploads.`,
+      `${error.message} Retry same request preserves message keys, bodies, completed uploads, and already queued parts.`,
     );
   } finally {
     if (sendGeneration === generation) {
