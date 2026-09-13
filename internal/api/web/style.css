@@ -523,6 +523,46 @@ footer {
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
 }
+/* Keep the composer on screen: the workspace owns the viewport height and its
+   panes scroll internally. */
+@media (min-width: 761px) and (min-height: 620px) {
+  .workspace {
+    height: calc(100vh - 144px);
+    min-height: 520px;
+  }
+  aside {
+    min-height: 0;
+    overflow-y: auto;
+  }
+  main {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #thread {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1;
+  }
+  .thread-heading,
+  #older,
+  #typing,
+  #compose {
+    flex-shrink: 0;
+  }
+  #messages {
+    max-height: none;
+    min-height: 140px;
+    flex: 1 1 auto;
+  }
+  #outbox {
+    max-height: 22vh;
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+}
 @media (max-width: 760px) {
   header {
     height: 74px;

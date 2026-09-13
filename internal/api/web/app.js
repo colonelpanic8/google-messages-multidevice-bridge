@@ -83,11 +83,20 @@ async function request(path, options = {}) {
   const body = await response.text();
   return body ? JSON.parse(body) : null;
 }
+// Google repeats a participant record per SIM or per self-chat leg.
+function others(conversation) {
+  const seen = new Set();
+  return (conversation.participants || []).filter((participant) => {
+    const key = participant.address || participant.name || participant.id;
+    if (participant.is_me || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 function name(conversation) {
   return (
     conversation.name ||
-    conversation.participants
-      ?.filter((participant) => !participant.is_me)
+    others(conversation)
       .map(
         (participant) =>
           participant.name || participant.address || participant.id,
@@ -344,8 +353,7 @@ function renderThread() {
   $("thread-title").textContent = name(conversation);
   $("thread-info").textContent =
     `${(conversation.protocol || "message").toUpperCase()} · ${
-      conversation.participants
-        ?.filter((participant) => !participant.is_me)
+      others(conversation)
         .map((participant) => participant.address || participant.name)
         .join(", ") || "Phone conversation"
     }`;
