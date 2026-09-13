@@ -176,6 +176,34 @@ and opening a conversation does not itself send a read receipt.
 See [the schema-1 API contract](docs/api.md) for routes, request limits, outbox and
 history states, pagination, pairing, and SSE replay.
 
+## Desktop app
+
+`desktop/` is a small [Tauri](https://tauri.app) window around the served web client.
+It asks for the bridge URL once, keeps the bridge token in the OS keyring (or a
+private file under the app config directory when no secret service is running),
+unlocks automatically on launch, shows a tray icon with the unread count in the
+window title and badge, closes to the tray, and raises desktop notifications for new
+incoming messages while it is running. It does not bundle the client: it loads
+whatever the bridge serves, so updating the bridge updates the app.
+
+```sh
+nix build .#desktop
+./result/bin/google-messages-desktop
+```
+
+The package is Linux only. On other platforms, or without Nix, `cd desktop && cargo
+build --release` needs the usual Tauri prerequisites (WebKitGTK, GTK 3, libsoup 3,
+libayatana-appindicator, and D-Bus on Linux). Locking from the menu forgets the stored
+token; the tray menu can change the bridge URL.
+
+To install it on every Nix host, apply the flake overlay and set
+`services.google-messages-multidevice-bridge.client.enable = true` via the Home
+Manager module (per user) or the NixOS module (system-wide). Only enable the bridge
+service itself on the host that owns the database. `client.bridgeUrl` skips the
+setup screen, and `client.apiTokenPassEntry` (or `client.apiTokenFile`) unlocks
+the client without typing the token; only the entry name ever lands in the store.
+See [deployment](docs/deployment.md) for the snippets.
+
 ## Reliability and protocol boundaries
 
 - Recent reconciliation is deliberately bounded to 30 inbox conversations and 50

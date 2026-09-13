@@ -44,6 +44,9 @@
             };
           };
         }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          desktop = pkgs.callPackage ./nix/desktop.nix { };
+        }
       );
 
       apps = forAllSystems (system: {
@@ -59,6 +62,9 @@
         home-manager-module = import ./nix/module-check.nix {
           pkgs = nixpkgs.legacyPackages.${system};
           bridgePackage = self.packages.${system}.default;
+        };
+        client-preseed = import ./nix/client-wrapper-check.nix {
+          pkgs = nixpkgs.legacyPackages.${system};
         };
       });
 
@@ -81,14 +87,31 @@
             ];
           };
         }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          desktop = pkgs.mkShell {
+            inputsFrom = [ self.packages.${system}.desktop ];
+            packages = with pkgs; [
+              cargo
+              rustc
+              rust-analyzer
+            ];
+          };
+        }
       );
 
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixfmt);
 
       homeManagerModules.default = import ./nix/home-manager.nix;
 
-      overlays.default = final: _prev: {
-        google-messages-multidevice-bridge = self.packages.${final.stdenv.hostPlatform.system}.default;
-      };
+      nixosModules.default = import ./nix/nixos.nix;
+
+      overlays.default =
+        final: prev:
+        {
+          google-messages-multidevice-bridge = self.packages.${prev.stdenv.hostPlatform.system}.default;
+        }
+        // prev.lib.optionalAttrs prev.stdenv.hostPlatform.isLinux {
+          google-messages-desktop = self.packages.${prev.stdenv.hostPlatform.system}.desktop;
+        };
     };
 }

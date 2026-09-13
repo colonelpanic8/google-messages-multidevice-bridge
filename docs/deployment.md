@@ -95,6 +95,97 @@ The module intentionally has no offline-mode option. For recovery inspection, st
 the managed service and run one manual `serve --offline` process against the same
 database, never both simultaneously.
 
+### Desktop client on every host
+
+The flake also exports `nixosModules.default` and the `google-messages-desktop`
+overlay package (Linux only). Apply the overlay once in your flake, then every
+host gets the client with one option. Only enable the bridge *service* on the
+host that owns the database; the client just talks to the bridge over HTTP.
+
+With Home Manager on every host:
+
+```nix
+{
+  nixpkgs.overlays = [ google-messages-bridge.overlays.default ];
+
+  imports = [ google-messages-bridge.homeManagerModules.default ];
+
+  services.google-messages-multidevice-bridge = {
+    # Server bits only on the host that owns the database:
+    # enable = true;
+    # package = google-messages-bridge.packages.${pkgs.stdenv.hostPlatform.system}.default;
+    # storageKeyPassEntry = "...";
+    # apiTokenPassEntry = "...";
+
+    # Client on every host; the package defaults to the overlay package:
+    client.enable = true;
+  };
+}
+```
+
+Or system-wide via NixOS (also needs the overlay for the default package):
+
+```nix
+{
+  nixpkgs.overlays = [ google-messages-bridge.overlays.default ];
+
+  imports = [ google-messages-bridge.nixosModules.default ];
+
+  services.google-messages-multidevice-bridge.client.enable = true;
+}
+```
+
+Without the overlay, set `client.package` explicitly to
+`google-messages-bridge.packages.${pkgs.stdenv.hostPlatform.system}.desktop`.
+
+### Preseeding the client so nothing is typed
+
+Three more client options remove the per-host setup screens:
+
+```nix
+{
+  services.google-messages-multidevice-bridge.client = {
+    enable = true;
+    bridgeUrl = "https://bridge.example.ts.net:8443";
+    apiTokenPassEntry = "services/google-messages-bridge/api-token";
+  };
+}
+```
+
+- `bridgeUrl` skips the setup screen and always opens that bridge.
+- `apiTokenPassEntry` wraps the binary so it runs `pass show <entry>` on every
+  launch and unlocks with the result. A manually exported
+  `GOOGLE_MESSAGES_BRIDGE_TOKEN` still wins, and if `pass` fails (locked GPG
+  agent, missing entry) the client falls back to the keyring prompt instead of
+  failing.
+- `apiTokenFile` (for agenix/sops-nix, e.g. `/run/secrets/bridge-api-token`)
+  preseeds from a file instead of `pass`; the client also honors
+  `GOOGLE_MESSAGES_BRIDGE_TOKEN_FILE` directly. With agenix imported in your
+  (private) host config, the receiving end looks like this — the encrypted
+  `.age` file itself lives beside your host config, not in this repo:
+
+```nix
+{
+  age.secrets.bridge-api-token.file = ./secrets/bridge-api-token.age;
+  services.google-messages-multidevice-bridge.client = {
+    enable = true;
+    bridgeUrl = "https://bridge.example.ts.net:8443";
+    apiTokenFile = config.age.secrets.bridge-api-token.path;
+  };
+}
+```
+
+Token precedence inside the client is: `GOOGLE_MESSAGES_BRIDGE_TOKEN` →
+`GOOGLE_MESSAGES_BRIDGE_TOKEN_FILE` → OS keyring → private fallback file.
+Locking from the menu forgets all of them for that run; the preseed returns on
+next launch.
+
+Security notes: only entry names, URLs, and file paths land in `/nix/store`.
+The secret itself is read at launch time, but it does live in the client's
+process environment while running (visible to the same user, as with any env
+secret). Prefer the keyring entry the client saves on first manual unlock only
+if you would rather type the token once per host and never involve `pass`.
+
 ## Network exposure
 
 The default listener is loopback with an OS-selected port. For a stable local

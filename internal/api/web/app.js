@@ -28,6 +28,9 @@ import {
 } from "/view.mjs";
 
 const $ = (id) => document.getElementById(id);
+// Present inside the Tauri desktop window, which keeps the token and shows
+// notifications on the client's behalf.
+const desktop = window.__TAURI__?.core?.invoke;
 const reactionChoices = ["👍", "❤️", "😂", "😮", "😢", "😠"];
 const THREAD_CACHE = 16;
 
@@ -247,7 +250,7 @@ function loadAll() {
     }
     applyStatus(st);
     if (hs.error) notice(`History status unavailable: ${hs.error.message}`);
-    if (!pushSynced && $("notify").checked) {
+    if (!desktop && !pushSynced && $("notify").checked) {
       pushSynced = true;
       void enablePush().catch(() => {});
     }
@@ -439,6 +442,7 @@ function renderList() {
       entry.node.remove();
       listNodes.delete(id);
     }
+  reportUnread();
   let child = container.firstElementChild;
   for (const node of order) {
     if (child === node) {
@@ -462,6 +466,17 @@ function renderList() {
         "list-empty",
       ),
     );
+}
+
+let reportedUnread = -1;
+function reportUnread() {
+  if (!desktop) return;
+  let count = 0;
+  for (const conversation of conversations.values())
+    if (conversation.unread && !conversation.read_only) count++;
+  if (count === reportedUnread) return;
+  reportedUnread = count;
+  void desktop("set_unread", { count }).catch(() => {});
 }
 
 // --- Thread -----------------------------------------------------------------
@@ -1489,8 +1504,9 @@ const notified = new Set();
 function notifyIncoming(message) {
   if (
     !$("notify").checked ||
-    typeof Notification !== "function" ||
-    Notification.permission !== "granted" ||
+    (!desktop &&
+      (typeof Notification !== "function" ||
+        Notification.permission !== "granted")) ||
     message.direction !== "incoming" ||
     message.deleted ||
     notified.has(message.id) ||
@@ -1506,13 +1522,15 @@ function notifyIncoming(message) {
   const body =
     message.text ||
     (message.attachments?.length ? "Attachment" : "New message");
-  const notification = new Notification(title, {
-    body:
-      sender && conversation?.participants?.length > 2
-        ? `${sender.name || sender.address}: ${body}`
-        : body,
-    tag: message.id,
-  });
+  const text =
+    sender && conversation?.participants?.length > 2
+      ? `${sender.name || sender.address}: ${body}`
+      : body;
+  if (desktop) {
+    void desktop("notify", { title, body: text }).catch(() => {});
+    return;
+  }
+  const notification = new Notification(title, { body: text, tag: message.id });
   notification.onclick = () => {
     window.focus();
     void select(message.conversation_id);
@@ -1569,7 +1587,8 @@ $("notify").onchange = async () => {
   const wanted = $("notify").checked;
   $("notify").disabled = true;
   try {
-    if (wanted) {
+    if (desktop) notice(wanted ? "Notifications on." : "Notifications off.");
+    else if (wanted) {
       await enablePush();
       notice("Notifications on, including while this app is closed.");
     } else {
@@ -1602,8 +1621,9 @@ function renderNotifyControls() {
 }
 $("notify").checked =
   !!localStorage.getItem("notify") &&
-  typeof Notification === "function" &&
-  Notification.permission === "granted";
+  (!!desktop ||
+    (typeof Notification === "function" &&
+      Notification.permission === "granted"));
 renderNotifyControls();
 
 // --- Lock / unlock ----------------------------------------------------------
@@ -1693,6 +1713,7 @@ $("login-form").onsubmit = async (event) => {
     $("login").hidden = true;
     $("app").hidden = false;
     notice("");
+    if (desktop) void desktop("save_token", { token }).catch(() => {});
     void stream(generation);
   } catch (error) {
     token = "";
@@ -1700,6 +1721,7 @@ $("login-form").onsubmit = async (event) => {
   }
 };
 $("logout").onclick = () => {
+  if (desktop) void desktop("clear_token").catch(() => {});
   abort?.abort();
   generation++;
   token = "";
@@ -1978,3 +2000,11 @@ if ("serviceWorker" in navigator) {
     pendingConversationFromLink = requested;
   }
 }
+if (desktop)
+  desktop("get_token")
+    .then((saved) => {
+      if (!saved || token) return;
+      $("token").value = saved;
+      $("login-form").requestSubmit();
+    })
+    .catch(() => {});
