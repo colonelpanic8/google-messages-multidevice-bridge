@@ -7,33 +7,54 @@ import {
   parseRecipients,
   validateAttachments,
 } from "/stream.mjs";
+import {
+  avatarColor,
+  displayName,
+  filterConversations,
+  formatSize,
+  initials,
+  isGroup,
+  layoutThread,
+  linkify,
+  listTime,
+  others,
+  outboxAttachmentCount,
+  outboxLabel,
+  outboxText,
+  sortConversations,
+  statusLabel,
+  summarizeHistory,
+  threadOutbox,
+} from "/view.mjs";
 
 const $ = (id) => document.getElementById(id);
 const reactionChoices = ["👍", "❤️", "😂", "😮", "😢", "😠"];
-const drafts = new Map();
-const draftFiles = new Map();
-const messageUpdates = new Map();
-const pendingReactions = new Map();
+const THREAD_CACHE = 16;
 
 let token = "",
   abort,
-  selected = "",
-  conversations = [],
-  outbox = [],
-  messages = [],
-  historyJobs = [],
-  before = "";
-let cursor = 0,
-  targetCursor = 0,
-  refreshTask,
   generation = 0;
+let selected = "",
+  composing = false;
+const conversations = new Map();
+const outbox = new Map();
+const historyJobs = new Map();
+const threads = new Map();
+let conversationCursor = 0,
+  outboxCursor = 0,
+  historyCursor = 0,
+  cursor = 0;
+const drafts = new Map();
+const draftFiles = new Map();
+const pendingReactions = new Map();
 let sending = false,
   creatingConversation = false,
   pendingSend,
   pendingConversation,
   createdConversation,
   selectedFiles = [];
-let providerState = "offline",
+let status = {},
+  providerState = "offline",
   currentSessionEpoch = 0,
   typingUntil = 0,
   typingConversation = "",
@@ -43,21 +64,73 @@ let providerState = "offline",
 let pairingState = {},
   pairingPoll,
   pairingPanelOpen = false;
+let pendingConversationFromLink = "";
+// Re-post the browser's subscription once per unlock so a bridge that lost its
+// database, or a subscription the browser rotated, heals without user action.
+let pushSynced = false;
 
-const notice = (message) => {
-  $("notice").textContent = message;
-};
+// --- DOM helpers ------------------------------------------------------------
+
 function el(tag, text, className) {
   const node = document.createElement(tag);
   if (text !== undefined) node.textContent = text;
   if (className) node.className = className;
   return node;
 }
-function formatSize(size) {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${Math.ceil(size / 1024)} KiB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MiB`;
+function icon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", `#i-${name}`);
+  svg.append(use);
+  return svg;
 }
+function button(text, className, onClick) {
+  const node = el("button", text, className);
+  node.type = "button";
+  node.onclick = onClick;
+  return node;
+}
+function fillAvatar(node, conversation) {
+  const name = displayName(conversation);
+  node.style.background = avatarColor(name);
+  const letter = isGroup(conversation) ? "" : initials(name);
+  node.replaceChildren(
+    letter || icon(isGroup(conversation) ? "group" : "person"),
+  );
+}
+let noticeTimer;
+function notice(message) {
+  clearTimeout(noticeTimer);
+  $("notice").textContent = message;
+  $("notice").hidden = !message;
+  if (message) noticeTimer = setTimeout(() => notice(""), 6000);
+}
+function autogrow() {
+  const text = $("text");
+  text.style.height = "auto";
+  text.style.height = `${Math.min(text.scrollHeight, 160)}px`;
+}
+
+// Rendering is batched per animation frame; state changes mark parts dirty.
+const dirty = new Set();
+let frame;
+function invalidate(...parts) {
+  for (const part of parts) dirty.add(part);
+  if (!frame) frame = requestAnimationFrame(render);
+}
+function render() {
+  frame = undefined;
+  const parts = new Set(dirty);
+  dirty.clear();
+  if (parts.has("status")) renderStatus();
+  if (parts.has("list")) renderList();
+  if (parts.has("thread")) renderThread();
+  if (parts.has("compose")) renderCompose();
+  if (parts.has("history")) renderHistory();
+}
+
+// --- API --------------------------------------------------------------------
+
 async function request(path, options = {}) {
   const headers = { Authorization: `Bearer ${token}`, ...options.headers };
   if (
@@ -84,97 +157,315 @@ async function request(path, options = {}) {
   const body = await response.text();
   return body ? JSON.parse(body) : null;
 }
-// Google repeats a participant record per SIM or per self-chat leg.
-function others(conversation) {
-  const seen = new Set();
-  return (conversation.participants || []).filter((participant) => {
-    const key = participant.address || participant.name || participant.id;
-    if (participant.is_me || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-function name(conversation) {
-  return (
-    conversation.name ||
-    others(conversation)
-      .map(
-        (participant) =>
-          participant.name || participant.address || participant.id,
-      )
-      .join(", ") ||
-    conversation.id
-  );
-}
-function renderConversations() {
-  const search = $("search").value.toLowerCase();
-  $("conversations").replaceChildren();
-  for (const conversation of conversations.filter((item) =>
-    name(item).toLowerCase().includes(search),
-  )) {
-    const button = el(
-      "button",
-      undefined,
-      `conversation ${conversation.id === selected ? "active" : ""} ${conversation.unread ? "unread" : ""} ${conversation.read_only ? "previous-session" : ""}`,
-    );
-    button.type = "button";
-    button.append(
-      el("strong", name(conversation)),
-      el("small", conversation.preview || "No recent preview"),
-    );
-    if (conversation.read_only)
-      button.append(el("small", "Previous pairing · read only", "stale-label"));
-    button.onclick = () => select(conversation.id);
-    $("conversations").append(button);
-  }
-  if (!conversations.length)
-    $("conversations").append(el("p", "No conversations stored yet.", "hint"));
-}
-function reactionKey(conversationID, messageID, emoji, remove = false) {
-  return [conversationID, messageID, emoji, remove].join("\u0000");
-}
-function renderReactionActions(container, message, conversation) {
-  if (message.deleted || message.read_only || conversation.read_only) return;
-  const picker = el("details", undefined, "reaction-picker");
-  picker.append(el("summary", "React"));
-  const choices = el("div", undefined, "reaction-choices");
-  for (const emoji of reactionChoices) {
-    const button = el("button", emoji);
-    button.type = "button";
-    button.setAttribute("aria-label", `React ${emoji}`);
-    button.onclick = () => {
-      picker.open = false;
-      void startReaction(message.id, emoji);
+
+function thread(id) {
+  let entry = threads.get(id);
+  if (!entry) {
+    entry = {
+      messages: new Map(),
+      updates: new Map(),
+      cursor: 0,
+      before: "",
+      fetched: false,
+      loading: undefined,
+      touched: 0,
     };
-    choices.append(button);
+    threads.set(id, entry);
+    if (threads.size > THREAD_CACHE) {
+      const oldest = [...threads.entries()]
+        .filter(([key]) => key !== selected)
+        .sort((a, b) => a[1].touched - b[1].touched)[0];
+      if (oldest) threads.delete(oldest[0]);
+    }
   }
-  picker.append(choices);
-  container.append(picker);
-  for (const [key, pending] of pendingReactions) {
+  entry.touched = Date.now();
+  return entry;
+}
+
+function loadThread(id, before = "") {
+  const entry = thread(id);
+  if (entry.loading) return entry.loading;
+  const requestGeneration = generation;
+  entry.loading = (async () => {
+    try {
+      const page = await request(
+        `/v1/conversations/${encodeURIComponent(id)}/messages?limit=100${
+          before ? `&before=${encodeURIComponent(before)}` : ""
+        }`,
+      );
+      if (requestGeneration !== generation || threads.get(id) !== entry) return;
+      const merged = mergeMessages(
+        [...entry.messages.values()],
+        page.messages || [],
+        page.cursor || 0,
+        entry.updates,
+      );
+      entry.messages = new Map(merged.map((message) => [message.id, message]));
+      entry.cursor = Math.max(entry.cursor, page.cursor || 0);
+      if (before || !entry.fetched) entry.before = page.next_before || "";
+      entry.fetched = true;
+      if (id === selected) invalidate("thread", "compose");
+    } finally {
+      entry.loading = undefined;
+    }
+  })();
+  return entry.loading;
+}
+
+let loadingAll;
+function loadAll() {
+  if (loadingAll) return loadingAll;
+  const requestGeneration = generation;
+  loadingAll = (async () => {
+    const [st, cs, os, hs] = await Promise.all([
+      request("/v1/status"),
+      request("/v1/conversations"),
+      request("/v1/outbox"),
+      request("/v1/history").catch((error) => ({ error })),
+    ]);
+    if (requestGeneration !== generation) return;
+    conversations.clear();
+    for (const conversation of cs.conversations || [])
+      conversations.set(conversation.id, conversation);
+    conversationCursor = cs.cursor || 0;
+    outbox.clear();
+    for (const item of os.outbox || []) outbox.set(item.id, item);
+    outboxCursor = os.cursor || 0;
+    if (!hs.error) {
+      historyJobs.clear();
+      for (const job of hs.jobs || []) historyJobs.set(job.id, job);
+      historyCursor = hs.cursor || 0;
+    }
+    const cursors = [conversationCursor, outboxCursor];
+    if (!hs.error) cursors.push(historyCursor);
+    cursor = Math.min(cursor || Infinity, ...cursors);
+    for (const [id, entry] of threads)
+      if (id !== selected || entry.loading) threads.delete(id);
+    if (selected) {
+      thread(selected).fetched = false;
+      void loadThread(selected).catch((error) => notice(error.message));
+    }
+    applyStatus(st);
+    if (hs.error) notice(`History status unavailable: ${hs.error.message}`);
+    if (!pushSynced && $("notify").checked) {
+      pushSynced = true;
+      void enablePush().catch(() => {});
+    }
     if (
-      pending.conversationID !== selected ||
-      pending.request.body.message_id !== message.id
-    )
-      continue;
-    const row = el("div", undefined, "pending-reaction");
-    row.append(
-      el("span", `${pending.request.body.emoji} reaction not acknowledged.`),
-    );
-    const retry = el("button", "Retry same request");
-    retry.type = "button";
-    retry.disabled = pending.sending;
-    retry.onclick = () => void submitReaction(key);
-    const discard = el("button", "Discard");
-    discard.type = "button";
-    discard.disabled = pending.sending;
-    discard.onclick = () => {
-      pendingReactions.delete(key);
-      renderThread();
-    };
-    row.append(retry, discard);
-    container.append(row);
+      pendingConversationFromLink &&
+      conversations.has(pendingConversationFromLink)
+    ) {
+      const wanted = pendingConversationFromLink;
+      pendingConversationFromLink = "";
+      void select(wanted);
+    }
+    invalidate("status", "list", "thread", "compose", "history");
+    maybeSelectCreatedConversation();
+  })().finally(() => {
+    loadingAll = undefined;
+  });
+  return loadingAll;
+}
+
+function applyStatus(next) {
+  const previousEpoch = currentSessionEpoch;
+  status = next || {};
+  providerState = status.state || "offline";
+  currentSessionEpoch = status.session_epoch || 0;
+  invalidate("status", "compose");
+  if (previousEpoch && currentSessionEpoch !== previousEpoch)
+    void loadAll().catch((error) => notice(error.message));
+}
+
+async function pollStatus() {
+  if (!token || $("app").hidden || loadingAll) return;
+  const requestGeneration = generation;
+  try {
+    const next = await request("/v1/status");
+    if (requestGeneration === generation) applyStatus(next);
+  } catch {
+    // The stream reconnect path reports connectivity problems.
   }
 }
+
+function applyEvent(event) {
+  const id = event.id || 0;
+  const data = event.data || {};
+  switch (event.type) {
+    case "conversation":
+      if (id > conversationCursor) {
+        conversations.set(event.entity_id, data);
+        invalidate("list");
+        if (event.entity_id === selected) invalidate("thread", "compose");
+        maybeSelectCreatedConversation();
+      }
+      break;
+    case "message": {
+      const entry = threads.get(data.conversation_id);
+      if (!entry) break;
+      if (entry.loading || !entry.fetched)
+        entry.updates.set(event.entity_id, event);
+      else if (id > entry.cursor) {
+        entry.messages.set(event.entity_id, data);
+        if (data.conversation_id === selected) invalidate("thread", "compose");
+      }
+      break;
+    }
+    case "outbox":
+      if (id > outboxCursor) {
+        outbox.set(event.entity_id, data);
+        invalidate("thread");
+        maybeSelectCreatedConversation();
+      }
+      break;
+    case "history":
+      if (id > historyCursor) {
+        historyJobs.set(event.entity_id, data);
+        invalidate("history");
+      }
+      break;
+    case "typing":
+      if (data.active) {
+        typingUntil = Date.now() + 5000;
+        typingConversation = data.conversation_id || event.entity_id;
+      } else typingUntil = 0;
+      return;
+    default:
+      break;
+  }
+  if (id) cursor = Math.max(cursor, id);
+}
+
+async function stream(currentGeneration) {
+  while (generation === currentGeneration && token) {
+    let failed = false;
+    try {
+      const response = await fetch(`/v1/stream?after=${cursor}`, {
+        signal: abort.signal,
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error("Live updates unavailable");
+      const reader = response.body.getReader(),
+        decoder = new TextDecoder();
+      let live = false;
+      const parse = createParser((event) => {
+        if (event.type === "live") {
+          live = true;
+          return;
+        }
+        applyEvent(event);
+        if (live && event.type === "message") notifyIncoming(event.data);
+      });
+      try {
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          parse(decoder.decode(chunk.value, { stream: true }));
+        }
+      } finally {
+        await reader.cancel().catch(() => {});
+      }
+    } catch {
+      failed = true;
+      if (generation === currentGeneration && !abort.signal.aborted)
+        notice("Live connection interrupted. Reconnecting…");
+    }
+    if (generation !== currentGeneration || !token) return;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    if (generation !== currentGeneration || !token) return;
+    if (failed) await loadAll().catch(() => {});
+  }
+}
+
+// --- Conversation list ------------------------------------------------------
+
+const listNodes = new Map();
+function buildConversationNode(conversation) {
+  const node = el("button", undefined, "conversation");
+  node.type = "button";
+  node.append(
+    el("div", undefined, "avatar"),
+    el("span", undefined, "name"),
+    el("span", undefined, "time"),
+    el("span", undefined, "preview"),
+    el("span", undefined, "badge"),
+  );
+  node.onclick = () => select(conversation.id);
+  return node;
+}
+function fillConversationNode(node, conversation) {
+  node.className = `conversation${conversation.id === selected ? " active" : ""}${
+    conversation.unread ? " unread" : ""
+  }${conversation.read_only ? " previous-session" : ""}`;
+  const [avatar, name, time, preview, badge] = node.children;
+  fillAvatar(avatar, conversation);
+  name.textContent = displayName(conversation);
+  time.textContent = listTime(conversation.updated);
+  preview.textContent = conversation.preview || "";
+  badge.hidden = !conversation.unread;
+}
+function renderList() {
+  const items = filterConversations(
+    sortConversations(conversations.values()),
+    $("search").value,
+  );
+  const container = $("conversations");
+  const seen = new Set();
+  const order = [];
+  for (const conversation of items) {
+    seen.add(conversation.id);
+    let entry = listNodes.get(conversation.id);
+    if (!entry) {
+      entry = { node: buildConversationNode(conversation), signature: "" };
+      listNodes.set(conversation.id, entry);
+    }
+    const signature = [
+      displayName(conversation),
+      conversation.preview,
+      conversation.updated,
+      conversation.unread,
+      conversation.read_only,
+      conversation.id === selected,
+      conversation.participants?.length,
+    ].join("|");
+    if (entry.signature !== signature) {
+      fillConversationNode(entry.node, conversation);
+      entry.signature = signature;
+    }
+    order.push(entry.node);
+  }
+  for (const [id, entry] of listNodes)
+    if (!seen.has(id)) {
+      entry.node.remove();
+      listNodes.delete(id);
+    }
+  let child = container.firstElementChild;
+  for (const node of order) {
+    if (child === node) {
+      child = child.nextElementSibling;
+      continue;
+    }
+    container.insertBefore(node, child);
+  }
+  while (child) {
+    const next = child.nextElementSibling;
+    child.remove();
+    child = next;
+  }
+  if (!items.length)
+    container.append(
+      el(
+        "p",
+        conversations.size
+          ? "No conversations match."
+          : "No conversations yet.",
+        "list-empty",
+      ),
+    );
+}
+
+// --- Thread -----------------------------------------------------------------
+
 const previewCache = new Map();
 const previewObserver =
   typeof IntersectionObserver === "function"
@@ -195,7 +486,11 @@ async function loadPreview(img) {
       headers: { Authorization: `Bearer ${token}` },
     }).then((response) => {
       if (!response.ok) throw new Error("preview unavailable");
-      return response.blob().then((blob) => URL.createObjectURL(blob));
+      return response
+        .blob()
+        .then((blob) =>
+          URL.createObjectURL(new Blob([blob], { type: img.dataset.mime })),
+        );
     });
     previewCache.set(id, pending);
   }
@@ -203,267 +498,533 @@ async function loadPreview(img) {
     img.src = await pending;
   } catch {
     previewCache.delete(id);
-    img.remove();
+    img.closest(".bubble")?.remove();
   }
 }
-function renderPreview(container, attachment) {
-  if (!attachment.available || !/^image\//.test(attachment.mime || "")) return;
-  const img = el("img", undefined, "preview");
-  img.alt = attachment.name || "Image attachment";
-  img.loading = "lazy";
-  img.dataset.attachmentId = attachment.id;
-  container.append(img);
-  if (previewObserver) previewObserver.observe(img);
-  else loadPreview(img);
+async function downloadAttachment(attachment) {
+  const response = await fetch(
+    `/v1/attachments/${encodeURIComponent(attachment.id)}`,
+    { signal: abort.signal, headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!response.ok)
+    throw new Error(
+      "Attachment unavailable. It may require the phone or exceed 20 MiB.",
+    );
+  const url = URL.createObjectURL(await response.blob());
+  const link = el("a");
+  link.href = url;
+  link.download = attachment.name || "attachment";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
-function renderMediaRequest(container, attachment, readOnly) {
-  if (!attachment.requestable || readOnly) return;
-  const button = el("button", "Request full media from phone", "attachment");
-  button.type = "button";
-  button.onclick = async () => {
-    button.disabled = true;
-    try {
-      await request(
-        `/v1/attachments/${encodeURIComponent(attachment.id)}/request`,
-        { method: "POST" },
-      );
-      notice("Requested. The message updates when the phone uploads it.");
-    } catch (error) {
-      notice(error.message);
-      button.disabled = false;
-    }
-  };
-  container.append(button);
-}
-function renderAttachment(container, attachment, readOnly) {
-  renderPreview(container, attachment);
-  const quality = attachment.preview ? " · Preview" : "";
-  const label = `${attachment.name || "Attachment"} · ${formatSize(attachment.size || 0)}${quality}${attachment.available ? " · Download" : " · Unavailable"}`;
-  const button = el("button", label, "attachment");
-  button.type = "button";
-  button.disabled = !attachment.available;
-  button.onclick = async () => {
-    button.disabled = true;
-    try {
-      const response = await fetch(
-        `/v1/attachments/${encodeURIComponent(attachment.id)}`,
-        {
-          signal: abort.signal,
-          headers: { Authorization: `Bearer ${token}` },
-        },
-      );
-      if (!response.ok)
-        throw new Error(
-          "Attachment unavailable. It may require the phone or exceed 20 MiB.",
+function renderAttachment(attachment, readOnly) {
+  if (attachment.available && /^image\//.test(attachment.mime || "")) {
+    const bubble = el("div", undefined, "bubble media");
+    const img = el("img", undefined, "preview");
+    img.alt = attachment.name || "Image attachment";
+    img.loading = "lazy";
+    img.dataset.attachmentId = attachment.id;
+    img.dataset.mime = attachment.mime;
+    img.onclick = () => img.src && window.open(img.src, "_blank", "noopener");
+    bubble.append(img);
+    if (previewObserver) previewObserver.observe(img);
+    else void loadPreview(img);
+    return bubble;
+  }
+  const node = el("div", undefined, "attachment");
+  const info = el("div", undefined, "file-info");
+  info.append(
+    el("strong", attachment.name || "Attachment"),
+    el(
+      "span",
+      `${formatSize(attachment.size || 0)}${attachment.preview ? " · Preview" : ""}${
+        attachment.available ? "" : " · On phone"
+      }`,
+    ),
+  );
+  node.append(icon("file"), info);
+  if (attachment.available) {
+    const download = button(undefined, "icon-button", async () => {
+      download.disabled = true;
+      try {
+        await downloadAttachment(attachment);
+      } catch (error) {
+        notice(error.message);
+      } finally {
+        download.disabled = false;
+      }
+    });
+    download.setAttribute("aria-label", "Download");
+    download.append(icon("download"));
+    node.append(download);
+  }
+  if (attachment.requestable && !readOnly) {
+    const requestButton = button("Get from phone", "request", async () => {
+      requestButton.disabled = true;
+      try {
+        await request(
+          `/v1/attachments/${encodeURIComponent(attachment.id)}/request`,
+          { method: "POST" },
         );
-      const url = URL.createObjectURL(await response.blob());
-      const link = el("a");
-      link.href = url;
-      link.download = attachment.name || "attachment";
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
-    } catch (error) {
-      notice(error.message);
-    } finally {
-      button.disabled = false;
+        notice("Requested. The message updates when the phone uploads it.");
+      } catch (error) {
+        notice(error.message);
+        requestButton.disabled = false;
+      }
+    });
+    info.append(el("br"), requestButton);
+  }
+  return node;
+}
+function textBubble(text, extraClass = "") {
+  const bubble = el("div", undefined, `bubble ${extraClass}`.trim());
+  const paragraph = el("p");
+  for (const segment of linkify(text)) {
+    if (!segment.href) {
+      paragraph.append(segment.text);
+      continue;
     }
-  };
-  container.append(button);
-  renderMediaRequest(container, attachment, readOnly);
+    const link = el("a", segment.text);
+    link.href = segment.href;
+    link.target = "_blank";
+    link.rel = "noreferrer noopener";
+    paragraph.append(link);
+  }
+  bubble.append(paragraph);
+  return bubble;
 }
-function outboxDescription(item) {
-  const body = item.request || {};
-  if (body.kind === "reaction")
-    return `${body.remove ? "Remove" : "React"} ${body.emoji}`;
-  if (body.kind === "conversation")
-    return `New conversation with ${(body.recipients || []).join(", ")}`;
-  const attachments = body.attachment_ids?.length
-    ? ` · ${body.attachment_ids.length} attachment${body.attachment_ids.length === 1 ? "" : "s"}`
-    : "";
-  return `${body.text || "Message with attachments"}${attachments}`;
+function reactionKey(conversationID, messageID, emoji, remove = false) {
+  return [conversationID, messageID, emoji, remove].join("|");
 }
-function renderOutbox() {
-  $("outbox").replaceChildren();
-  for (const item of outbox
-    .filter((candidate) => {
-      const body = candidate.request || {};
-      return (
-        (body.conversation_id || candidate.conversation_id) === selected &&
-        (candidate.state !== "confirmed" ||
-          !messages.some((message) => message.id === candidate.message_id))
+function reactionPicker(message) {
+  const picker = el("details", undefined, "react");
+  const summary = el("summary");
+  summary.setAttribute("aria-label", "Add reaction");
+  summary.append(icon("emoji"));
+  const choices = el("div", undefined, "react-choices");
+  for (const emoji of reactionChoices) {
+    const choice = button(emoji, undefined, () => {
+      picker.open = false;
+      void startReaction(message.id, emoji);
+    });
+    choice.setAttribute("aria-label", `React ${emoji}`);
+    choices.append(choice);
+  }
+  picker.append(summary, choices);
+  return picker;
+}
+function pendingReactionRows(message) {
+  const rows = [];
+  for (const [key, pending] of pendingReactions) {
+    if (
+      pending.conversationID !== selected ||
+      pending.request.body.message_id !== message.id
+    )
+      continue;
+    const row = el("div", undefined, "pending-reaction");
+    row.append(
+      el("span", `${pending.request.body.emoji} reaction not acknowledged.`),
+      button("Retry", undefined, () => void submitReaction(key)),
+      button("Discard", undefined, () => {
+        pendingReactions.delete(key);
+        invalidate("thread");
+      }),
+    );
+    for (const control of row.querySelectorAll("button"))
+      control.disabled = pending.sending;
+    rows.push(row);
+  }
+  return rows;
+}
+function messageSignature(row, conversation) {
+  const message = row.message;
+  const pending = [...pendingReactions.entries()]
+    .filter(([, item]) => item.request.body.message_id === message.id)
+    .map(([key, item]) => `${key}:${item.sending}`)
+    .join(",");
+  return JSON.stringify([
+    message,
+    row.first,
+    row.last,
+    pending,
+    conversation.read_only,
+    conversation.participants,
+  ]);
+}
+function buildMessageRow(row, conversation) {
+  const message = row.message;
+  const direction =
+    message.direction === "outgoing" || message.direction === "incoming"
+      ? message.direction
+      : "system";
+  const node = el(
+    "div",
+    undefined,
+    `row ${direction}${row.first ? " first" : ""}${row.last ? " last" : ""}`,
+  );
+  const sender = conversation.participants?.find(
+    (participant) => participant.id === message.sender_id,
+  );
+  if (direction === "incoming" && row.first && isGroup(conversation) && sender)
+    node.append(el("div", sender.name || sender.address, "sender"));
+  const line = el("div", undefined, "bubble-line");
+  const bubbles = el("div", undefined, "bubbles");
+  const attachments = message.deleted ? [] : message.attachments || [];
+  const readOnly = message.read_only || conversation.read_only;
+  const bubbleClass = `${message.read_only ? "previous-session" : ""}${
+    message.deleted ? " deleted" : ""
+  }`;
+  if (message.deleted)
+    bubbles.append(textBubble("Message deleted", bubbleClass));
+  else if (message.text || message.subject || !attachments.length) {
+    const bubble = textBubble(
+      message.text || (attachments.length ? "" : "Message content unavailable"),
+      bubbleClass,
+    );
+    if (message.subject)
+      bubble.prepend(el("strong", message.subject, "subject"));
+    bubbles.append(bubble);
+  }
+  for (const attachment of attachments)
+    bubbles.append(renderAttachment(attachment, message.read_only));
+  for (const bubble of bubbles.children)
+    bubble.title = new Date(message.time).toLocaleString();
+  line.append(bubbles);
+  if (!message.deleted && !readOnly && direction !== "system")
+    line.append(reactionPicker(message));
+  node.append(line);
+  if (message.reactions?.length) {
+    const reactions = el("div", undefined, "reactions");
+    for (const reaction of message.reactions)
+      reactions.append(
+        el(
+          "span",
+          `${reaction.emoji}${
+            reaction.participants?.length > 1
+              ? ` ${reaction.participants.length}`
+              : ""
+          }`,
+          "reaction",
+        ),
       );
-    })
-    .sort((a, b) => (a.created || "").localeCompare(b.created || ""))) {
-    const node = el("div", undefined, `outbox-item ${item.state}`);
+    node.append(reactions);
+  }
+  node.append(...pendingReactionRows(message));
+  const meta = [];
+  if (message.read_only) meta.push("Previous pairing · read only");
+  if (direction === "outgoing" && row.last) {
+    const label = statusLabel(message.status);
+    if (label) meta.push(label);
+  }
+  if (meta.length)
     node.append(
       el(
-        "strong",
-        item.state === "confirmed" ? "Observed on phone" : item.state,
-      ),
-      el("p", outboxDescription(item)),
-      el(
         "div",
-        `${item.session_epoch !== currentSessionEpoch ? "Previous pairing · " : ""}${
-          item.detail ||
-          (item.state === "queued"
-            ? "Waiting for the phone connection. This can be canceled before sending starts."
-            : "")
-        }`,
-        "hint",
+        meta.join(" · "),
+        `meta${/Not sent/.test(meta.join()) ? " error" : ""}`,
       ),
     );
-    if (item.state === "queued") {
-      const cancel = el("button", "Cancel queued request");
-      cancel.type = "button";
-      cancel.onclick = async () => {
+  return node;
+}
+function buildOutboxRow(row) {
+  const item = row.item;
+  const kind = item.request?.kind;
+  const failed = !["queued", "sending", "confirmed"].includes(item.state);
+  const node = el(
+    "div",
+    undefined,
+    `row ${kind === "reaction" ? "system" : "outgoing"}${row.first ? " first" : ""}${
+      row.last ? " last" : ""
+    }`,
+  );
+  const line = el("div", undefined, "bubble-line");
+  const bubbles = el("div", undefined, "bubbles");
+  const text = outboxText(item);
+  const count = outboxAttachmentCount(item);
+  if (text || !count) bubbles.append(textBubble(text || "Message"));
+  if (count)
+    bubbles.append(textBubble(`${count} attachment${count === 1 ? "" : "s"}`));
+  for (const bubble of bubbles.children)
+    bubble.title = new Date(item.created).toLocaleString();
+  line.append(bubbles);
+  node.append(line);
+  const meta = el(
+    "div",
+    `${item.session_epoch !== currentSessionEpoch ? "Previous pairing · " : ""}${outboxLabel(item)}`,
+    `meta${failed ? " error" : ""}`,
+  );
+  if (item.state === "queued")
+    meta.append(
+      button("Cancel", undefined, async () => {
         try {
           await request(`/v1/outbox/${encodeURIComponent(item.id)}/cancel`, {
             method: "POST",
           });
-          await refresh();
         } catch (error) {
           notice(error.message);
         }
-      };
-      node.append(cancel);
-    }
-    $("outbox").append(node);
-  }
-}
-function renderSelectedAttachments() {
-  const files = pendingSend?.files || selectedFiles;
-  $("selected-attachments").replaceChildren();
-  for (const file of files)
-    $("selected-attachments").append(
-      el("span", `${file.name} (${formatSize(file.size)})`, "file-chip"),
+      }),
     );
-  if (files.length) {
-    const total = files.reduce((sum, file) => sum + file.size, 0);
-    $("selected-attachments").append(
-      el(
-        "span",
-        `${files.length}/10 · ${formatSize(total)}/20 MiB`,
-        "file-total",
-      ),
-    );
-  }
-  if (pendingSend?.progress)
-    $("selected-attachments").append(el("span", pendingSend.progress));
+  node.append(meta);
+  return node;
 }
+
+const threadNodes = new Map();
+let threadNodesFor = "";
+let preserveScroll = false;
 function renderThread() {
-  const conversation = conversations.find((item) => item.id === selected);
-  $("empty").hidden = !!conversation;
-  $("thread").hidden = !conversation;
+  const conversation = conversations.get(selected);
+  $("empty").hidden = !!conversation || composing;
+  $("new-chat").hidden = !composing;
+  $("thread").hidden = !conversation || composing;
+  document.body.classList.toggle("thread-open", !!conversation || composing);
   if (!conversation) return;
-  $("thread-title").textContent = name(conversation);
-  $("thread-info").textContent =
-    `${(conversation.protocol || "message").toUpperCase()} · ${
-      others(conversation)
-        .map((participant) => participant.address || participant.name)
-        .join(", ") || "Phone conversation"
-    }${conversation.read_only ? " · Previous pairing · read only" : ""}`;
+  fillAvatar($("thread-avatar"), conversation);
+  $("thread-title").textContent = displayName(conversation);
+  $("thread-info").textContent = `${
+    others(conversation)
+      .map((participant) => participant.address || participant.name)
+      .join(", ") || (conversation.protocol || "message").toUpperCase()
+  }${conversation.read_only ? " · Previous pairing · read only" : ""}`;
+  const entry = thread(selected);
+  const messages = [...entry.messages.values()];
+  const rows = layoutThread(
+    messages,
+    threadOutbox(
+      [...outbox.values()],
+      selected,
+      new Set(messages.map((message) => message.id)),
+    ),
+  );
   const container = $("messages");
-  const bottom =
-    container.scrollHeight - container.scrollTop - container.clientHeight < 70;
-  container.replaceChildren();
-  for (const message of [...messages].sort(
-    (a, b) =>
-      (a.time || "").localeCompare(b.time || "") || a.id.localeCompare(b.id),
-  )) {
-    const node = el(
-      "article",
-      undefined,
-      `message ${message.direction} ${message.read_only ? "previous-session" : ""}`,
-    );
-    const sender = conversation.participants?.find(
-      (participant) => participant.id === message.sender_id,
-    );
-    if (sender && !sender.is_me)
-      node.append(el("div", sender.name || sender.address, "sender"));
-    if (message.subject) node.append(el("strong", message.subject));
-    node.append(
-      el(
-        "p",
-        message.deleted
-          ? "Message deleted on phone"
-          : message.text ||
-              (message.attachments?.length
-                ? ""
-                : "Message content unavailable"),
-      ),
-    );
-    for (const attachment of message.deleted ? [] : message.attachments || [])
-      renderAttachment(node, attachment, message.read_only);
-    for (const reaction of message.reactions || [])
-      node.append(
-        el(
-          "span",
-          `${reaction.emoji} ${reaction.participants?.length || 0}`,
-          "reaction",
-        ),
-      );
-    renderReactionActions(node, message, conversation);
-    node.append(
-      el(
-        "div",
-        `${message.read_only ? "Previous pairing · read only · " : ""}${new Date(message.time).toLocaleString()} · ${(message.status || "stored").replaceAll("_", " ")}`,
-        "meta",
-      ),
-    );
-    container.append(node);
+  const rowsNode = $("rows");
+  if (threadNodesFor !== selected) {
+    threadNodes.clear();
+    rowsNode.replaceChildren();
+    threadNodesFor = selected;
   }
-  if (!messages.length)
-    container.append(el("p", "No messages in stored history yet.", "hint"));
-  if (bottom) container.scrollTop = container.scrollHeight;
-  $("older").hidden = !before;
-  const hasPending = !!pendingSend;
-  $("text").disabled = conversation.read_only || hasPending;
-  $("attachments").disabled = conversation.read_only || hasPending;
-  $("send").disabled = conversation.read_only || sending;
-  $("send").textContent = hasPending ? "Retry same request" : "Send message";
-  $("discard-send").hidden = !hasPending;
-  $("discard-send").disabled = sending;
+  const atBottom =
+    container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+  const previousHeight = container.scrollHeight;
+  const seen = new Set();
+  const order = [];
+  for (const row of rows) {
+    seen.add(row.key);
+    const signature =
+      row.kind === "divider"
+        ? row.label
+        : row.kind === "message"
+          ? messageSignature(row, conversation)
+          : JSON.stringify([
+              row.item,
+              row.first,
+              row.last,
+              currentSessionEpoch,
+            ]);
+    let cached = threadNodes.get(row.key);
+    if (!cached || cached.signature !== signature) {
+      const node =
+        row.kind === "divider"
+          ? el("div", row.label, "divider")
+          : row.kind === "message"
+            ? buildMessageRow(row, conversation)
+            : buildOutboxRow(row);
+      if (cached) cached.node.replaceWith(node);
+      cached = { node, signature };
+      threadNodes.set(row.key, cached);
+    }
+    order.push(cached.node);
+  }
+  for (const [key, cached] of threadNodes)
+    if (!seen.has(key)) {
+      cached.node.remove();
+      threadNodes.delete(key);
+    }
+  let child = rowsNode.firstElementChild;
+  for (const node of order) {
+    if (child === node) {
+      child = child.nextElementSibling;
+      continue;
+    }
+    rowsNode.insertBefore(node, child);
+  }
+  while (child) {
+    const next = child.nextElementSibling;
+    child.remove();
+    child = next;
+  }
+  if (!rows.length && entry.fetched)
+    rowsNode.append(
+      el("p", "No messages in stored history yet.", "thread-empty"),
+    );
+  $("older").hidden = !entry.before;
+  if (preserveScroll) {
+    container.scrollTop += container.scrollHeight - previousHeight;
+    preserveScroll = false;
+  } else if (atBottom || entry.scrollToBottom) {
+    container.scrollTop = container.scrollHeight;
+    if (entry.fetched) entry.scrollToBottom = false;
+  }
   $("mark-read").disabled =
     conversation.read_only || !messages.some((message) => !message.read_only);
   $("import-conversation").disabled = conversation.read_only || importing > 0;
-  renderSelectedAttachments();
-  renderOutbox();
 }
-function renderConnection(status) {
-  providerState = status.state || "offline";
-  currentSessionEpoch = status.session_epoch || 0;
-  $("status").textContent = providerState.replaceAll("_", " ");
+
+function renderSelectedAttachments() {
+  const files = pendingSend?.files || selectedFiles;
+  const chips = $("selected-attachments");
+  chips.replaceChildren();
+  for (const file of files)
+    chips.append(el("span", `${file.name} (${formatSize(file.size)})`, "chip"));
+  if (files.length) {
+    const total = files.reduce((sum, file) => sum + file.size, 0);
+    chips.append(
+      el(
+        "span",
+        `${files.length}/10 · ${formatSize(total)} of 20 MB`,
+        "chip total",
+      ),
+    );
+  }
+}
+function renderCompose() {
+  const conversation = conversations.get(selected);
+  if (!conversation) return;
+  const hasPending = !!pendingSend;
+  $("text").disabled = conversation.read_only || hasPending;
+  $("attachments").disabled = conversation.read_only || hasPending;
+  $("send").disabled = conversation.read_only || sending || hasPending;
+  $("text").placeholder = conversation.read_only
+    ? "Read only · previous pairing"
+    : conversation.protocol === "rcs"
+      ? "RCS message"
+      : "Text message";
+  $("pending-send").hidden = !hasPending;
+  if (hasPending) {
+    $("pending-send-text").textContent = sending
+      ? pendingSend.progress || "Sending…"
+      : pendingSend.error || "Message not sent.";
+    $("retry-send").hidden = sending;
+    $("discard-send").hidden = sending;
+  }
+  $("send-hint").textContent =
+    providerState === "connected"
+      ? ""
+      : providerState === "authentication_required"
+        ? "Pair your phone before sending."
+        : providerState === "connection_failed"
+          ? "Phone connection failed. Messages queue until it reconnects."
+          : "Phone offline. Messages queue until it connects.";
+  renderSelectedAttachments();
+}
+
+// --- Status, banner, settings ----------------------------------------------
+
+function renderStatus() {
+  const state = providerState.replaceAll("_", " ");
+  $("status").textContent = token ? state : "Locked";
   $("provider-detail").textContent = status.detail || "";
+  $("sync-status").textContent = status.last_sync
+    ? `Recent history checked ${new Date(status.last_sync).toLocaleTimeString()}.${
+        status.sync_state === "failed" ? " Latest check failed." : ""
+      }`
+    : token
+      ? "Recent history has not been reconciled yet."
+      : "";
   const previousCount =
     (status.previous_session_conversations || 0) +
     (status.previous_session_messages || 0);
   $("session-boundary").hidden = !previousCount;
-  $("session-boundary").textContent = previousCount
-    ? `${status.previous_session_conversations || 0} conversations and ${status.previous_session_messages || 0} messages are from an earlier pairing and remain stored read-only. The paired Google account may be different.`
+  $("session-boundary-text").textContent = previousCount
+    ? `${status.previous_session_conversations || 0} conversations and ${
+        status.previous_session_messages || 0
+      } messages from an earlier pairing are read-only.`
     : "";
-  $("connection-actions").hidden = ![
-    "connection_failed",
-    "authentication_required",
-  ].includes(providerState);
+  const needsAction = ["connection_failed", "authentication_required"].includes(
+    providerState,
+  );
+  $("connection-actions").hidden = !needsAction;
   $("retry-connection").hidden = providerState === "authentication_required";
   $("connection-recovery").textContent =
     providerState === "authentication_required"
       ? status.reason === "session_expired"
-        ? "Your phone session expired or was revoked. Choose Pair / Re-pair above, sign in, and confirm the emoji on your phone. Retrying cannot repair expired credentials."
-        : "Choose Pair / Re-pair above, sign in, and confirm the emoji on your phone."
-      : "Retry the connection. If credentials changed, use Pair / Re-pair above.";
-  $("sync-status").textContent = status.last_sync
-    ? `Recent history checked ${new Date(status.last_sync).toLocaleTimeString()}. ${status.sync_state === "failed" ? "Latest check failed." : ""}`
-    : "Recent history has not been reconciled yet.";
-  $("send-hint").textContent =
-    providerState === "connected"
-      ? "Your phone handles delivery."
-      : providerState === "authentication_required"
-        ? "Re-pair before new requests can run."
-        : providerState === "connection_failed"
-          ? "Retry the bridge connection before queued requests can run."
-          : "Offline: requests queue until your phone connects.";
+        ? "Your phone session expired or was revoked. Pair again and confirm the emoji on your phone."
+        : "Pair with your phone and confirm the emoji it shows."
+      : "Retry the connection. If credentials changed, pair again.";
+  const banner = $("banner");
+  banner.hidden = !token || providerState === "connected";
+  banner.className = `banner${needsAction ? " error" : ""}`;
+  const action = $("banner-action");
+  action.onclick = null;
+  action.textContent = "";
+  if (providerState === "authentication_required") {
+    $("banner-text").textContent =
+      status.reason === "session_expired"
+        ? "Your phone session expired. Pair again to continue."
+        : "Pair your phone to continue.";
+    action.textContent = "Pair";
+    action.onclick = () => openDialog("pairing-dialog");
+  } else if (providerState === "connection_failed") {
+    $("banner-text").textContent = `Can't reach your phone.${
+      status.detail ? ` ${status.detail}` : ""
+    }`;
+    action.textContent = "Retry";
+    action.onclick = retryConnection;
+  } else if (providerState === "connecting") {
+    $("banner-text").textContent = "Connecting to your phone…";
+  } else {
+    $("banner-text").textContent = `Phone connection ${state}.${
+      status.detail ? ` ${status.detail}` : " Messages queue until it connects."
+    }`;
+  }
 }
+
+function openDialog(id) {
+  closeMenus();
+  const dialog = $(id);
+  if (!dialog.open) dialog.showModal();
+  if (id === "pairing-dialog") {
+    pairingPanelOpen = true;
+    void loadPairingState();
+  }
+  if (id === "history-dialog") renderHistory();
+}
+for (const dialog of document.querySelectorAll("dialog")) {
+  for (const close of dialog.querySelectorAll("[data-close]"))
+    close.onclick = () => dialog.close();
+  dialog.onclick = (event) => {
+    if (event.target === dialog) dialog.close();
+  };
+}
+$("pairing-dialog").onclose = () => {
+  pairingPanelOpen = false;
+  clearTimeout(pairingPoll);
+  pairingPoll = undefined;
+};
+
+function closeMenus() {
+  for (const menu of document.querySelectorAll(".menu")) menu.hidden = true;
+}
+function bindMenu(buttonID, menuID) {
+  $(buttonID).onclick = (event) => {
+    event.stopPropagation();
+    const open = $(menuID).hidden;
+    closeMenus();
+    $(menuID).hidden = !open;
+  };
+  $(menuID).onclick = (event) => {
+    if (event.target.closest("button")) closeMenus();
+  };
+}
+bindMenu("main-menu-button", "main-menu");
+bindMenu("thread-menu-button", "thread-menu");
+document.addEventListener("click", closeMenus);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeMenus();
+});
+
+// --- Pairing ----------------------------------------------------------------
+
 function pairingActive() {
   return ["waiting_for_login", "connecting", "confirm_on_phone"].includes(
     pairingState.state,
@@ -483,7 +1044,11 @@ function renderPairing() {
     : "";
   $("pairing-status").textContent = `${state.replaceAll("_", " ")}${
     pairingState.detail ? ` · ${pairingState.detail}` : ""
-  }${pairingActive() && pairingState.expires ? ` · expires ${new Date(pairingState.expires).toLocaleTimeString()}` : ""}`;
+  }${
+    pairingActive() && pairingState.expires
+      ? ` · expires ${new Date(pairingState.expires).toLocaleTimeString()}`
+      : ""
+  }`;
   $("start-pairing").disabled = pairingActive();
   $("start-pairing").textContent =
     pairingState.required_reason === "session_expired" ||
@@ -506,7 +1071,7 @@ function schedulePairingPoll() {
       pairingState = state;
       renderPairing();
       if (pairingState.state === "paired")
-        void refresh().catch((error) => notice(error.message));
+        void loadAll().catch((error) => notice(error.message));
     } catch (error) {
       if (pollGeneration !== generation) return;
       $("pairing-status").textContent = error.message;
@@ -527,12 +1092,13 @@ async function loadPairingState() {
     $("pairing-status").textContent = error.message;
   }
 }
+
+// --- History ----------------------------------------------------------------
+
 function jobLabel(job) {
   if (job.conversation_id) {
-    const conversation = conversations.find(
-      (item) => item.id === job.conversation_id,
-    );
-    return conversation ? name(conversation) : "One conversation";
+    const conversation = conversations.get(job.conversation_id);
+    return conversation ? displayName(conversation) : "One conversation";
   }
   return `${job.folder || job.kind || "history"} folder`;
 }
@@ -544,70 +1110,146 @@ function historyBody(job, restart = false) {
   return body;
 }
 function renderHistory() {
-  $("history-jobs").replaceChildren();
+  if (!$("history-dialog").open) return;
   $("import-all").disabled = importing > 0;
-  if (!historyJobs.length) {
-    $("history-jobs").append(
-      el("p", "No all-history imports requested yet.", "hint"),
-    );
+  const jobs = [...historyJobs.values()];
+  const summary = summarizeHistory(jobs);
+  $("history-summary").textContent = jobs.length
+    ? `${summary.total} imports · ${summary.active} in progress · ${summary.complete} complete · ${summary.failed} failed · ${summary.paused} paused`
+    : "";
+  const container = $("history-jobs");
+  container.replaceChildren();
+  if (!jobs.length) {
+    container.append(el("p", "No imports requested yet.", "hint"));
     return;
   }
-  for (const job of [...historyJobs].sort((a, b) =>
-    (b.updated || "").localeCompare(a.updated || ""),
-  )) {
+  const shown = jobs
+    .sort(
+      (a, b) =>
+        (a.state === "complete") - (b.state === "complete") ||
+        (b.updated || "").localeCompare(a.updated || ""),
+    )
+    .slice(0, 100);
+  for (const job of shown) {
     const previousPairing = job.session_epoch !== currentSessionEpoch;
-    const node = el(
-      "div",
-      undefined,
-      `history-job ${job.state} ${previousPairing ? "previous-session" : ""}`,
-    );
+    const node = el("div", undefined, `history-job ${job.state}`);
     node.append(
       el("strong", jobLabel(job)),
       el(
         "span",
-        `${previousPairing ? "Previous pairing · " : ""}${(job.state || "queued").replaceAll("_", " ")} · ${job.pages || 0} pages · ${job.records || 0} records`,
+        `${previousPairing ? "Previous pairing · " : ""}${(job.state || "queued").replaceAll("_", " ")} · ${job.pages || 0} pages · ${job.records || 0} records${
+          job.detail ? ` · ${job.detail}` : ""
+        }`,
+        "state",
       ),
     );
-    if (job.detail) node.append(el("p", job.detail, "hint"));
     const actions = el("div", undefined, "button-row");
-    if (job.state === "queued") {
-      const pause = el("button", "Pause");
-      pause.type = "button";
-      pause.onclick = () => void pauseHistory(job.id);
-      actions.append(pause);
-    }
-    if (["paused", "failed"].includes(job.state)) {
-      const resume = el("button", "Resume");
-      resume.type = "button";
-      resume.onclick = () => void queueHistory(job, false);
-      actions.append(resume);
-    }
-    if (["complete", "failed"].includes(job.state)) {
-      const restart = el("button", "Fresh scan");
-      restart.type = "button";
-      restart.onclick = () => void queueHistory(job, true);
-      actions.append(restart);
-    }
+    if (job.state === "queued")
+      actions.append(
+        button("Pause", "text-button", () => void pauseHistory(job.id)),
+      );
+    if (["paused", "failed"].includes(job.state))
+      actions.append(
+        button("Resume", "text-button", () => void queueHistory(job, false)),
+      );
+    if (["complete", "failed"].includes(job.state))
+      actions.append(
+        button("Fresh scan", "text-button", () => void queueHistory(job, true)),
+      );
     if (actions.childElementCount) node.append(actions);
-    $("history-jobs").append(node);
+    container.append(node);
   }
+  if (jobs.length > shown.length)
+    container.append(
+      el("p", `${jobs.length - shown.length} more imports not shown.`, "hint"),
+    );
+}
+async function queueHistory(job, restart) {
+  const actionGeneration = generation;
+  importing++;
+  invalidate("history", "thread");
+  try {
+    await request("/v1/history", {
+      method: "POST",
+      body: JSON.stringify(historyBody(job, restart)),
+    });
+    if (actionGeneration !== generation) return;
+    notice(restart ? "Fresh history scan queued." : "History import queued.");
+  } catch (error) {
+    if (actionGeneration !== generation) return;
+    notice(error.message);
+  } finally {
+    if (actionGeneration === generation) {
+      importing--;
+      invalidate("history", "thread");
+    }
+  }
+}
+async function pauseHistory(id) {
+  const actionGeneration = generation;
+  try {
+    await request(`/v1/history/${encodeURIComponent(id)}/pause`, {
+      method: "POST",
+    });
+    if (actionGeneration !== generation) return;
+    notice("History import paused.");
+  } catch (error) {
+    if (actionGeneration !== generation) return;
+    notice(error.message);
+  }
+}
+
+// --- Selection and new conversations ---------------------------------------
+
+function stashDraft() {
+  if (!selected) return;
+  drafts.set(selected, $("text").value);
+  draftFiles.set(selected, selectedFiles);
+}
+async function select(id) {
+  if (pendingSend && id !== selected) {
+    notice(
+      "Retry or discard the pending message before switching conversations.",
+    );
+    return;
+  }
+  stashDraft();
+  selected = id;
+  composing = false;
+  selectedFiles = draftFiles.get(id) || [];
+  $("text").value = drafts.get(id) || "";
+  $("attachments").value = "";
+  autogrow();
+  const entry = thread(id);
+  entry.scrollToBottom = true;
+  invalidate("list", "thread", "compose");
+  try {
+    await loadThread(id);
+  } catch (error) {
+    notice(error.message);
+  }
+}
+function deselect() {
+  stashDraft();
+  selected = "";
+  composing = false;
+  invalidate("list", "thread");
 }
 function maybeSelectCreatedConversation() {
   if (!createdConversation || createdConversation.selecting) return;
-  const tracked = outbox.find(
-    (item) => item.id === createdConversation.outboxID,
-  );
+  const tracked = outbox.get(createdConversation.outboxID);
   if (
     tracked &&
     ["canceled", "rejected", "ambiguous"].includes(tracked.state)
   ) {
     const recipients = tracked.request?.recipients || [];
     $("recipients").value = recipients.join(", ");
-    $("new-conversation-form").hidden = false;
+    composing = true;
     $("conversation-status").textContent = `${tracked.state}: ${
       tracked.detail || "Conversation was not created."
     } Review the recipients before submitting a new request.`;
     createdConversation = undefined;
+    invalidate("thread");
     return;
   }
   const conversationID =
@@ -618,7 +1260,7 @@ function maybeSelectCreatedConversation() {
     return;
   }
   createdConversation.conversationID = conversationID;
-  if (!conversations.some((item) => item.id === conversationID)) {
+  if (!conversations.has(conversationID)) {
     $("conversation-status").textContent =
       "Conversation accepted; waiting for its stored record…";
     return;
@@ -627,154 +1269,222 @@ function maybeSelectCreatedConversation() {
   queueMicrotask(() => {
     createdConversation = undefined;
     $("conversation-status").textContent = "";
-    $("new-conversation-form").hidden = true;
     void select(conversationID);
   });
 }
-let pendingConversationFromLink = "";
-// Re-post the browser's subscription once per unlock so a bridge that lost its
-// database, or a subscription the browser rotated, heals without user action.
-let pushSynced = false;
-async function select(id) {
-  if (pendingSend && id !== selected) {
-    notice(
-      "Retry or discard the pending message request before switching conversations.",
-    );
-    return;
-  }
-  if (selected) {
-    drafts.set(selected, $("text").value);
-    draftFiles.set(selected, selectedFiles);
-  }
-  selected = id;
-  messageUpdates.clear();
-  messages = [];
-  before = "";
-  selectedFiles = draftFiles.get(id) || [];
-  $("text").value = drafts.get(id) || "";
-  $("attachments").value = "";
-  renderConversations();
-  renderThread();
-  try {
-    if (refreshTask) await refreshTask;
-    await refresh();
-    $("messages").scrollTop = $("messages").scrollHeight;
-  } catch (error) {
-    notice(error.message);
-  }
-}
-async function refresh() {
-  if (refreshTask) return refreshTask;
-  const currentGeneration = generation;
-  refreshTask = (async () => {
-    const target = targetCursor;
-    const id = selected;
-    const historyResult = request("/v1/history").catch((error) => ({
-      jobs: historyJobs,
-      error,
-    }));
-    const [status, cs, os, ms, hs] = await Promise.all([
-      request("/v1/status"),
-      request("/v1/conversations"),
-      request("/v1/outbox"),
-      id
-        ? request(
-            `/v1/conversations/${encodeURIComponent(id)}/messages?limit=100`,
-          )
-        : null,
-      historyResult,
-    ]);
-    if (currentGeneration !== generation) return;
-    conversations = cs.conversations || [];
-    outbox = os.outbox || [];
-    historyJobs = hs.jobs || [];
-    renderConnection(status);
-    if (!pushSynced && $("notify").checked) {
-      pushSynced = true;
-      void enablePush().catch(() => {});
-    }
-    if (
-      pendingConversationFromLink &&
-      conversations.some((c) => c.id === pendingConversationFromLink)
-    ) {
-      const wanted = pendingConversationFromLink;
-      pendingConversationFromLink = "";
-      void select(wanted);
-    }
-    if (id === selected && ms) {
-      const expanded = messages.length > 100;
-      messages = mergeMessages(
-        messages,
-        ms.messages || [],
-        ms.cursor,
-        messageUpdates,
-      );
-      if (!expanded) before = ms.next_before || "";
-    }
-    if (!cursor) cursor = Math.min(cs.cursor || 0, os.cursor || 0);
-    cursor = Math.max(cursor, target);
-    renderConversations();
-    renderHistory();
-    if (hs.error)
-      $("history-jobs").prepend(
-        el("p", `History status unavailable: ${hs.error.message}`, "hint"),
-      );
-    renderThread();
-    maybeSelectCreatedConversation();
-  })().finally(() => {
-    refreshTask = undefined;
-  });
-  return refreshTask;
-}
-async function stream(currentGeneration) {
-  while (generation === currentGeneration && token) {
+const normalizeOutbox = (response) => response?.outbox || response;
+async function createConversation() {
+  if (!pendingConversation) {
     try {
-      const response = await fetch(`/v1/stream?after=${cursor}`, {
-        signal: abort.signal,
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!response.ok) throw new Error("Live updates unavailable");
-      const reader = response.body.getReader(),
-        decoder = new TextDecoder();
-      let live = false;
-      const parse = createParser((event) => {
-        if (event.type === "live") {
-          live = true;
-          return;
-        }
-        if (event.type === "typing" && event.data.active) {
-          typingUntil = Date.now() + 5000;
-          typingConversation = event.entity_id;
-        } else if (event.type === "typing") typingUntil = 0;
-        else {
-          targetCursor = Math.max(targetCursor, event.id || 0);
-          if (
-            event.type === "message" &&
-            event.data.conversation_id === selected
-          )
-            messageUpdates.set(event.entity_id, event);
-          if (live && event.type === "message") notifyIncoming(event.data);
-        }
-      });
-      try {
-        for (;;) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          parse(decoder.decode(chunk.value, { stream: true }));
-        }
-      } finally {
-        await reader.cancel().catch(() => {});
-      }
+      pendingConversation = newConversationRequest(
+        parseRecipients($("recipients").value),
+      );
     } catch (error) {
-      if (generation === currentGeneration && !abort.signal.aborted)
-        notice(
-          "Live connection interrupted. Reconnecting; stored history remains available.",
-        );
+      $("conversation-status").textContent = error.message;
+      return;
     }
-    if (generation !== currentGeneration || !token) return;
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  const pending = pendingConversation;
+  creatingConversation = true;
+  $("recipients").disabled = true;
+  $("create-conversation").disabled = true;
+  $("conversation-status").textContent = "Requesting conversation…";
+  try {
+    const result = normalizeOutbox(
+      await request("/v1/conversations", {
+        method: "POST",
+        headers: { "Idempotency-Key": pending.key },
+        body: JSON.stringify(pending.body),
+      }),
+    );
+    if (pending !== pendingConversation) return;
+    pendingConversation = undefined;
+    createdConversation = {
+      outboxID: result.id,
+      conversationID: result.conversation_id || "",
+    };
+    $("recipients").value = "";
+    $("conversation-status").textContent =
+      "Conversation request accepted. Waiting for your phone…";
+    maybeSelectCreatedConversation();
+  } catch (error) {
+    if (pending !== pendingConversation) return;
+    $("conversation-status").textContent =
+      `${error.message} Retry preserves the same idempotency key and recipients.`;
+  } finally {
+    creatingConversation = false;
+    if (pending === pendingConversation) {
+      $("recipients").disabled = true;
+      $("create-conversation").textContent = "Retry";
+    } else {
+      $("recipients").disabled = false;
+      $("create-conversation").textContent = "Create";
+    }
+    $("create-conversation").disabled = false;
   }
 }
+
+// --- Reactions, uploads, sending -------------------------------------------
+
+async function startReaction(messageID, emoji) {
+  const key = reactionKey(selected, messageID, emoji);
+  if (!pendingReactions.has(key))
+    pendingReactions.set(key, {
+      conversationID: selected,
+      request: newReactionRequest(messageID, emoji),
+      sending: false,
+    });
+  await submitReaction(key);
+}
+async function submitReaction(key) {
+  const pending = pendingReactions.get(key);
+  if (!pending || pending.sending) return;
+  pending.sending = true;
+  invalidate("thread");
+  try {
+    await request(
+      `/v1/conversations/${encodeURIComponent(pending.conversationID)}/reactions`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": pending.request.key },
+        body: JSON.stringify(pending.request.body),
+      },
+    );
+    if (pendingReactions.get(key) !== pending) return;
+    pendingReactions.delete(key);
+  } catch (error) {
+    if (pendingReactions.get(key) !== pending) return;
+    notice(`${error.message} Retry reuses the same request.`);
+  } finally {
+    pending.sending = false;
+    invalidate("thread");
+  }
+}
+async function uploadFiles(pending) {
+  while (pending.uploadIDs.length < pending.files.length) {
+    const file = pending.files[pending.uploadIDs.length];
+    pending.progress = `Uploading ${pending.uploadIDs.length + 1} of ${pending.files.length}: ${file.name}`;
+    invalidate("compose");
+    const upload = await request(
+      `/v1/uploads?name=${encodeURIComponent(file.name)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      },
+    );
+    if (!upload?.id) throw new Error("Upload response did not include an ID.");
+    pending.uploadIDs.push(upload.id);
+  }
+}
+async function sendMessage() {
+  if (sending) return;
+  if (!pendingSend) {
+    const text = $("text").value;
+    try {
+      validateAttachments(selectedFiles);
+    } catch (error) {
+      notice(error.message);
+      return;
+    }
+    if (!text.trim() && !selectedFiles.length) return;
+    pendingSend = {
+      conversationID: selected,
+      files: [...selectedFiles],
+      uploadIDs: [],
+      text,
+      requests: undefined,
+      progress: "",
+      error: "",
+    };
+  }
+  const pending = pendingSend,
+    sendGeneration = generation;
+  sending = true;
+  pending.error = "";
+  invalidate("compose");
+  try {
+    await uploadFiles(pending);
+    pending.requests ||= splitRequests(
+      pending.conversationID,
+      pending.text,
+      pending.uploadIDs,
+    );
+    for (const item of pending.requests) {
+      if (item.queued) continue;
+      pending.progress =
+        pending.requests.length > 1
+          ? `Sending ${item.body.attachment_ids.length ? "attachments" : "caption"}…`
+          : "Sending…";
+      invalidate("compose");
+      await request("/v1/messages", {
+        method: "POST",
+        headers: { "Idempotency-Key": item.key },
+        body: JSON.stringify(item.body),
+      });
+      item.queued = true;
+    }
+    if (sendGeneration !== generation || pendingSend !== pending) return;
+    pendingSend = undefined;
+    selectedFiles = [];
+    $("attachments").value = "";
+    $("text").value = "";
+    autogrow();
+    drafts.delete(selected);
+    draftFiles.delete(selected);
+    thread(selected).scrollToBottom = true;
+    $("text").focus();
+  } catch (error) {
+    if (sendGeneration !== generation || pendingSend !== pending) return;
+    pending.progress = "";
+    pending.error = `${error.message} Retry keeps the same message and finished uploads.`;
+  } finally {
+    if (sendGeneration === generation) {
+      sending = false;
+      invalidate("compose", "thread");
+    }
+  }
+}
+function typingContentPresent() {
+  return !!$("text").value.trim() || selectedFiles.length > 0;
+}
+function scheduleTyping() {
+  if (
+    !token ||
+    !selected ||
+    providerState !== "connected" ||
+    !$("send-typing").checked ||
+    !typingContentPresent() ||
+    pendingSend
+  )
+    return;
+  clearTimeout(typingTimer);
+  const delay = Math.max(0, 4000 - (Date.now() - lastTypingAt));
+  const conversationID = selected;
+  typingTimer = setTimeout(async () => {
+    const typingGeneration = generation;
+    if (
+      conversationID !== selected ||
+      providerState !== "connected" ||
+      !$("send-typing").checked ||
+      !typingContentPresent()
+    )
+      return;
+    lastTypingAt = Date.now();
+    try {
+      await request(
+        `/v1/conversations/${encodeURIComponent(conversationID)}/typing`,
+        { method: "POST" },
+      );
+    } catch (error) {
+      if (typingGeneration === generation && error.status !== 503)
+        notice(error.message);
+    }
+  }, delay);
+}
+
+// --- Notifications ----------------------------------------------------------
+
 const notified = new Set();
 function notifyIncoming(message) {
   if (
@@ -788,11 +1498,9 @@ function notifyIncoming(message) {
   )
     return;
   notified.add(message.id);
-  const conversation = conversations.find(
-    (c) => c.id === message.conversation_id,
-  );
+  const conversation = conversations.get(message.conversation_id);
   const sender = conversation?.participants?.find(
-    (p) => p.id === message.sender_id,
+    (participant) => participant.id === message.sender_id,
   );
   const title = conversation?.name || sender?.name || "New message";
   const body =
@@ -811,7 +1519,6 @@ function notifyIncoming(message) {
     notification.close();
   };
 }
-
 // Base64url as the Push API wants it for the server's VAPID public key.
 function decodeKey(value) {
   const padded = value.replace(/-/g, "+").replace(/_/g, "/");
@@ -898,6 +1605,9 @@ $("notify").checked =
   typeof Notification === "function" &&
   Notification.permission === "granted";
 renderNotifyControls();
+
+// --- Lock / unlock ----------------------------------------------------------
+
 function clearPrivateUI() {
   pushSynced = false;
   for (const pending of previewCache.values())
@@ -906,11 +1616,19 @@ function clearPrivateUI() {
   notified.clear();
   pendingSend = pendingConversation = createdConversation = undefined;
   selectedFiles = [];
-  conversations = outbox = messages = historyJobs = [];
-  selected = before = "";
-  cursor = targetCursor = 0;
+  conversations.clear();
+  outbox.clear();
+  historyJobs.clear();
+  threads.clear();
+  listNodes.clear();
+  threadNodes.clear();
+  threadNodesFor = "";
+  selected = "";
+  composing = false;
+  cursor = conversationCursor = outboxCursor = historyCursor = 0;
   typingUntil = 0;
   typingConversation = "";
+  status = {};
   providerState = "offline";
   sending = false;
   creatingConversation = false;
@@ -924,18 +1642,19 @@ function clearPrivateUI() {
   lastTypingAt = 0;
   drafts.clear();
   draftFiles.clear();
-  messageUpdates.clear();
   pendingReactions.clear();
+  for (const dialog of document.querySelectorAll("dialog")) dialog.close();
+  closeMenus();
+  notice("");
   for (const id of [
-    "notice",
     "provider-detail",
     "sync-status",
     "conversation-status",
     "thread-title",
     "thread-info",
-    "typing",
     "pairing-status",
     "pairing-emoji",
+    "history-summary",
   ])
     $(id).textContent = "";
   for (const id of [
@@ -947,271 +1666,21 @@ function clearPrivateUI() {
     "pairing-ticket",
   ])
     $(id).value = "";
-  $("new-conversation-form").hidden = true;
-  $("pairing-panel").hidden = true;
+  $("recipients").disabled = false;
+  $("create-conversation").textContent = "Create";
   $("pairing-fields").hidden = true;
   $("connection-actions").hidden = true;
-  $("messages").replaceChildren();
-  $("outbox").replaceChildren();
+  $("banner").hidden = true;
+  $("session-boundary").hidden = true;
+  $("rows").replaceChildren();
   $("history-jobs").replaceChildren();
   $("selected-attachments").replaceChildren();
-  renderConversations();
+  $("typing").hidden = true;
+  document.body.classList.remove("thread-open");
+  renderStatus();
+  renderList();
   renderThread();
 }
-const normalizeOutbox = (response) => response?.outbox || response;
-async function createConversation() {
-  if (!pendingConversation) {
-    try {
-      pendingConversation = newConversationRequest(
-        parseRecipients($("recipients").value),
-      );
-    } catch (error) {
-      $("conversation-status").textContent = error.message;
-      return;
-    }
-  }
-  const pending = pendingConversation;
-  creatingConversation = true;
-  $("recipients").disabled = true;
-  $("create-conversation").disabled = true;
-  $("conversation-status").textContent = "Requesting conversation…";
-  try {
-    const result = normalizeOutbox(
-      await request("/v1/conversations", {
-        method: "POST",
-        headers: { "Idempotency-Key": pending.key },
-        body: JSON.stringify(pending.body),
-      }),
-    );
-    if (pending !== pendingConversation) return;
-    pendingConversation = undefined;
-    createdConversation = {
-      outboxID: result.id,
-      conversationID: result.conversation_id || "",
-    };
-    $("recipients").value = "";
-    $("conversation-status").textContent =
-      "Conversation request accepted. Waiting for its stored record…";
-    await refresh();
-  } catch (error) {
-    if (pending !== pendingConversation) return;
-    $("conversation-status").textContent =
-      `${error.message} Retry preserves the same idempotency key and recipients.`;
-  } finally {
-    creatingConversation = false;
-    if (pending === pendingConversation) {
-      $("recipients").disabled = true;
-      $("create-conversation").textContent = "Retry same request";
-    } else {
-      $("recipients").disabled = false;
-      $("create-conversation").textContent = "Create";
-    }
-    $("create-conversation").disabled = false;
-  }
-}
-async function startReaction(messageID, emoji) {
-  const key = reactionKey(selected, messageID, emoji);
-  if (!pendingReactions.has(key))
-    pendingReactions.set(key, {
-      conversationID: selected,
-      request: newReactionRequest(messageID, emoji),
-      sending: false,
-    });
-  await submitReaction(key);
-}
-async function submitReaction(key) {
-  const pending = pendingReactions.get(key);
-  if (!pending || pending.sending) return;
-  pending.sending = true;
-  renderThread();
-  try {
-    await request(
-      `/v1/conversations/${encodeURIComponent(pending.conversationID)}/reactions`,
-      {
-        method: "POST",
-        headers: { "Idempotency-Key": pending.request.key },
-        body: JSON.stringify(pending.request.body),
-      },
-    );
-    if (pendingReactions.get(key) !== pending) return;
-    pendingReactions.delete(key);
-    notice("Reaction queued.");
-    await refresh();
-  } catch (error) {
-    if (pendingReactions.get(key) !== pending) return;
-    notice(
-      `${error.message} The reaction was not retried automatically; Retry same request reuses its key.`,
-    );
-  } finally {
-    pending.sending = false;
-    renderThread();
-  }
-}
-async function uploadFiles(pending) {
-  while (pending.uploadIDs.length < pending.files.length) {
-    const file = pending.files[pending.uploadIDs.length];
-    pending.progress = `Uploading ${pending.uploadIDs.length + 1} of ${pending.files.length}: ${file.name}`;
-    renderSelectedAttachments();
-    const upload = await request(
-      `/v1/uploads?name=${encodeURIComponent(file.name)}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": file.type || "application/octet-stream" },
-        body: file,
-      },
-    );
-    if (!upload?.id) throw new Error("Upload response did not include an ID.");
-    pending.uploadIDs.push(upload.id);
-  }
-}
-async function sendMessage() {
-  if (sending) return;
-  if (!pendingSend) {
-    const text = $("text").value;
-    try {
-      validateAttachments(selectedFiles);
-    } catch (error) {
-      notice(error.message);
-      return;
-    }
-    if (!text.trim() && !selectedFiles.length) {
-      notice("Write a message or choose at least one attachment.");
-      return;
-    }
-    pendingSend = {
-      conversationID: selected,
-      files: [...selectedFiles],
-      uploadIDs: [],
-      text,
-      requests: undefined,
-      progress: "",
-    };
-  }
-  const pending = pendingSend,
-    sendGeneration = generation;
-  sending = true;
-  renderThread();
-  try {
-    await uploadFiles(pending);
-    pending.requests ||= splitRequests(
-      pending.conversationID,
-      pending.text,
-      pending.uploadIDs,
-    );
-    for (const item of pending.requests) {
-      if (item.queued) continue;
-      pending.progress =
-        pending.requests.length > 1
-          ? `Queueing ${item.body.attachment_ids.length ? "attachments" : "caption"}…`
-          : "Queueing message…";
-      renderSelectedAttachments();
-      await request("/v1/messages", {
-        method: "POST",
-        headers: { "Idempotency-Key": item.key },
-        body: JSON.stringify(item.body),
-      });
-      item.queued = true;
-    }
-    if (sendGeneration !== generation || pendingSend !== pending) return;
-    pendingSend = undefined;
-    selectedFiles = [];
-    $("attachments").value = "";
-    $("text").value = "";
-    drafts.delete(selected);
-    draftFiles.delete(selected);
-    notice("");
-    await refresh();
-  } catch (error) {
-    if (sendGeneration !== generation || pendingSend !== pending) return;
-    pending.progress = "";
-    notice(
-      `${error.message} Retry same request preserves message keys, bodies, completed uploads, and already queued parts.`,
-    );
-  } finally {
-    if (sendGeneration === generation) {
-      sending = false;
-      renderThread();
-    }
-  }
-}
-async function queueHistory(job, restart) {
-  const actionGeneration = generation;
-  importing++;
-  renderHistory();
-  renderThread();
-  try {
-    await request("/v1/history", {
-      method: "POST",
-      body: JSON.stringify(historyBody(job, restart)),
-    });
-    if (actionGeneration !== generation) return;
-    notice(restart ? "Fresh history scan queued." : "History import queued.");
-    await refresh();
-  } catch (error) {
-    if (actionGeneration !== generation) return;
-    notice(error.message);
-  } finally {
-    if (actionGeneration === generation) {
-      importing--;
-      renderHistory();
-      renderThread();
-    }
-  }
-}
-async function pauseHistory(id) {
-  const actionGeneration = generation;
-  try {
-    await request(`/v1/history/${encodeURIComponent(id)}/pause`, {
-      method: "POST",
-    });
-    if (actionGeneration !== generation) return;
-    notice(
-      "History import paused. An in-flight page may finish; resuming safely re-reads it.",
-    );
-    await refresh();
-  } catch (error) {
-    if (actionGeneration !== generation) return;
-    notice(error.message);
-  }
-}
-function typingContentPresent() {
-  return !!$("text").value.trim() || selectedFiles.length > 0;
-}
-function scheduleTyping() {
-  if (
-    !token ||
-    !selected ||
-    providerState !== "connected" ||
-    !$("send-typing").checked ||
-    !typingContentPresent() ||
-    pendingSend
-  )
-    return;
-  clearTimeout(typingTimer);
-  const delay = Math.max(0, 4000 - (Date.now() - lastTypingAt));
-  const conversationID = selected;
-  typingTimer = setTimeout(async () => {
-    const typingGeneration = generation;
-    if (
-      conversationID !== selected ||
-      providerState !== "connected" ||
-      !$("send-typing").checked ||
-      !typingContentPresent()
-    )
-      return;
-    lastTypingAt = Date.now();
-    try {
-      await request(
-        `/v1/conversations/${encodeURIComponent(conversationID)}/typing`,
-        { method: "POST" },
-      );
-    } catch (error) {
-      if (typingGeneration === generation && error.status !== 503)
-        notice(error.message);
-    }
-  }, delay);
-}
-
 $("login-form").onsubmit = async (event) => {
   event.preventDefault();
   token = $("token").value.trim();
@@ -1219,12 +1688,10 @@ $("login-form").onsubmit = async (event) => {
   abort = new AbortController();
   generation++;
   try {
-    if (refreshTask) await refreshTask.catch(() => {});
-    await refresh();
+    await loadAll();
     $("token").value = "";
     $("login").hidden = true;
     $("app").hidden = false;
-    $("logout").hidden = false;
     notice("");
     void stream(generation);
   } catch (error) {
@@ -1239,21 +1706,18 @@ $("logout").onclick = () => {
   clearPrivateUI();
   $("app").hidden = true;
   $("login").hidden = false;
-  $("logout").hidden = true;
-  $("status").textContent = "Locked";
 };
-$("search").oninput = renderConversations;
-$("open-pairing").onclick = () => {
-  pairingPanelOpen = true;
-  $("pairing-panel").hidden = false;
-  void loadPairingState();
+
+// --- Wiring -----------------------------------------------------------------
+
+$("search").oninput = () => invalidate("list");
+$("open-pairing").onclick = () => openDialog("pairing-dialog");
+$("settings-pairing").onclick = () => {
+  $("settings-dialog").close();
+  openDialog("pairing-dialog");
 };
-$("close-pairing").onclick = () => {
-  pairingPanelOpen = false;
-  clearTimeout(pairingPoll);
-  pairingPoll = undefined;
-  $("pairing-panel").hidden = true;
-};
+$("open-settings").onclick = () => openDialog("settings-dialog");
+$("open-history").onclick = () => openDialog("history-dialog");
 $("start-pairing").onclick = async () => {
   if (
     sending ||
@@ -1280,7 +1744,7 @@ $("start-pairing").onclick = async () => {
     pendingReactions.clear();
     $("recipients").disabled = false;
     $("create-conversation").textContent = "Create";
-    renderThread();
+    invalidate("thread", "compose");
     renderPairing();
     if (clearedLocalRetry)
       notice(
@@ -1309,21 +1773,26 @@ $("cancel-pairing").onclick = async () => {
     $("cancel-pairing").disabled = false;
   }
 };
-for (const button of document.querySelectorAll("[data-copy]"))
-  button.onclick = async () => {
-    const input = $(button.dataset.copy);
+for (const copy of document.querySelectorAll("[data-copy]"))
+  copy.onclick = async () => {
+    const input = $(copy.dataset.copy);
     try {
       await navigator.clipboard.writeText(input.value);
-      $("pairing-status").textContent = "Copied.";
     } catch {
       input.select();
       document.execCommand("copy");
       input.setSelectionRange(0, 0);
-      $("pairing-status").textContent = "Copied.";
     }
+    $("pairing-status").textContent = "Copied.";
   };
 $("new-conversation").onclick = () => {
-  $("new-conversation-form").hidden = false;
+  if (pendingSend) {
+    notice("Retry or discard the pending message before starting a chat.");
+    return;
+  }
+  stashDraft();
+  composing = true;
+  invalidate("thread");
   $("recipients").focus();
 };
 $("cancel-conversation").onclick = () => {
@@ -1332,39 +1801,45 @@ $("cancel-conversation").onclick = () => {
   $("recipients").value = "";
   $("conversation-status").textContent = "";
   $("create-conversation").textContent = "Create";
-  $("new-conversation-form").hidden = true;
+  composing = false;
+  invalidate("thread");
 };
 $("new-conversation-form").onsubmit = (event) => {
   event.preventDefault();
   void createConversation();
 };
-$("sync").onclick = async () => {
+for (const back of document.querySelectorAll("[data-back]"))
+  back.onclick = () => {
+    if (composing) $("cancel-conversation").onclick();
+    else deselect();
+  };
+async function syncRecent() {
   try {
     await request("/v1/sync", { method: "POST" });
     notice("Recent-history check requested.");
   } catch (error) {
     notice(error.message);
   }
-};
-$("retry-connection").onclick = async () => {
+}
+$("sync").onclick = syncRecent;
+$("settings-sync").onclick = syncRecent;
+async function retryConnection() {
   $("retry-connection").disabled = true;
   try {
     await request("/v1/connection/restart", { method: "POST" });
-    notice(
-      "Connection restart requested. Complete pairing through the CLI if prompted.",
-    );
-    await refresh();
+    notice("Connection restart requested.");
+    void pollStatus();
   } catch (error) {
     notice(error.message);
   } finally {
     $("retry-connection").disabled = false;
   }
-};
+}
+$("retry-connection").onclick = retryConnection;
 $("import-all").onclick = async () => {
   const actionGeneration = generation;
   importing++;
-  renderHistory();
-  renderThread();
+  invalidate("history", "thread");
   const results = await Promise.allSettled(
     ["inbox", "archive", "spam"].map((folder) =>
       request("/v1/history", {
@@ -1381,9 +1856,7 @@ $("import-all").onclick = async () => {
       ? `${3 - failed.length} history folders queued; ${failed.length} failed to queue.`
       : "Inbox, archive, and spam imports queued.",
   );
-  await refresh().catch((error) => notice(error.message));
-  renderHistory();
-  renderThread();
+  invalidate("history", "thread");
 };
 $("import-conversation").onclick = () =>
   void queueHistory({ conversation_id: selected }, false);
@@ -1391,6 +1864,7 @@ $("compose").onsubmit = (event) => {
   event.preventDefault();
   void sendMessage();
 };
+$("retry-send").onclick = () => void sendMessage();
 $("discard-send").onclick = () => {
   if (sending) return;
   const uploaded = pendingSend?.uploadIDs.length || 0;
@@ -1400,11 +1874,18 @@ $("discard-send").onclick = () => {
       ? "Pending message discarded. Already uploaded bytes are no longer attached to a draft."
       : "Pending message discarded.",
   );
-  renderThread();
+  invalidate("compose");
 };
 $("text").oninput = () => {
   if (selected) drafts.set(selected, $("text").value);
+  autogrow();
   scheduleTyping();
+};
+$("text").onkeydown = (event) => {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    void sendMessage();
+  }
 };
 $("attachments").onchange = () => {
   const files = [...$("attachments").files];
@@ -1412,43 +1893,42 @@ $("attachments").onchange = () => {
     validateAttachments(files);
     selectedFiles = files;
     draftFiles.set(selected, selectedFiles);
-    notice("");
-    renderSelectedAttachments();
     scheduleTyping();
   } catch (error) {
     $("attachments").value = "";
     selectedFiles = [];
     draftFiles.delete(selected);
     notice(error.message);
-    renderSelectedAttachments();
   }
+  invalidate("compose");
 };
-$("older").onclick = async () => {
-  const id = selected,
-    pageBefore = before;
-  $("older").disabled = true;
+async function loadOlder() {
+  const id = selected;
+  const entry = threads.get(id);
+  if (!entry || !entry.before || entry.loading) return;
+  const olderButton = $("older").querySelector("button");
+  olderButton.disabled = true;
   try {
-    const page = await request(
-      `/v1/conversations/${encodeURIComponent(id)}/messages?before=${encodeURIComponent(pageBefore)}&limit=100`,
-    );
-    if (selected !== id || before !== pageBefore) return;
-    messages = mergeMessages(
-      messages,
-      page.messages || [],
-      page.cursor,
-      messageUpdates,
-    );
-    before = page.next_before || "";
-    renderThread();
+    preserveScroll = true;
+    await loadThread(id, entry.before);
   } catch (error) {
+    preserveScroll = false;
     notice(error.message);
   } finally {
-    $("older").disabled = false;
+    olderButton.disabled = false;
   }
-};
+}
+$("older").querySelector("button").onclick = loadOlder;
+if (typeof IntersectionObserver === "function")
+  new IntersectionObserver(
+    (entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) void loadOlder();
+    },
+    { root: $("messages") },
+  ).observe($("older"));
 $("mark-read").onclick = async () => {
-  const latest = [...messages].sort((a, b) =>
-    (b.time || "").localeCompare(a.time || ""),
+  const latest = [...(threads.get(selected)?.messages.values() || [])].sort(
+    (a, b) => (b.time || "").localeCompare(a.time || ""),
   )[0];
   if (!latest) return;
   try {
@@ -1461,18 +1941,24 @@ $("mark-read").onclick = async () => {
     notice(error.message);
   }
 };
-let lastRefresh = 0;
+let typingShown = false;
 setInterval(() => {
-  $("typing").textContent =
-    typingUntil > Date.now() && typingConversation === selected
-      ? "Typing…"
-      : "";
-  if (!token || $("app").hidden) return;
-  if (targetCursor > cursor || Date.now() - lastRefresh > 10000) {
-    lastRefresh = Date.now();
-    void refresh().catch((error) => notice(error.message));
+  const wanted =
+    !!selected && typingUntil > Date.now() && typingConversation === selected;
+  if (wanted !== typingShown) {
+    typingShown = wanted;
+    $("typing").hidden = !wanted;
+    if (wanted) {
+      const container = $("messages");
+      if (
+        container.scrollHeight - container.scrollTop - container.clientHeight <
+        120
+      )
+        container.scrollTop = container.scrollHeight;
+    }
   }
 }, 500);
+setInterval(() => void pollStatus(), 10000);
 
 // The service worker backs the installed app: an offline shell and, once a
 // subscription exists, notifications delivered while no window is open.

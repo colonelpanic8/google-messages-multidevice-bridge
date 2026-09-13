@@ -99,24 +99,19 @@ func pageLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
 }
 func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 	mux.HandleFunc("GET /v1/conversations", func(w http.ResponseWriter, r *http.Request) {
-		raw, cursor, err := b.Store.Snapshot("conversation")
+		raw, cursor, err := b.Store.SnapshotCurrent("conversation")
 		if err != nil {
 			apiError(w, err)
 			return
 		}
 		convs := make([]model.Conversation, 0, len(raw))
-		for _, data := range raw {
+		for _, record := range raw {
 			var c model.Conversation
-			if err = json.Unmarshal(data, &c); err != nil {
+			if err = json.Unmarshal(record.Data, &c); err != nil {
 				apiError(w, err)
 				return
 			}
-			if current, err := b.Store.EntityCurrent("conversation", c.ID); err != nil {
-				apiError(w, err)
-				return
-			} else if !current {
-				c.ReadOnly = true
-			}
+			c.ReadOnly = !record.Current
 			convs = append(convs, c)
 		}
 		sort.Slice(convs, func(i, j int) bool {
@@ -136,27 +131,20 @@ func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 			apiError(w, err)
 			return
 		}
-		raw, cursor, err := b.Store.Snapshot("message")
+		raw, cursor, err := b.Store.ConversationMessages(r.PathValue("id"))
 		if err != nil {
 			apiError(w, err)
 			return
 		}
-		messages := make([]model.Message, 0)
-		for _, data := range raw {
+		messages := make([]model.Message, 0, len(raw))
+		for _, record := range raw {
 			var m model.Message
-			if err = json.Unmarshal(data, &m); err != nil {
+			if err = json.Unmarshal(record.Data, &m); err != nil {
 				apiError(w, err)
 				return
 			}
-			if current, currentErr := b.Store.EntityCurrent("message", m.ID); currentErr != nil {
-				apiError(w, currentErr)
-				return
-			} else if !current {
-				m.ReadOnly = true
-			}
-			if m.ConversationID == r.PathValue("id") {
-				messages = append(messages, m)
-			}
+			m.ReadOnly = !record.Current
+			messages = append(messages, m)
 		}
 		sort.Slice(messages, func(i, j int) bool {
 			if messages[i].Time.Equal(messages[j].Time) {

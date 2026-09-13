@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
+	bolt "go.etcd.io/bbolt"
 )
 
 func TestRecoveryEncryptionAndDeduplication(t *testing.T) {
@@ -87,5 +90,55 @@ func TestAuthenticationRejectsTampering(t *testing.T) {
 	ciphertext[len(ciphertext)-1] ^= 1
 	if _, err := s.decrypt(ciphertext, "session"); err == nil {
 		t.Fatal("tampered payload accepted")
+	}
+}
+
+func TestConversationMessagesIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	key := bytes.Repeat([]byte{7}, 32)
+	s, err := Open(path, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	put := func(id, conversation string) {
+		t.Helper()
+		data := json.RawMessage(`{"schema":1,"id":"` + id + `","conversation_id":"` + conversation + `","text":"x"}`)
+		if _, err := s.Append(Event{Type: "message", EntityID: id, Data: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("a1", "a")
+	put("b1", "b")
+	put("a2", "a")
+	if err := s.db.Update(func(tx *bolt.Tx) error { return tx.DeleteBucket([]byte(messageIndexBucket)) }); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s, err = Open(path, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	put("a3", "a")
+	records, _, err := s.ConversationMessages("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(records))
+	for _, record := range records {
+		var m model.Message
+		if err := json.Unmarshal(record.Data, &m); err != nil {
+			t.Fatal(err)
+		}
+		if m.ConversationID != "a" || !record.Current {
+			t.Fatalf("unexpected record %+v current=%v", m, record.Current)
+		}
+		ids = append(ids, m.ID)
+	}
+	if len(ids) != 3 {
+		t.Fatalf("index rebuilt incompletely: %v", ids)
+	}
+	if records, _, err = s.ConversationMessages("missing"); err != nil || len(records) != 0 {
+		t.Fatalf("unknown conversation: %v %v", records, err)
 	}
 }

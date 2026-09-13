@@ -141,7 +141,9 @@ guidance, and offline-consistent backups, see [deployment](docs/deployment.md).
 ## Web client and API
 
 The browser keeps the bearer token only in that tab's memory; locking or reloading
-requires it again. Image attachments render as inline previews that are discarded on
+requires it again. After unlocking, the client loads one snapshot of each record kind
+and then applies durable SSE events in place, so the view stays current without
+polling or re-rendering the whole list. Image attachments render as inline previews that are discarded on
 lock. An opt-in toggle raises browser notifications for new incoming messages in
 hidden tabs or unselected conversations; replayed history never notifies. Web assets
 and the pairing-helper ZIP are public. Every `/v1/` route requires bearer
@@ -166,8 +168,8 @@ message appeared in stored history. `ambiguous` means the outcome is unknown: in
 the phone before intentionally authorizing another operation. The bridge never
 automatically retries an attempted ambiguous mutation.
 
-If an HTTP response is lost while submitting an outbox operation, **Retry same
-request** reuses its idempotency key. That safely rechecks the local durable record;
+If an HTTP response is lost while submitting an outbox operation, **Retry** reuses
+its idempotency key. That safely rechecks the local durable record;
 it does not replay a provider attempt. Incoming typing expires after five seconds,
 and opening a conversation does not itself send a read receipt.
 

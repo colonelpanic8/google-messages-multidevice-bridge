@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"time"
@@ -253,6 +254,118 @@ func (s *Store) Snapshot(kind string) ([]json.RawMessage, uint64, error) {
 				return err
 			}
 			result = append(result, plain)
+		}
+		return nil
+	})
+	return result, watermark, err
+}
+
+// Snapshot records annotated with whether they belong to the current pairing.
+type SnapshotRecord struct {
+	Data    json.RawMessage
+	Current bool
+}
+
+func entityCurrentTx(tx *bolt.Tx, kind, id string) bool {
+	currentEpoch := epoch(tx)
+	if currentEpoch == 0 {
+		return true
+	}
+	b := tx.Bucket([]byte("entity-epochs"))
+	if b == nil {
+		return false
+	}
+	v := b.Get([]byte(kind + ":" + id))
+	return len(v) == 8 && binary.BigEndian.Uint64(v) == currentEpoch
+}
+
+// SnapshotCurrent is Snapshot plus the per-record pairing check, all from one
+// read transaction.
+func (s *Store) SnapshotCurrent(kind string) ([]SnapshotRecord, uint64, error) {
+	result := make([]SnapshotRecord, 0)
+	var watermark uint64
+	err := s.db.View(func(tx *bolt.Tx) error {
+		watermark = tx.Bucket([]byte("events")).Sequence()
+		c := tx.Bucket([]byte("latest")).Cursor()
+		prefix := []byte(kind + ":")
+		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
+			plain, err := s.decrypt(v, string(k))
+			if err != nil {
+				return err
+			}
+			result = append(result, SnapshotRecord{Data: plain, Current: entityCurrentTx(tx, kind, string(k[len(prefix):]))})
+		}
+		return nil
+	})
+	return result, watermark, err
+}
+
+const messageIndexBucket = "message-conversations"
+
+func messageIndexKey(conversationID, messageID string) []byte {
+	return []byte(conversationID + "\x00" + messageID)
+}
+
+func indexMessage(tx *bolt.Tx, data []byte) error {
+	var m struct {
+		ID             string `json:"id"`
+		ConversationID string `json:"conversation_id"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	if m.ID == "" || m.ConversationID == "" {
+		return nil
+	}
+	return tx.Bucket([]byte(messageIndexBucket)).Put(messageIndexKey(m.ConversationID, m.ID), []byte{})
+}
+
+// ensureMessageIndex builds the conversation index for stores created before
+// it existed. A message never moves between conversations, so the index only
+// ever grows.
+func (s *Store) ensureMessageIndex(tx *bolt.Tx) error {
+	if tx.Bucket([]byte(messageIndexBucket)) != nil {
+		return nil
+	}
+	if _, err := tx.CreateBucket([]byte(messageIndexBucket)); err != nil {
+		return err
+	}
+	c := tx.Bucket([]byte("latest")).Cursor()
+	prefix := []byte("message:")
+	for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
+		plain, err := s.decrypt(v, string(k))
+		if err != nil {
+			return err
+		}
+		if err := indexMessage(tx, plain); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ConversationMessages lists the stored messages of one conversation using the
+// conversation index rather than scanning every message.
+func (s *Store) ConversationMessages(conversationID string) ([]SnapshotRecord, uint64, error) {
+	result := make([]SnapshotRecord, 0)
+	var watermark uint64
+	err := s.db.View(func(tx *bolt.Tx) error {
+		watermark = tx.Bucket([]byte("events")).Sequence()
+		latest := tx.Bucket([]byte("latest"))
+		c := tx.Bucket([]byte(messageIndexBucket)).Cursor()
+		prefix := messageIndexKey(conversationID, "")
+		for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+			id := string(k[len(prefix):])
+			key := "message:" + id
+			v := latest.Get([]byte(key))
+			if v == nil {
+				continue
+			}
+			plain, err := s.decrypt(v, key)
+			if err != nil {
+				return err
+			}
+			result = append(result, SnapshotRecord{Data: plain, Current: entityCurrentTx(tx, "message", id)})
 		}
 		return nil
 	})

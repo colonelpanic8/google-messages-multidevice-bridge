@@ -14,6 +14,7 @@ lint:
     actionlint
     node --check internal/api/web/app.js
     node --check internal/api/web/stream.mjs
+    node --check internal/api/web/view.mjs
     node --check internal/api/pairinghelper/setup.mjs
     node --check internal/api/pairinghelper/service-worker.js
 

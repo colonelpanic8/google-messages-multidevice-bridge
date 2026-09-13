@@ -57,6 +57,9 @@ func Open(path string, key []byte) (*Store, error) {
 				return err
 			}
 		}
+		if err := s.ensureMessageIndex(tx); err != nil {
+			return err
+		}
 		versions := tx.Bucket([]byte("versions"))
 		if versions.Sequence() < tx.Bucket([]byte("events")).Sequence() {
 			if err := versions.SetSequence(tx.Bucket([]byte("events")).Sequence()); err != nil {
@@ -215,6 +218,11 @@ func (s *Store) appendTx(tx *bolt.Tx, event Event) (bool, error) {
 	}
 	if err = latest.Put([]byte(key), s.encrypt(event.Data, key)); err != nil {
 		return false, err
+	}
+	if event.Type == "message" {
+		if err = indexMessage(tx, event.Data); err != nil {
+			return false, err
+		}
 	}
 	return true, nil
 }
