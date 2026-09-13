@@ -44,7 +44,7 @@ export function initials(name) {
 }
 
 const avatarPalette = [
-  "#1a73e8",
+  "#0b57d0",
   "#d93025",
   "#188038",
   "#e37400",
