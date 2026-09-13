@@ -9,16 +9,23 @@ import (
 )
 
 func (c *Client) ListConversations(ctx context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
-	msgType := gmproto.MessageType_BUGLE_MESSAGE
-	if !c.conversationsFetchedOnce {
-		msgType = gmproto.MessageType_BUGLE_ANNOTATION
-		c.conversationsFetchedOnce = true
-	}
+	msgType := c.nextListConversationsMessageType()
 	return typedResponse[*gmproto.ListConversationsResponse](c.sessionHandler.sendMessageWithParams(ctx, SendMessageParams{
 		Action:      gmproto.ActionType_LIST_CONVERSATIONS,
 		Data:        req,
 		MessageType: msgType,
 	}))
+}
+
+func (c *Client) nextListConversationsMessageType() gmproto.MessageType {
+	c.conversationsFetchLock.Lock()
+	defer c.conversationsFetchLock.Unlock()
+	msgType := gmproto.MessageType_BUGLE_MESSAGE
+	if !c.conversationsFetchedOnce {
+		msgType = gmproto.MessageType_BUGLE_ANNOTATION
+		c.conversationsFetchedOnce = true
+	}
+	return msgType
 }
 
 func (c *Client) DeleteConversation(ctx context.Context, conversationID, phone string) error {
@@ -55,7 +62,7 @@ func (c *Client) ListTopContacts(ctx context.Context) (*gmproto.ListTopContactsR
 
 func (c *Client) GetOrCreateConversation(ctx context.Context, req *gmproto.GetOrCreateConversationRequest) (*gmproto.GetOrCreateConversationResponse, error) {
 	actionType := gmproto.ActionType_GET_OR_CREATE_CONVERSATION
-	return typedResponse[*gmproto.GetOrCreateConversationResponse](c.sessionHandler.sendMessage(ctx, actionType, req))
+	return typedResponse[*gmproto.GetOrCreateConversationResponse](c.sessionHandler.sendUserMessage(ctx, actionType, req))
 }
 
 func (c *Client) GetConversationType(ctx context.Context, conversationID string) (*gmproto.GetConversationTypeResponse, error) {

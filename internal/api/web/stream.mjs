@@ -18,11 +18,57 @@ export function createParser(onEvent) {
     if (pending.length > 2 ** 20) throw new Error("Stream frame too large");
   };
 }
-export function newRequest(conversationID, text) {
+export function idempotencyKey() {
   const key = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("");
-  return { key, body: { conversation_id: conversationID, text } };
+  return key;
+}
+
+export function newRequest(conversationID, text, attachmentIDs = []) {
+  return {
+    key: idempotencyKey(),
+    body: {
+      conversation_id: conversationID,
+      text,
+      attachment_ids: [...attachmentIDs],
+    },
+  };
+}
+
+export function newConversationRequest(recipients) {
+  return {
+    key: idempotencyKey(),
+    body: { recipients: [...recipients] },
+  };
+}
+
+export function newReactionRequest(messageID, emoji, remove = false) {
+  return {
+    key: idempotencyKey(),
+    body: { message_id: messageID, emoji, remove },
+  };
+}
+
+export function parseRecipients(value) {
+  const recipients = value
+    .split(/[\s,;]+/)
+    .map((recipient) => recipient.trim())
+    .filter(Boolean);
+  if (
+    !recipients.length ||
+    recipients.some((recipient) => !/^\+[1-9]\d{1,14}$/.test(recipient))
+  )
+    throw new Error("Use international phone numbers such as +14155550100.");
+  return [...new Set(recipients)];
+}
+
+export function validateAttachments(files) {
+  if (files.length > 10) throw new Error("Choose no more than 10 attachments.");
+  const size = files.reduce((total, file) => total + file.size, 0);
+  if (size > 20 * 1024 * 1024)
+    throw new Error("Attachments must total 20 MiB or less.");
+  return size;
 }
 
 // Preserve fetched pages while applying live updates newer than a snapshot.

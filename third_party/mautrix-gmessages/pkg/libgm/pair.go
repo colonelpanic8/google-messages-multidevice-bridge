@@ -16,12 +16,19 @@ import (
 )
 
 func (c *Client) StartLogin(ctx context.Context) (string, error) {
-	registered, err := c.RegisterPhoneRelay()
+	lifecycle, err := c.lifecycleFor(ctx)
+	if err != nil {
+		return "", err
+	}
+	registered, err := c.RegisterPhoneRelayContext(lifecycle.ctx)
 	if err != nil {
 		return "", err
 	}
 	c.updateTachyonAuthToken(registered.GetAuthKeyData())
-	go c.doLongPoll(ctx, false, false, nil)
+	c.closeLongPolling()
+	if _, err = c.startLongPolling(lifecycle, false, false, nil); err != nil {
+		return "", err
+	}
 	qr, err := c.GenerateQRCodeData(registered.GetPairingKey())
 	if err != nil {
 		return "", fmt.Errorf("failed to generate QR code: %w", err)
@@ -44,40 +51,56 @@ func (c *Client) GenerateQRCodeData(pairingKey []byte) (string, error) {
 	return util.QRCodeURLBase + cData, nil
 }
 
-func (c *Client) handlePairingEvent(msg *IncomingRPCMessage) {
+func (c *Client) handlePairingEvent(msg *IncomingRPCMessage) error {
 	switch evt := msg.Pair.Event.(type) {
 	case *gmproto.RPCPairData_Paired:
-		c.completePairing(evt.Paired)
+		return c.completePairing(evt.Paired)
 	case *gmproto.RPCPairData_Revoked:
-		c.triggerEvent(evt.Revoked)
+		return c.triggerEvent(evt.Revoked)
 	default:
 		c.Logger.Debug().Any("evt", evt).Msg("Unknown pair event type")
+		return nil
 	}
 }
 
-func (c *Client) completePairing(data *gmproto.PairedData) {
+func (c *Client) completePairing(data *gmproto.PairedData) error {
 	c.updateTachyonAuthToken(data.GetTokenData())
 	c.AuthData.setDevices(data.Mobile, data.Browser)
 
 	if cb := c.PairCallback.Load(); cb != nil {
-		(*cb)(data)
+		if !c.beginCallback() {
+			return ErrConnectionClosed
+		}
+		func() {
+			defer c.endCallback()
+			(*cb)(data)
+		}()
 	} else {
-		c.triggerEvent(&events.PairSuccessful{PhoneID: data.GetMobile().GetSourceID(), QRData: data})
+		if err := c.triggerEvent(&events.PairSuccessful{PhoneID: data.GetMobile().GetSourceID(), QRData: data}); err != nil {
+			return err
+		}
 
-		go func() {
+		c.goCurrentWorker(func(ctx context.Context) {
 			// Sleep for a bit to let the phone save the pair data. If we reconnect too quickly,
 			// the phone won't recognize the session the bridge will get unpaired.
-			time.Sleep(2 * time.Second)
+			if !sleepContext(ctx, 2*time.Second) {
+				return
+			}
 
-			err := c.Reconnect(context.TODO())
+			err := c.Reconnect(ctx)
 			if err != nil {
 				c.Logger.Err(err).Msg("Failed to reconnect after pair success")
 			}
-		}()
+		})
 	}
+	return nil
 }
 
 func (c *Client) RegisterPhoneRelay() (*gmproto.RegisterPhoneRelayResponse, error) {
+	return c.RegisterPhoneRelayContext(context.Background())
+}
+
+func (c *Client) RegisterPhoneRelayContext(ctx context.Context) (*gmproto.RegisterPhoneRelayResponse, error) {
 	pubKey, err := c.AuthData.RefreshKey.GetPublicKey()
 	if err != nil {
 		return nil, err
@@ -104,11 +127,15 @@ func (c *Client) RegisterPhoneRelay() (*gmproto.RegisterPhoneRelayResponse, erro
 		},
 	}
 	return typedHTTPResponse[*gmproto.RegisterPhoneRelayResponse](
-		c.makeProtobufHTTPRequest(util.RegisterPhoneRelayURL, payload, ContentTypeProtobuf),
+		c.makeProtobufHTTPRequestContext(ctx, util.RegisterPhoneRelayURL, payload, ContentTypeProtobuf, false, false),
 	)
 }
 
 func (c *Client) RefreshPhoneRelay() (string, error) {
+	return c.RefreshPhoneRelayContext(context.Background())
+}
+
+func (c *Client) RefreshPhoneRelayContext(ctx context.Context) (string, error) {
 	payload := &gmproto.AuthenticationContainer{
 		AuthMessage: &gmproto.AuthMessage{
 			RequestID:        uuid.NewString(),
@@ -118,7 +145,7 @@ func (c *Client) RefreshPhoneRelay() (string, error) {
 		},
 	}
 	res, err := typedHTTPResponse[*gmproto.RefreshPhoneRelayResponse](
-		c.makeProtobufHTTPRequest(util.RefreshPhoneRelayURL, payload, ContentTypeProtobuf),
+		c.makeProtobufHTTPRequestContext(ctx, util.RefreshPhoneRelayURL, payload, ContentTypeProtobuf, false, false),
 	)
 	if err != nil {
 		return "", err
@@ -131,6 +158,10 @@ func (c *Client) RefreshPhoneRelay() (string, error) {
 }
 
 func (c *Client) GetWebEncryptionKey() (*gmproto.WebEncryptionKeyResponse, error) {
+	return c.GetWebEncryptionKeyContext(context.Background())
+}
+
+func (c *Client) GetWebEncryptionKeyContext(ctx context.Context) (*gmproto.WebEncryptionKeyResponse, error) {
 	payload := &gmproto.AuthenticationContainer{
 		AuthMessage: &gmproto.AuthMessage{
 			RequestID:        uuid.NewString(),
@@ -139,11 +170,15 @@ func (c *Client) GetWebEncryptionKey() (*gmproto.WebEncryptionKeyResponse, error
 		},
 	}
 	return typedHTTPResponse[*gmproto.WebEncryptionKeyResponse](
-		c.makeProtobufHTTPRequest(util.GetWebEncryptionKeyURL, payload, ContentTypeProtobuf),
+		c.makeProtobufHTTPRequestContext(ctx, util.GetWebEncryptionKeyURL, payload, ContentTypeProtobuf, false, false),
 	)
 }
 
 func (c *Client) UnpairBugle() (*gmproto.RevokeRelayPairingResponse, error) {
+	return c.UnpairBugleContext(context.Background())
+}
+
+func (c *Client) UnpairBugleContext(ctx context.Context) (*gmproto.RevokeRelayPairingResponse, error) {
 	_, browser := c.AuthData.devices()
 	if c.AuthData.TachyonToken() == nil || browser == nil {
 		return nil, nil
@@ -157,7 +192,7 @@ func (c *Client) UnpairBugle() (*gmproto.RevokeRelayPairingResponse, error) {
 		Browser: browser,
 	}
 	return typedHTTPResponse[*gmproto.RevokeRelayPairingResponse](
-		c.makeProtobufHTTPRequest(util.RevokeRelayPairingURL, payload, ContentTypeProtobuf),
+		c.makeProtobufHTTPRequestContext(ctx, util.RevokeRelayPairingURL, payload, ContentTypeProtobuf, false, false),
 	)
 }
 
@@ -165,7 +200,7 @@ func (c *Client) Unpair(ctx context.Context) (err error) {
 	if c.AuthData.HasCookies() {
 		err = c.UnpairGaia(ctx)
 	} else {
-		_, err = c.UnpairBugle()
+		_, err = c.UnpairBugleContext(ctx)
 	}
 	return
 }

@@ -151,12 +151,87 @@ aside {
   justify-content: space-between;
   gap: 14px;
 }
+.button-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .section-heading h2 {
   font-size: 1rem;
   font-weight: 650;
 }
 .section-heading button {
   font-size: 0.75rem;
+}
+.panel-form {
+  display: grid;
+  gap: 9px;
+  padding: 14px;
+  margin: 10px 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--paper);
+}
+.panel-form label {
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.panel-form p {
+  margin: 0;
+}
+.wide-button {
+  width: 100%;
+  margin: 4px 0 8px;
+}
+.pairing-panel ol {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+.pairing-panel li + li {
+  margin-top: 7px;
+}
+.pairing-panel a {
+  color: var(--accent);
+}
+.pairing-warning {
+  padding: 9px;
+  border-left: 3px solid #b87b24;
+  background: #fffbf2;
+  color: #6f4b18;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+.copy-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+.copy-field input {
+  min-width: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 0.7rem;
+}
+.pairing-emoji {
+  padding: 12px;
+  border-radius: 9px;
+  background: var(--tint);
+  color: var(--accent);
+  text-align: center;
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+.connection-actions {
+  padding: 10px;
+  margin-bottom: 8px;
+  border-radius: 9px;
+  background: #fffbf2;
+}
+.connection-actions p {
+  margin: 7px 0 0;
 }
 .conversation {
   display: block;
@@ -187,6 +262,28 @@ aside {
 .conversation.unread strong:before {
   content: "• ";
   color: var(--accent);
+}
+.history-panel {
+  border-top: 1px solid var(--border);
+  margin-top: 18px;
+  padding-top: 12px;
+}
+.history-job {
+  display: grid;
+  gap: 5px;
+  padding: 9px 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.7rem;
+}
+.history-job > span {
+  color: var(--muted);
+}
+.history-job.failed > span {
+  color: #9a4d35;
+}
+.history-job button {
+  padding: 0.35rem 0.55rem;
+  font-size: 0.65rem;
 }
 main {
   min-width: 0;
@@ -276,6 +373,39 @@ main {
   border-radius: 12px;
   margin: 3px;
 }
+.reaction-picker {
+  display: inline-block;
+  position: relative;
+  margin: 3px;
+  font-size: 0.7rem;
+}
+.reaction-picker summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+.reaction-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.reaction-choices button {
+  padding: 0.35rem;
+  border-radius: 999px;
+}
+.pending-reaction {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+  color: #82571b;
+  font-size: 0.7rem;
+}
+.pending-reaction button {
+  padding: 0.3rem 0.45rem;
+  font-size: 0.65rem;
+}
 #compose {
   border-top: 1px solid var(--border);
   padding-top: 18px;
@@ -284,12 +414,52 @@ main {
   resize: vertical;
   background: #fcfdfc;
 }
+.attachment-compose {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  margin-top: 10px;
+}
+.attachment-compose label {
+  font-size: 0.75rem;
+}
+.attachment-compose input {
+  padding: 0.55rem;
+  font-size: 0.75rem;
+}
+#selected-attachments {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.file-chip {
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.file-total {
+  padding: 3px 0;
+  font-weight: 600;
+}
 .compose-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
   margin-top: 12px;
+}
+.typing-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+.typing-toggle input {
+  width: auto;
 }
 #typing {
   height: 25px;
@@ -373,6 +543,10 @@ footer {
   .section-heading {
     margin-bottom: 8px;
   }
+  .thread-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
   #sync-status {
     margin: 6px 0;
   }
@@ -390,5 +564,14 @@ footer {
   }
   .compose-footer .hint {
     max-width: 55%;
+  }
+  .compose-footer {
+    align-items: flex-end;
+  }
+  .attachment-compose {
+    grid-template-columns: 1fr;
+  }
+  #selected-attachments {
+    grid-column: auto;
   }
 }

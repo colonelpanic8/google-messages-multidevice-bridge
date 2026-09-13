@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -56,4 +57,54 @@ func TestServeKeepsHistoryAvailableWithoutPairingAndJoinsShutdown(t *testing.T) 
 	case <-time.After(3 * time.Second):
 		t.Fatal("shutdown did not finish")
 	}
+}
+
+func TestSecretValueReadsPassWithoutShellOrLeakingErrors(t *testing.T) {
+	dir := t.TempDir()
+	// The test executable stands in for pass without consulting a password store.
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Symlink(exe, filepath.Join(dir, "pass")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("BRIDGE_TEST_PASS", "1")
+	for _, entry := range []string{"-option", "bad\nentry"} {
+		if _, err := secretValue("IGNORED", entry); err == nil {
+			t.Fatal("accepted unsafe entry")
+		}
+	}
+	value, err := secretValue("IGNORED", "entry with $literal and `ticks`")
+	if err != nil || value != "synthetic-secret" {
+		t.Fatalf("value=%q err=%v", value, err)
+	}
+	t.Setenv("BRIDGE_TEST_PASS", "fail")
+	value, err = secretValue("IGNORED", "valid-entry")
+	if value != "" || err == nil || strings.Contains(err.Error(), "private-output") {
+		t.Fatal("failed secret lookup exposed output")
+	}
+	t.Setenv("BRIDGE_TEST_PASS", "oversize")
+	if value, err = secretValue("IGNORED", "valid-entry"); err == nil || value != "" {
+		t.Fatal("accepted oversized output")
+	}
+}
+func TestMain(m *testing.M) {
+	if mode := os.Getenv("BRIDGE_TEST_PASS"); mode != "" {
+		if len(os.Args) != 3 || os.Args[1] != "show" {
+			os.Exit(2)
+		}
+		switch mode {
+		case "fail":
+			_, _ = os.Stdout.WriteString("private-output")
+			os.Exit(1)
+		case "oversize":
+			_, _ = os.Stdout.WriteString(strings.Repeat("x", 8192))
+		default:
+			_, _ = os.Stdout.WriteString("synthetic-secret\n")
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
 }

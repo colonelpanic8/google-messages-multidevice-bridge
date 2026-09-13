@@ -118,10 +118,12 @@ func (c *Client) decryptInternalMessage(data *gmproto.IncomingRPCMessage) (*Inco
 			}
 			// Hacky hack to have User.handleAccountChange do the right-ish thing on startup
 			if strings.ContainsRune(ed2c.GetAccountChange().GetAccount(), '@') {
-				c.triggerEvent(&events.AccountChange{
+				if err = c.triggerEvent(&events.AccountChange{
 					AccountChangeOrSomethingEvent: ed2c.GetAccountChange(),
 					IsFake:                        true,
-				})
+				}); err != nil {
+					return nil, fmt.Errorf("event handler rejected fake account change: %w", err)
+				}
 			}
 		}
 	default:
@@ -130,7 +132,9 @@ func (c *Client) decryptInternalMessage(data *gmproto.IncomingRPCMessage) (*Inco
 	return msg, nil
 }
 
-func (c *Client) deduplicateHash(id string, hash [32]byte) bool {
+func (c *Client) isDuplicateHash(id string, hash [32]byte) bool {
+	c.recentUpdatesLock.Lock()
+	defer c.recentUpdatesLock.Unlock()
 	const recentUpdatesLen = len(c.recentUpdates)
 	for i := c.recentUpdatesPtr + recentUpdatesLen - 1; i >= c.recentUpdatesPtr; i-- {
 		if c.recentUpdates[i%recentUpdatesLen].id == id {
@@ -141,9 +145,20 @@ func (c *Client) deduplicateHash(id string, hash [32]byte) bool {
 			}
 		}
 	}
-	c.recentUpdates[c.recentUpdatesPtr] = updateDedupItem{id: id, hash: hash}
-	c.recentUpdatesPtr = (c.recentUpdatesPtr + 1) % recentUpdatesLen
 	return false
+}
+
+func (c *Client) rememberHash(id string, hash [32]byte) {
+	c.recentUpdatesLock.Lock()
+	c.recentUpdates[c.recentUpdatesPtr] = updateDedupItem{id: id, hash: hash}
+	c.recentUpdatesPtr = (c.recentUpdatesPtr + 1) % len(c.recentUpdates)
+	c.recentUpdatesLock.Unlock()
+}
+
+func (c *Client) rememberUpdate(id string, msg *IncomingRPCMessage, hash [32]byte) {
+	if msg.DecryptedData != nil {
+		c.rememberHash(id, hash)
+	}
 }
 
 func (c *Client) logContent(res *IncomingRPCMessage, thingID string, contentHash []byte) {
@@ -165,32 +180,32 @@ func (c *Client) logContent(res *IncomingRPCMessage, thingID string, contentHash
 	}
 }
 
-func (c *Client) deduplicateUpdate(id string, msg *IncomingRPCMessage) bool {
+func (c *Client) duplicateUpdate(id string, msg *IncomingRPCMessage) (bool, [32]byte) {
 	if msg.DecryptedData != nil {
 		contentHash := sha256.Sum256(msg.DecryptedData)
-		if c.deduplicateHash(id, contentHash) {
+		if c.isDuplicateHash(id, contentHash) {
 			c.Logger.Trace().
 				Str("thing_id", id).
 				Hex("data_hash", contentHash[:]).
 				Bool("is_old", msg.IsOld).
 				Msg("Ignoring duplicate update")
-			return true
+			return true, contentHash
 		}
 		c.logContent(msg, id, contentHash[:])
+		return false, contentHash
 	}
-	return false
+	return false, [32]byte{}
 }
 
 func (c *Client) HandleRPCMsg(rawMsg *gmproto.IncomingRPCMessage) {
 	msg, err := c.decryptInternalMessage(rawMsg)
 	if err != nil {
 		c.Logger.Err(err).Str("message_id", rawMsg.ResponseID).Msg("Failed to decode incoming RPC message")
-		c.sessionHandler.queueMessageAck(rawMsg.ResponseID)
 		return
 	}
 
-	c.sessionHandler.queueMessageAck(msg.ResponseID)
 	if c.sessionHandler.receiveResponse(msg) {
+		c.sessionHandler.queueMessageAck(msg.ResponseID)
 		return
 	}
 	logEvt := c.Logger.Debug().
@@ -202,19 +217,23 @@ func (c *Client) HandleRPCMsg(rawMsg *gmproto.IncomingRPCMessage) {
 	logEvt.Msg("Received message")
 	switch msg.BugleRoute {
 	case gmproto.BugleRoute_PairEvent:
-		c.handlePairingEvent(msg)
+		err = c.handlePairingEvent(msg)
 	case gmproto.BugleRoute_GaiaEvent:
 		c.handleGaiaPairingEvent(msg)
 	case gmproto.BugleRoute_DataEvent:
-		if c.skipCount > 0 {
-			c.skipCount--
+		if c.consumeSkip() {
 			msg.IsOld = true
 		}
 		if !msg.IsOld {
 			c.onPhoneActivity("data event")
 		}
-		c.handleUpdatesEvent(msg)
+		err = c.handleUpdatesEvent(msg)
 	}
+	if err != nil {
+		c.Logger.Error().Err(err).Str("message_id", msg.ResponseID).Msg("Event handler rejected incoming RPC message")
+		return
+	}
+	c.sessionHandler.queueMessageAck(msg.ResponseID)
 }
 
 type WrappedMessage struct {
@@ -225,15 +244,14 @@ type WrappedMessage struct {
 
 var hackyLoggedOutBytes = []byte{0x72, 0x00}
 
-func (c *Client) handleUpdatesEvent(msg *IncomingRPCMessage) {
+func (c *Client) handleUpdatesEvent(msg *IncomingRPCMessage) error {
 	switch msg.Message.Action {
 	case gmproto.ActionType_GET_UPDATES:
 		if msg.DecryptedData == nil && bytes.Equal(msg.Message.UnencryptedData, hackyLoggedOutBytes) {
-			c.triggerEvent(&events.GaiaLoggedOut{})
-			return
+			return c.triggerEvent(&events.GaiaLoggedOut{})
 		}
 		if !msg.IsOld {
-			c.bumpNextDataReceiveCheck(c.dataReceiveCheckInterval)
+			c.bumpNextDataReceiveCheck(c.dataCheckInterval())
 		}
 		data, ok := msg.DecryptedMessage.(*gmproto.UpdateEvents)
 		if !ok {
@@ -241,61 +259,75 @@ func (c *Client) handleUpdatesEvent(msg *IncomingRPCMessage) {
 				Type("data_type", msg.DecryptedMessage).
 				Bool("is_old", msg.IsOld).
 				Msg("Unexpected data type in GET_UPDATES event")
-			return
+			return nil
 		}
 
 		switch evt := data.Event.(type) {
 		case *gmproto.UpdateEvents_UserAlertEvent:
 			c.logContent(msg, "", nil)
 			if msg.IsOld {
-				return
+				return nil
 			}
-			c.triggerEvent(evt.UserAlertEvent)
+			return c.triggerEvent(evt.UserAlertEvent)
 
 		case *gmproto.UpdateEvents_SettingsEvent:
 			c.Logger.Debug().
 				Str("data", base64.StdEncoding.EncodeToString(msg.DecryptedData)).
 				Bool("is_old", msg.IsOld).
 				Msg("Got settings event")
-			c.triggerEvent(evt.SettingsEvent)
+			return c.triggerEvent(evt.SettingsEvent)
 
 		case *gmproto.UpdateEvents_ConversationEvent:
 			for _, part := range evt.ConversationEvent.GetData() {
-				if c.deduplicateUpdate(part.GetConversationID(), msg) {
-					return
+				duplicate, hash := c.duplicateUpdate(part.GetConversationID(), msg)
+				if duplicate {
+					continue
 				} else if msg.IsOld {
 					c.Logger.Debug().Str("conv_id", part.ConversationID).Msg("Ignoring old conversation event")
+					c.rememberUpdate(part.GetConversationID(), msg, hash)
 					continue
 				}
-				c.triggerEvent(part)
+				if err := c.triggerEvent(part); err != nil {
+					return err
+				}
+				c.rememberUpdate(part.GetConversationID(), msg, hash)
 			}
+			return nil
 
 		case *gmproto.UpdateEvents_MessageEvent:
 			for _, part := range evt.MessageEvent.GetData() {
-				if c.deduplicateUpdate(part.GetMessageID(), msg) {
-					return
+				duplicate, hash := c.duplicateUpdate(part.GetMessageID(), msg)
+				if duplicate {
+					continue
 				}
-				c.triggerEvent(&WrappedMessage{
+				if err := c.triggerEvent(&WrappedMessage{
 					Message: part,
 					IsOld:   msg.IsOld,
 					Data:    msg.DecryptedData,
-				})
+				}); err != nil {
+					return err
+				}
+				c.rememberUpdate(part.GetMessageID(), msg, hash)
 			}
+			return nil
 
 		case *gmproto.UpdateEvents_TypingEvent:
 			c.logContent(msg, "", nil)
 			if msg.IsOld {
-				return
+				return nil
 			}
-			c.triggerEvent(evt.TypingEvent.GetData())
+			return c.triggerEvent(evt.TypingEvent.GetData())
 
 		case *gmproto.UpdateEvents_BrowserPresenceCheckEvent:
 			c.Logger.Trace().Msg("Got browser presence check, sending ack")
-			go c.ackBrowserPresence(c.Logger.WithContext(context.TODO()))
+			c.goCurrentWorker(func(ctx context.Context) {
+				c.ackBrowserPresence(c.Logger.WithContext(ctx))
+			})
+			return nil
 
 		case *gmproto.UpdateEvents_AccountChange:
 			c.logContent(msg, "", nil)
-			c.triggerEvent(&events.AccountChange{
+			return c.triggerEvent(&events.AccountChange{
 				AccountChangeOrSomethingEvent: evt.AccountChange,
 			})
 
@@ -316,4 +348,5 @@ func (c *Client) handleUpdatesEvent(msg *IncomingRPCMessage) {
 			Str("evt_data", base64.StdEncoding.EncodeToString(msg.GetMessageData())).
 			Msg("Unexpected response data")
 	}
+	return nil
 }

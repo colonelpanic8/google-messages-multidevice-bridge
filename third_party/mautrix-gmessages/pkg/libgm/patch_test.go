@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,12 +16,30 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/exhttp"
+	"google.golang.org/protobuf/proto"
 
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 )
 
 func testClient() *Client {
 	return NewClient(NewAuthData(), nil, zerolog.Nop(), exhttp.SensibleClientSettings)
+}
+
+func testClientWithServer(server *httptest.Server) (*Client, *rewriteTransport) {
+	transport := &rewriteTransport{target: server.Listener.Addr().String(), inner: http.DefaultTransport}
+	settings := exhttp.SensibleClientSettings
+	settings.TransportOverride = func(exhttp.ClientSettings) http.RoundTripper { return transport }
+	return NewClient(NewAuthData(), nil, zerolog.Nop(), settings), transport
+}
+
+func loggedInTestClient(server *httptest.Server) (*Client, *rewriteTransport) {
+	c, transport := testClientWithServer(server)
+	c.AuthData.setDevices(&gmproto.Device{}, &gmproto.Device{})
+	c.updateTachyonAuthToken(&gmproto.TokenData{
+		TachyonAuthToken: []byte("test-token"),
+		TTL:              int64((24 * time.Hour) / time.Microsecond),
+	})
+	return c, transport
 }
 
 func TestNoRetrySendsExactlyOneRequestOnServerError(t *testing.T) {
@@ -112,8 +132,12 @@ func TestTokenRefreshDoesNotRaceRequestBuilding(t *testing.T) {
 
 func TestDisconnectJoinsAckTicker(t *testing.T) {
 	c := testClient()
-	c.sessionHandler.startAckInterval()
-	c.sessionHandler.startAckInterval()
+	lifecycle, err := c.lifecycleFor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.sessionHandler.startAckInterval(lifecycle)
+	c.sessionHandler.startAckInterval(lifecycle)
 	c.sessionHandler.ackRunLock.Lock()
 	done := c.sessionHandler.ackDone
 	c.sessionHandler.ackRunLock.Unlock()
@@ -124,7 +148,11 @@ func TestDisconnectJoinsAckTicker(t *testing.T) {
 		t.Fatal("ack goroutine still running after Disconnect")
 	}
 	c.sessionHandler.queueMessageAck("m1")
-	c.sessionHandler.startAckInterval()
+	lifecycle, err = c.lifecycleFor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.sessionHandler.startAckInterval(lifecycle)
 	c.Disconnect()
 	c.sessionHandler.ackMapLock.Lock()
 	queued := len(c.sessionHandler.ackMap)
@@ -202,6 +230,15 @@ func TestSendMessageIssuesOnePOSTOnServerError(t *testing.T) {
 	}
 	if got := transport.hits.Load(); got != ServerErrorMaxAttempts {
 		t.Fatalf("background request issued %d POSTs, want %d", got, ServerErrorMaxAttempts)
+	}
+
+	transport.hits.Store(0)
+	_, err = c.GetOrCreateConversation(ctx, &gmproto.GetOrCreateConversationRequest{})
+	if err == nil {
+		t.Fatal("server error must surface")
+	}
+	if got := transport.hits.Load(); got != 1 {
+		t.Fatalf("GetOrCreateConversation issued %d POSTs", got)
 	}
 }
 
@@ -292,4 +329,385 @@ func TestDownloadMediaContextCancelsBeforeHeaders(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("download did not stop after cancellation")
 	}
+}
+
+func TestUploadMediaContextCancellationAndBoundedResponse(t *testing.T) {
+	t.Run("start before headers", func(t *testing.T) {
+		started := make(chan struct{})
+		release := make(chan struct{})
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(started)
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+		}))
+		defer func() {
+			close(release)
+			server.Close()
+		}()
+		c, _ := testClientWithServer(server)
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		go func() {
+			_, err := c.StartUploadMediaContext(ctx, []byte("encrypted"), "image/png")
+			result <- err
+		}()
+		<-started
+		cancel()
+		select {
+		case err := <-result:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("start upload returned %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("start upload did not stop after cancellation")
+		}
+	})
+
+	t.Run("finalize before headers", func(t *testing.T) {
+		started := make(chan struct{})
+		release := make(chan struct{})
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(started)
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+		}))
+		defer func() {
+			close(release)
+			server.Close()
+		}()
+		c, _ := testClientWithServer(server)
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		go func() {
+			_, err := c.FinalizeUploadMediaContext(ctx, &StartGoogleUpload{
+				UploadURL:           server.URL,
+				MimeType:            "image/png",
+				EncryptedMediaBytes: []byte("encrypted"),
+			})
+			result <- err
+		}()
+		<-started
+		cancel()
+		select {
+		case err := <-result:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("finalize upload returned %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("finalize upload did not stop after cancellation")
+		}
+	})
+
+	t.Run("full upload finalize cancellation", func(t *testing.T) {
+		finalizeStarted := make(chan struct{})
+		release := make(chan struct{})
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/finalize" {
+				w.Header().Set("x-goog-upload-chunk-granularity", "1")
+				w.Header().Set("x-goog-upload-url", "http://"+r.Host+"/finalize")
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			close(finalizeStarted)
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+		}))
+		defer func() {
+			close(release)
+			server.Close()
+		}()
+		c, _ := testClientWithServer(server)
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		go func() {
+			_, err := c.UploadMediaContext(ctx, []byte("media"), "photo.png", "image/png")
+			result <- err
+		}()
+		<-finalizeStarted
+		cancel()
+		select {
+		case err := <-result:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("upload returned %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("upload did not stop after cancellation")
+		}
+	})
+
+	t.Run("bounded finalize response", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, strings.Repeat("x", maxUploadResponseBytes+1))
+		}))
+		defer server.Close()
+		c, _ := testClientWithServer(server)
+		_, err := c.FinalizeUploadMediaContext(context.Background(), &StartGoogleUpload{
+			UploadURL:           server.URL,
+			MimeType:            "image/png",
+			EncryptedMediaBytes: []byte("encrypted"),
+		})
+		if err == nil || !strings.Contains(err.Error(), "exceeds") {
+			t.Fatalf("expected bounded response error, got %v", err)
+		}
+	})
+}
+
+func TestConnectDisconnectLifecycleIsReusable(t *testing.T) {
+	started := make(chan int32, 4)
+	release := make(chan struct{})
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := requests.Add(1)
+		started <- request
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer func() {
+		close(release)
+		server.Close()
+	}()
+	c, transport := loggedInTestClient(server)
+
+	const callers = 8
+	var connects sync.WaitGroup
+	connects.Add(callers)
+	errs := make(chan error, callers)
+	for range callers {
+		go func() {
+			defer connects.Done()
+			errs <- c.Connect(context.Background())
+		}()
+	}
+	connects.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Connect returned %v", err)
+		}
+	}
+	if request := <-started; request != 1 {
+		t.Fatalf("first poll request number is %d", request)
+	}
+	if got := transport.hits.Load(); got != 1 {
+		t.Fatalf("concurrent Connect issued %d poll requests", got)
+	}
+
+	var disconnects sync.WaitGroup
+	disconnects.Add(callers)
+	for range callers {
+		go func() {
+			defer disconnects.Done()
+			c.Disconnect()
+		}()
+	}
+	disconnects.Wait()
+	if c.pollIsRunning() {
+		t.Fatal("poll still marked running after Disconnect")
+	}
+
+	if err := c.Connect(context.Background()); err != nil {
+		t.Fatalf("reusable Connect returned %v", err)
+	}
+	if request := <-started; request != 2 {
+		t.Fatalf("second poll request number is %d", request)
+	}
+	c.Disconnect()
+}
+
+func TestDisconnectCancelsAndJoinsInflightAck(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer func() {
+		close(release)
+		server.Close()
+	}()
+	c, _ := loggedInTestClient(server)
+	lifecycle, err := c.lifecycleFor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.sessionHandler.queueMessageAck("ack-1")
+	if !c.goWorker(lifecycle, func(ctx context.Context) { c.sessionHandler.sendAckRequest(ctx) }) {
+		t.Fatal("failed to start ack worker")
+	}
+	<-started
+	c.Disconnect()
+	c.sessionHandler.ackMapLock.Lock()
+	queued := append([]string(nil), c.sessionHandler.ackMap...)
+	c.sessionHandler.ackMapLock.Unlock()
+	if len(queued) != 1 || queued[0] != "ack-1" {
+		t.Fatalf("canceled ack was not requeued: %v", queued)
+	}
+}
+
+func TestDisconnectJoinsCallbacksAndClosesAdmission(t *testing.T) {
+	c := testClient()
+	_, err := c.lifecycleFor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	c.SetEventHandler(func(any) {
+		calls.Add(1)
+		close(started)
+		<-release
+	})
+	callbackDone := make(chan struct{})
+	go func() {
+		_ = c.triggerEvent("event")
+		close(callbackDone)
+	}()
+	<-started
+	disconnected := make(chan struct{})
+	go func() {
+		c.Disconnect()
+		close(disconnected)
+	}()
+	select {
+	case <-disconnected:
+		t.Fatal("Disconnect returned while a callback was still running")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-disconnected:
+	case <-time.After(time.Second):
+		t.Fatal("Disconnect did not join callback")
+	}
+	<-callbackDone
+	if err := c.triggerEvent("late"); !errors.Is(err, ErrConnectionClosed) {
+		t.Fatalf("late callback admission returned %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("handler called %d times", got)
+	}
+	var pairCalls atomic.Int32
+	pairCallback := func(*gmproto.PairedData) { pairCalls.Add(1) }
+	c.PairCallback.Store(&pairCallback)
+	if err := c.completePairing(&gmproto.PairedData{}); !errors.Is(err, ErrConnectionClosed) {
+		t.Fatalf("late pair callback admission returned %v", err)
+	}
+	if got := pairCalls.Load(); got != 0 {
+		t.Fatalf("pair callback called %d times after Disconnect", got)
+	}
+}
+
+func TestHandlerErrorDefersAck(t *testing.T) {
+	c := testClient()
+	pairData, err := proto.Marshal(&gmproto.RPCPairData{
+		Event: &gmproto.RPCPairData_Revoked{Revoked: &gmproto.RevokePairData{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := &gmproto.IncomingRPCMessage{
+		ResponseID:  "incoming-1",
+		BugleRoute:  gmproto.BugleRoute_PairEvent,
+		MessageData: pairData,
+	}
+	rejected := errors.New("not persisted")
+	c.SetEventHandlerWithError(func(any) error { return rejected })
+	c.HandleRPCMsg(raw)
+	c.sessionHandler.ackMapLock.Lock()
+	queued := len(c.sessionHandler.ackMap)
+	c.sessionHandler.ackMapLock.Unlock()
+	if queued != 0 {
+		t.Fatalf("rejected event queued %d acks", queued)
+	}
+	c.SetEventHandler(func(any) {})
+	c.HandleRPCMsg(raw)
+	c.sessionHandler.ackMapLock.Lock()
+	queued = len(c.sessionHandler.ackMap)
+	c.sessionHandler.ackMapLock.Unlock()
+	if queued != 1 {
+		t.Fatalf("accepted event queued %d acks", queued)
+	}
+}
+
+func TestHandlerAndFirstListStateAreRaceSafe(t *testing.T) {
+	c := testClient()
+	var annotations atomic.Int32
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if c.nextListConversationsMessageType() == gmproto.MessageType_BUGLE_ANNOTATION {
+				annotations.Add(1)
+			}
+		}()
+	}
+	for range 100 {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			c.SetEventHandler(func(any) {})
+		}()
+		go func() {
+			defer wg.Done()
+			c.SetEventHandlerWithError(func(any) error { return nil })
+		}()
+		go func() {
+			defer wg.Done()
+			if err := c.triggerEvent("event"); err != nil {
+				t.Errorf("triggerEvent returned %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := annotations.Load(); got != 1 {
+		t.Fatalf("annotation message type selected %d times", got)
+	}
+}
+
+func TestStartLoginCancellationBeforeHeaders(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer func() {
+		close(release)
+		server.Close()
+	}()
+	c, _ := testClientWithServer(server)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := c.StartLogin(ctx)
+		result <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("StartLogin returned %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("StartLogin did not stop after cancellation")
+	}
+	c.Disconnect()
 }

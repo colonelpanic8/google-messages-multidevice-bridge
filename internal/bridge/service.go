@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
-	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/provider"
@@ -118,27 +116,65 @@ func (b *Bridge) prepare() error {
 	return nil
 }
 func (b *Bridge) Queue(id string, req model.SendRequest) (model.Outbox, bool, error) {
-	if !validKey.MatchString(id) || req.ConversationID == "" || len(req.ConversationID) > 256 || strings.TrimSpace(req.Text) == "" || len(req.Text) > 16000 || !utf8.ValidString(req.Text) {
+	b.mutationMu.Lock()
+	defer b.mutationMu.Unlock()
+	if b.PairingActive() {
+		return model.Outbox{}, false, ErrPairing
+	}
+	if err := validateRequest(&req); err != nil || !validKey.MatchString(id) {
 		return model.Outbox{}, false, ErrInvalid
 	}
 	if existing, err := b.Store.Outbox(id); err == nil {
-		if existing.Request != req {
+		if !existing.Request.Equal(req) {
 			return model.Outbox{}, false, store.ErrConflict
 		}
 		return existing, false, nil
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return model.Outbox{}, false, err
 	}
-	raw, err := b.Store.Record("conversation", req.ConversationID)
-	if err != nil {
-		return model.Outbox{}, false, err
-	}
-	var conv model.Conversation
-	if err = json.Unmarshal(raw, &conv); err != nil {
-		return model.Outbox{}, false, err
-	}
-	if conv.ReadOnly || conv.State == "deleted" {
-		return model.Outbox{}, false, ErrInvalid
+	if req.Kind != "conversation" {
+		if current, err := b.Store.EntityCurrent("conversation", req.ConversationID); err != nil {
+			return model.Outbox{}, false, err
+		} else if !current {
+			return model.Outbox{}, false, ErrInvalid
+		}
+		raw, err := b.Store.Record("conversation", req.ConversationID)
+		if err != nil {
+			return model.Outbox{}, false, err
+		}
+		var conv model.Conversation
+		if err = json.Unmarshal(raw, &conv); err != nil {
+			return model.Outbox{}, false, err
+		}
+		if conv.ReadOnly || conv.State == "deleted" {
+			return model.Outbox{}, false, ErrInvalid
+		}
+		if req.Kind == "reaction" {
+			if current, err := b.Store.EntityCurrent("message", req.MessageID); err != nil {
+				return model.Outbox{}, false, err
+			} else if !current {
+				return model.Outbox{}, false, ErrInvalid
+			}
+			raw, err = b.Store.Record("message", req.MessageID)
+			if err != nil {
+				return model.Outbox{}, false, err
+			}
+			var msg model.Message
+			if json.Unmarshal(raw, &msg) != nil || msg.ConversationID != req.ConversationID || msg.Deleted {
+				return model.Outbox{}, false, ErrInvalid
+			}
+		}
+		var size int64
+		for _, id := range req.AttachmentIDs {
+			upload, err := b.upload(id)
+			if err != nil {
+				return model.Outbox{}, false, err
+			}
+			size += upload.Size
+		}
+		if size > provider.MaxAttachmentBytes {
+			return model.Outbox{}, false, provider.ErrTooLarge
+		}
 	}
 	o, created, err := b.Store.Enqueue(id, util.GenerateTmpID(), req)
 	if err == nil {
@@ -198,7 +234,14 @@ func (b *Bridge) sendOne(ctx context.Context) (bool, error) {
 			continue
 		}
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		target, err := p.Prepare(callCtx, candidate.Request.ConversationID)
+		var target provider.SendTarget
+		var err error
+		if candidate.Request.Kind != "conversation" {
+			target, err = p.Prepare(callCtx, candidate.Request.ConversationID)
+		}
+		if err == nil {
+			target, err = b.prepareMedia(callCtx, p, target, candidate.Request)
+		}
 		cancel()
 		if ctx.Err() != nil {
 			return false, nil
@@ -214,11 +257,24 @@ func (b *Bridge) sendOne(ctx context.Context) (bool, error) {
 			b.Hub.Notify()
 			return true, nil
 		}
+		if errors.Is(err, ErrStorage) {
+			return false, err
+		}
 		if err != nil {
 			blocked[candidate.Request.ConversationID] = true
 			continue
 		}
-		o, err := b.Store.ClaimQueued(candidate.ID)
+		if b.PairingActive() {
+			return false, nil
+		}
+		watermark, err := b.Store.HistoryWatermark()
+		if err != nil {
+			return false, err
+		}
+		o, err := b.claimSend(candidate.ID)
+		if errors.Is(err, ErrPairing) {
+			return false, nil
+		}
 		if errors.Is(err, store.ErrConflict) {
 			continue
 		}
@@ -227,9 +283,29 @@ func (b *Bridge) sendOne(ctx context.Context) (bool, error) {
 		}
 		b.Hub.Notify()
 		callCtx, cancel = context.WithTimeout(ctx, b.sendTimeout)
-		err = p.Send(callCtx, target, o)
+		switch o.Request.Kind {
+		case "conversation":
+			var snap provider.Snapshot
+			snap, err = p.CreateConversation(callCtx, o.Request.Recipients)
+			if err == nil {
+				cancel()
+				if err = b.Store.FinishConversation(o.ID, snap.Event, snap.Private, watermark); err != nil {
+					return true, err
+				}
+				b.Hub.Notify()
+				b.RequestSync()
+				return true, nil
+			}
+		case "reaction":
+			err = p.React(callCtx, target, o.Request.MessageID, o.Request.Emoji, o.Request.Remove)
+		default:
+			err = p.Send(callCtx, target, o)
+		}
 		cancel()
 		state, detail := "accepted", "Google accepted the request; delivery is not confirmed"
+		if o.Request.Kind == "reaction" {
+			detail = "Google accepted the reaction update"
+		}
 		if errors.Is(err, provider.ErrRejected) {
 			state, detail = "rejected", "Provider explicitly rejected the send request"
 		} else if err != nil {
@@ -328,6 +404,16 @@ func (b *Bridge) reconcile(ctx context.Context) error {
 	return nil
 }
 func (b *Bridge) MarkRead(ctx context.Context, conv, id string) error {
+	b.mutationMu.Lock()
+	defer b.mutationMu.Unlock()
+	if b.PairingActive() {
+		return ErrPairing
+	}
+	if current, err := b.Store.EntityCurrent("message", id); err != nil {
+		return err
+	} else if !current {
+		return ErrInvalid
+	}
 	raw, err := b.Store.Record("message", id)
 	if err != nil {
 		return err
@@ -380,4 +466,13 @@ func (b *Bridge) Attachment(ctx context.Context, id string) ([]byte, error) {
 		return nil, err
 	}
 	return data, nil
+}
+
+func (b *Bridge) claimSend(id string) (model.Outbox, error) {
+	b.mutationMu.Lock()
+	defer b.mutationMu.Unlock()
+	if b.PairingActive() {
+		return model.Outbox{}, ErrPairing
+	}
+	return b.Store.ClaimQueued(id)
 }

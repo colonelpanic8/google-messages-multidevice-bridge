@@ -55,6 +55,8 @@ func apiError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, provider.ErrTooLarge):
 		code, message = 413, "attachment exceeds size limit"
+	case errors.Is(err, bridge.ErrPairing):
+		code, message = 503, "pairing is in progress"
 	case errors.Is(err, bridge.ErrInvalid):
 		code, message = 400, "invalid request"
 	case errors.Is(err, store.ErrNotFound):
@@ -106,6 +108,12 @@ func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 			if err = json.Unmarshal(data, &c); err != nil {
 				apiError(w, err)
 				return
+			}
+			if current, err := b.Store.EntityCurrent("conversation", c.ID); err != nil {
+				apiError(w, err)
+				return
+			} else if !current {
+				c.ReadOnly = true
 			}
 			convs = append(convs, c)
 		}

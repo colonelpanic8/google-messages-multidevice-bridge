@@ -26,11 +26,6 @@ const ContentTypePBLite = "application/json+protobuf"
 const ServerErrorMaxAttempts = 3
 const ServerErrorRetryInterval = 1 * time.Second
 
-func (c *Client) makeProtobufHTTPRequest(url string, data proto.Message, contentType string) (*http.Response, error) {
-	ctx := c.Logger.WithContext(context.TODO())
-	return c.makeProtobufHTTPRequestContext(ctx, url, data, contentType, false, false)
-}
-
 // noRetry disables the automatic re-POST on server errors. Mutating requests
 // must never be replayed transparently: the phone may have processed the first
 // attempt even when the relay answered with a server error.

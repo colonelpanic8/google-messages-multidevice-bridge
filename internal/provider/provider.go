@@ -17,6 +17,8 @@ var ErrRejected = errors.New("provider rejected send")
 // ErrUnavailable reports a read-only operation that could not complete.
 var ErrUnavailable = errors.New("provider unavailable")
 
+var ErrUnsupportedCursor = errors.New("provider history cursor is unsupported")
+
 // ErrAmbiguous reports a mutating request whose outcome is unknown.
 var ErrAmbiguous = errors.New("send outcome unknown")
 
@@ -29,6 +31,7 @@ type Snapshot struct {
 // SendTarget is resolved by a read-only preflight and consumed by one Send.
 type SendTarget struct {
 	ConversationID string
+	Media          [][]byte
 	participantID  string
 	sim            simPayload
 }
@@ -36,6 +39,12 @@ type SendTarget struct {
 type Provider interface {
 	Conversations(context.Context) ([]Snapshot, error)
 	Messages(context.Context, string) ([]Snapshot, error)
+	CreateConversation(context.Context, []string) (Snapshot, error)
+	React(context.Context, SendTarget, string, string, bool) error
+	Typing(context.Context, SendTarget) error
+	Upload(context.Context, []byte, string, string) ([]byte, error)
+	MessagePage(context.Context, string, []byte) ([]Snapshot, []byte, error)
+	ConversationPage(context.Context, string, []byte) ([]Snapshot, []byte, error)
 	// Prepare validates the destination without side effects. ErrRejected means
 	// the send can be refused durably; any other error leaves it queued.
 	Prepare(context.Context, string) (SendTarget, error)

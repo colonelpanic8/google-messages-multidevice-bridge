@@ -18,9 +18,9 @@ be disabled from outside the package.
 1. `http.go`, `session_handler.go`: `SendMessageParams.NoRetry` and a
    `noRetry` argument on `makeProtobufHTTPRequestContext`. `sendUserMessage`
    (SendMessage, SendReaction, DeleteMessage, UpdateConversation,
-   GetFullSizeImage) sets it, preventing libgm's 5xx retry loop. A regression
-   test drives the public `Client.SendMessage` path and observes one POST on a
-   local 500 response.
+   GetFullSizeImage, GetOrCreateConversation) sets it, preventing libgm's 5xx
+   retry loop. Regression tests drive the public mutation paths and observe one
+   POST on a local 500 response.
 2. `client.go`: `CheckRedirect` refuses redirects for non-GET requests and
    returns the 3xx response, which the caller reports as an error. The public
    send-path test also verifies that a 307 target is not reached. These guards
@@ -34,31 +34,56 @@ be disabled from outside the package.
    started the poll. Mutable auth tokens, device pointers, and auth UUIDs use
    the same outer lock. The bridge holds its read lock while marshaling
    `AuthData`; lock order is outer auth lock, then cipher lock.
-4. `media.go`: `DownloadMediaContext` binds cancellation to the GET before
-   response headers arrive; `DownloadMedia` remains as a background-context
-   compatibility wrapper. The provider uses the context-aware method, bounds
-   the decrypted body, closes it once on cancellation, and joins its watcher.
-5. `session_handler.go`, `client.go`: the ack ticker goroutine is stoppable and
-   `Disconnect` joins it. Ack-run state and session IDs have narrow locks.
+4. `media.go`: `DownloadMediaContext`, `UploadMediaContext`,
+   `StartUploadMediaContext`, and `FinalizeUploadMediaContext` bind caller
+   cancellation to their HTTP requests, including the wait for response
+   headers. The old methods remain as background-context compatibility
+   wrappers. Final upload response parsing is capped at 1 MiB. The provider
+   bounds downloaded plaintext, closes it once on cancellation, and joins its
+   watcher.
+5. `client.go`, `longpoll.go`, `session_handler.go`, `pair.go`, and
+   `pair_google.go`: each active client lifecycle owns the poll loop, ack
+   ticker, pinger and its response/recovery workers, poll timeout watchers,
+   catch-up requests, post-connect work, and reconnect-after-pair work.
+   `Disconnect` first closes callback admission and cancels the lifecycle,
+   then closes the poll, fails response waiters, and joins all owned workers.
+   ACK HTTP attempts have a 15-second upper bound in addition to lifecycle
+   cancellation. Connect and Disconnect are serialized and a client can be
+   reused after Disconnect. QR registration gained context-aware methods so
+   cancellation also covers the request before the pairing poll starts.
+6. `client.go`, `longpoll.go`, `event_handler.go`, and `methods.go`: poll
+   generation/connection state, disconnect state, skip counts, event handlers,
+   update deduplication, and first-conversation-list selection are synchronized.
+   `SetEventHandlerWithError` is an opt-in handler whose successful return
+   admits the incoming event ACK; an error leaves the RPC unacknowledged for
+   redelivery. The original `SetEventHandler(func(any))` remains compatible and
+   treats normal handler return as acceptance.
 
 ## Accepted upstream limitations
 
-- Message acks are queued before the event handler runs and sent on a 5 s
-  ticker. Committing inside the handler narrows but does not close the window
-  in which Google may consider an event acknowledged before it is on disk.
-  The bridge's periodic bounded reconciliation is the repair mechanism.
-- `Disconnect` joins the ack ticker but not the poll loop, ditto pinger,
-  `postConnect`, ping wait/recovery workers, reconnect-after-pair workers, or
-  long-poll timeout watchers. Helpers spawned with `context.TODO()` (including
-  `ackBrowserPresence`, `requestUpdatesAfterGap`, and `postConnect` requests)
-  have an independent lifetime and may outlive poll cancellation until their
-  HTTP calls or response waits finish. If the ack ticker is already sending,
-  its joined shutdown likewise waits for that independent-context HTTP call to
-  finish or time out. `listenID`, `longPollingConn`,
-  `disconnecting`, `skipCount`, and event-handler access remain unsynchronized.
-  This is a live lifecycle/race risk not covered by the synthetic tests. The
-  bridge mitigates callbacks by closing its callback gate before disconnect.
-- `conversationsFetchedOnce` is unsynchronized; the bridge serializes
-  `ListConversations`.
-- The default `DownloadMedia` wrapper still has no caller cancellation; users
-  requiring cancellation must call `DownloadMediaContext`.
+- `SetEventHandlerWithError` narrows the ACK/persistence gap, but it does not
+  provide exactly-once processing. Google may redeliver an unacknowledged RPC;
+  successful earlier items in a multi-item RPC are skipped by the in-memory
+  deduplication window while later rejected items are retried. That window is
+  neither durable nor a delivery contract. Malformed or undecryptable events
+  are deliberately left unacknowledged and may redeliver indefinitely.
+- ACKs are held only in memory, retries are capped at 1024 queued IDs, and a
+  process crash can lose the queue. Response ACKs are admitted independently
+  of application persistence. The no-retry mutation guards prevent known
+  library-controlled replays, not network ambiguity or duplicate processing by
+  Google or the phone.
+- `Disconnect` joins client-owned background work and therefore guarantees no
+  callback from those workers after it returns. Foreground calls are owned by
+  their callers: in particular the `DoGaiaPairing` emoji callback and explicit
+  request/media methods are not joined by `Disconnect`, so callers must cancel
+  and join them. The bridge pairing supervisor does this before tearing down
+  the client. A synchronous event handler must not call `Disconnect` itself,
+  because it is running inside the worker that `Disconnect` joins.
+- Context-free compatibility wrappers (`DownloadMedia`, `UploadMedia`, the
+  split upload helpers, and the legacy QR relay helpers) intentionally use
+  `context.Background`. Call the `Context` variants when cancellation is
+  required. A custom `RoundTripper` that ignores request cancellation can still
+  delay an owned worker and therefore delay `Disconnect`.
+- The lifecycle is derived from the first Connect or pairing call. After that
+  context is canceled, call `Disconnect` before starting the client's next
+  logical lifecycle.

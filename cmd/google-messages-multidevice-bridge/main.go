@@ -11,7 +11,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -38,6 +40,8 @@ func run() error {
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	dbPath := flags.String("db", "data/google-messages-multidevice-bridge.db", "encrypted database path")
 	listen := flags.String("listen", "127.0.0.1:0", "API listen address (port 0 selects a free port)")
+	storagePass := flags.String("storage-key-pass-entry", "", "pass entry containing the base64 storage key")
+	tokenPass := flags.String("api-token-pass-entry", "", "pass entry containing the API token")
 	offline := flags.Bool("offline", false, "serve stored history without connecting to Google")
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -45,7 +49,11 @@ func run() error {
 		}
 		return err
 	}
-	key, err := base64.StdEncoding.DecodeString(os.Getenv("GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_STORAGE_KEY"))
+	storageValue, err := secretValue("GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_STORAGE_KEY", *storagePass)
+	if err != nil {
+		return err
+	}
+	key, err := base64.StdEncoding.DecodeString(storageValue)
 	if err != nil || len(key) != 32 {
 		return errors.New("GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_STORAGE_KEY must be a base64-encoded 32-byte key")
 	}
@@ -75,7 +83,10 @@ func run() error {
 		}
 		return err
 	}
-	token := os.Getenv("GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_API_TOKEN")
+	token, err := secretValue("GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_API_TOKEN", *tokenPass)
+	if err != nil {
+		return err
+	}
 	if len(token) < 32 {
 		return errors.New("GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_API_TOKEN must contain at least 32 characters")
 	}
@@ -100,6 +111,7 @@ func serve(parent context.Context, b *bridge.Bridge, offline bool, token string,
 	var handlers sync.WaitGroup
 	var handlerMu sync.Mutex
 	closing := false
+	b.SetOfflineOnly(offline)
 	handler := api.New(b, token)
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handlerMu.Lock()
@@ -116,7 +128,7 @@ func serve(parent context.Context, b *bridge.Bridge, offline bool, token string,
 	serverErr := make(chan error, 1)
 	go func() { serverErr <- server.Serve(listener) }()
 	bridgeErr := make(chan error, 1)
-	go func() { bridgeErr <- b.Run(ctx, offline, nil, nil) }()
+	go func() { bridgeErr <- b.ServeConnection(ctx, offline) }()
 	fmt.Fprintln(os.Stderr, "Google Messages Multi-Device Bridge listening on", listener.Addr())
 	bridgeFinished := false
 serveLoop:
@@ -158,4 +170,31 @@ serveLoop:
 		}
 	}
 	return err
+}
+
+func secretValue(env, entry string) (string, error) {
+	if entry == "" {
+		return os.Getenv(env), nil
+	}
+	if strings.HasPrefix(entry, "-") || strings.ContainsAny(entry, "\r\n\x00") {
+		return "", errors.New("invalid pass entry")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "pass", "show", entry)
+	var output boundedSecret
+	cmd.Stdout = &output
+	if err := cmd.Run(); err != nil {
+		return "", errors.New("could not read pass entry; ensure the password store is unlocked")
+	}
+	return strings.TrimSpace(output.value.String()), nil
+}
+
+type boundedSecret struct{ value strings.Builder }
+
+func (w *boundedSecret) Write(data []byte) (int, error) {
+	if w.value.Len()+len(data) > 4096 {
+		return 0, errors.New("secret exceeds size limit")
+	}
+	return w.value.Write(data)
 }

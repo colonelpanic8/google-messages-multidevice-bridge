@@ -1,22 +1,48 @@
-import { createParser, newRequest, mergeMessages } from "/stream.mjs";
+import {
+  createParser,
+  mergeMessages,
+  newConversationRequest,
+  newReactionRequest,
+  newRequest,
+  parseRecipients,
+  validateAttachments,
+} from "/stream.mjs";
+
 const $ = (id) => document.getElementById(id);
+const reactionChoices = ["👍", "❤️", "😂", "😮", "😢", "😠"];
+const drafts = new Map();
+const draftFiles = new Map();
+const messageUpdates = new Map();
+const pendingReactions = new Map();
+
 let token = "",
   abort,
   selected = "",
   conversations = [],
   outbox = [],
   messages = [],
+  historyJobs = [],
   before = "";
 let cursor = 0,
   targetCursor = 0,
   refreshTask,
-  pending,
+  generation = 0;
+let sending = false,
+  creatingConversation = false,
+  pendingSend,
+  pendingConversation,
+  createdConversation,
+  selectedFiles = [];
+let providerState = "offline",
   typingUntil = 0,
-  typingConversation = "";
-let generation = 0,
-  sending = false;
-const drafts = new Map();
-const messageUpdates = new Map();
+  typingConversation = "",
+  typingTimer,
+  lastTypingAt = 0,
+  importing = 0;
+let pairingState = {},
+  pairingPoll,
+  pairingPanelOpen = false;
+
 const notice = (message) => {
   $("notice").textContent = message;
 };
@@ -26,174 +52,195 @@ function el(tag, text, className) {
   if (className) node.className = className;
   return node;
 }
+function formatSize(size) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.ceil(size / 1024)} KiB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MiB`;
+}
 async function request(path, options = {}) {
+  const headers = { Authorization: `Bearer ${token}`, ...options.headers };
+  if (
+    typeof options.body === "string" &&
+    !Object.keys(headers).some((key) => key.toLowerCase() === "content-type")
+  )
+    headers["Content-Type"] = "application/json";
   const response = await fetch(path, {
     ...options,
-    signal: abort.signal,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...options.headers,
-    },
+    signal: abort?.signal,
+    headers,
   });
   if (!response.ok) {
+    const detail = (await response.text()).trim();
     const error = new Error(
       response.status === 401
         ? "Token rejected. Lock and unlock with your bridge token."
-        : (await response.text()).trim(),
+        : detail || `Request failed (${response.status}).`,
     );
     error.status = response.status;
     throw error;
   }
-  return response.status === 204 ? null : response.json();
+  if (response.status === 204) return null;
+  const body = await response.text();
+  return body ? JSON.parse(body) : null;
 }
-function name(c) {
+function name(conversation) {
   return (
-    c.name ||
-    c.participants
-      ?.filter((p) => !p.is_me)
-      .map((p) => p.name || p.address || p.id)
+    conversation.name ||
+    conversation.participants
+      ?.filter((participant) => !participant.is_me)
+      .map(
+        (participant) =>
+          participant.name || participant.address || participant.id,
+      )
       .join(", ") ||
-    c.id
+    conversation.id
   );
 }
 function renderConversations() {
   const search = $("search").value.toLowerCase();
   $("conversations").replaceChildren();
-  for (const c of conversations.filter((c) =>
-    name(c).toLowerCase().includes(search),
+  for (const conversation of conversations.filter((item) =>
+    name(item).toLowerCase().includes(search),
   )) {
     const button = el(
       "button",
       undefined,
-      `conversation ${c.id === selected ? "active" : ""} ${c.unread ? "unread" : ""}`,
+      `conversation ${conversation.id === selected ? "active" : ""} ${conversation.unread ? "unread" : ""}`,
     );
+    button.type = "button";
     button.append(
-      el("strong", name(c)),
-      el("small", c.preview || "No recent preview"),
+      el("strong", name(conversation)),
+      el("small", conversation.preview || "No recent preview"),
     );
-    button.onclick = () => select(c.id);
+    button.onclick = () => select(conversation.id);
     $("conversations").append(button);
   }
   if (!conversations.length)
     $("conversations").append(el("p", "No conversations stored yet.", "hint"));
 }
-function renderThread() {
-  const c = conversations.find((c) => c.id === selected);
-  $("empty").hidden = !!c;
-  $("thread").hidden = !c;
-  if (!c) return;
-  $("thread-title").textContent = name(c);
-  $("thread-info").textContent = `${c.protocol.toUpperCase()} · ${
-    c.participants
-      ?.filter((p) => !p.is_me)
-      .map((p) => p.address || p.name)
-      .join(", ") || "Phone conversation"
-  }`;
-  const container = $("messages");
-  const bottom =
-    container.scrollHeight - container.scrollTop - container.clientHeight < 70;
-  container.replaceChildren();
-  for (const m of [...messages].sort(
-    (a, b) => a.time.localeCompare(b.time) || a.id.localeCompare(b.id),
-  )) {
-    const node = el("article", undefined, `message ${m.direction}`);
-    const sender = c.participants?.find((p) => p.id === m.sender_id);
-    if (sender && !sender.is_me)
-      node.append(el("div", sender.name || sender.address, "sender"));
-    if (m.subject) node.append(el("strong", m.subject));
-    node.append(
-      el(
-        "p",
-        m.deleted
-          ? "Message deleted on phone"
-          : m.text ||
-              (m.attachments?.length ? "" : "Message content unavailable"),
-      ),
-    );
-    for (const a of m.deleted ? [] : m.attachments || []) {
-      const button = el(
-        "button",
-        `${a.name || "Attachment"} · ${Math.ceil(a.size / 1024)} KB${a.available ? " · Download" : " · Unavailable"}`,
-        "attachment",
-      );
-      button.disabled = !a.available;
-      button.onclick = async () => {
-        button.disabled = true;
-        try {
-          const response = await fetch(
-            `/v1/attachments/${encodeURIComponent(a.id)}`,
-            {
-              signal: abort.signal,
-              headers: { Authorization: `Bearer ${token}` },
-            },
-          );
-          if (!response.ok)
-            throw new Error(
-              "Attachment unavailable. It may require the phone or exceed 20 MiB.",
-            );
-          const url = URL.createObjectURL(await response.blob());
-          const link = el("a");
-          link.href = url;
-          link.download = a.name || "attachment";
-          link.click();
-          setTimeout(() => URL.revokeObjectURL(url), 60000);
-        } catch (error) {
-          notice(error.message);
-        } finally {
-          button.disabled = false;
-        }
-      };
-      node.append(button);
-    }
-    for (const r of m.reactions || [])
-      node.append(
-        el("span", `${r.emoji} ${r.participants?.length || 0}`, "reaction"),
-      );
-    node.append(
-      el(
-        "div",
-        `${new Date(m.time).toLocaleString()} · ${m.status.replaceAll("_", " ")}`,
-        "meta",
-      ),
-    );
-    container.append(node);
+function reactionKey(conversationID, messageID, emoji, remove = false) {
+  return [conversationID, messageID, emoji, remove].join("\u0000");
+}
+function renderReactionActions(container, message, conversation) {
+  if (message.deleted || conversation.read_only) return;
+  const picker = el("details", undefined, "reaction-picker");
+  picker.append(el("summary", "React"));
+  const choices = el("div", undefined, "reaction-choices");
+  for (const emoji of reactionChoices) {
+    const button = el("button", emoji);
+    button.type = "button";
+    button.setAttribute("aria-label", `React ${emoji}`);
+    button.onclick = () => {
+      picker.open = false;
+      void startReaction(message.id, emoji);
+    };
+    choices.append(button);
   }
-  if (!messages.length)
-    container.append(el("p", "No messages in stored history yet.", "hint"));
-  if (bottom) container.scrollTop = container.scrollHeight;
-  $("older").hidden = !before;
-  $("text").disabled = c.read_only || !!pending;
-  $("send").disabled = c.read_only || sending;
-  $("send").textContent = pending ? "Retry same request" : "Send message";
-  $("mark-read").disabled = !messages.length;
-  $("outbox").replaceChildren();
-  for (const o of outbox
-    .filter(
-      (o) =>
-        o.request.conversation_id === selected &&
-        (o.state !== "confirmed" ||
-          !messages.some((m) => m.id === o.message_id)),
+  picker.append(choices);
+  container.append(picker);
+  for (const [key, pending] of pendingReactions) {
+    if (
+      pending.conversationID !== selected ||
+      pending.request.body.message_id !== message.id
     )
-    .sort((a, b) => a.created.localeCompare(b.created))) {
-    const node = el("div", undefined, `outbox-item ${o.state}`);
+      continue;
+    const row = el("div", undefined, "pending-reaction");
+    row.append(
+      el("span", `${pending.request.body.emoji} reaction not acknowledged.`),
+    );
+    const retry = el("button", "Retry same request");
+    retry.type = "button";
+    retry.disabled = pending.sending;
+    retry.onclick = () => void submitReaction(key);
+    const discard = el("button", "Discard");
+    discard.type = "button";
+    discard.disabled = pending.sending;
+    discard.onclick = () => {
+      pendingReactions.delete(key);
+      renderThread();
+    };
+    row.append(retry, discard);
+    container.append(row);
+  }
+}
+function renderAttachment(container, attachment) {
+  const label = `${attachment.name || "Attachment"} · ${formatSize(attachment.size || 0)}${attachment.available ? " · Download" : " · Unavailable"}`;
+  const button = el("button", label, "attachment");
+  button.type = "button";
+  button.disabled = !attachment.available;
+  button.onclick = async () => {
+    button.disabled = true;
+    try {
+      const response = await fetch(
+        `/v1/attachments/${encodeURIComponent(attachment.id)}`,
+        {
+          signal: abort.signal,
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+      if (!response.ok)
+        throw new Error(
+          "Attachment unavailable. It may require the phone or exceed 20 MiB.",
+        );
+      const url = URL.createObjectURL(await response.blob());
+      const link = el("a");
+      link.href = url;
+      link.download = attachment.name || "attachment";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (error) {
+      notice(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  };
+  container.append(button);
+}
+function outboxDescription(item) {
+  const body = item.request || {};
+  if (body.kind === "reaction")
+    return `${body.remove ? "Remove" : "React"} ${body.emoji}`;
+  if (body.kind === "conversation")
+    return `New conversation with ${(body.recipients || []).join(", ")}`;
+  const attachments = body.attachment_ids?.length
+    ? ` · ${body.attachment_ids.length} attachment${body.attachment_ids.length === 1 ? "" : "s"}`
+    : "";
+  return `${body.text || "Message with attachments"}${attachments}`;
+}
+function renderOutbox() {
+  $("outbox").replaceChildren();
+  for (const item of outbox
+    .filter((candidate) => {
+      const body = candidate.request || {};
+      return (
+        (body.conversation_id || candidate.conversation_id) === selected &&
+        (candidate.state !== "confirmed" ||
+          !messages.some((message) => message.id === candidate.message_id))
+      );
+    })
+    .sort((a, b) => (a.created || "").localeCompare(b.created || ""))) {
+    const node = el("div", undefined, `outbox-item ${item.state}`);
     node.append(
-      el("strong", o.state === "confirmed" ? "Observed on phone" : o.state),
-      el("p", o.request.text),
+      el(
+        "strong",
+        item.state === "confirmed" ? "Observed on phone" : item.state,
+      ),
+      el("p", outboxDescription(item)),
       el(
         "div",
-        o.detail ||
-          (o.state === "queued"
-            ? "Waiting for phone connection. You can cancel before sending starts."
+        item.detail ||
+          (item.state === "queued"
+            ? "Waiting for the phone connection. This can be canceled before sending starts."
             : ""),
         "hint",
       ),
     );
-    if (o.state === "queued") {
-      const cancel = el("button", "Cancel queued message");
+    if (item.state === "queued") {
+      const cancel = el("button", "Cancel queued request");
+      cancel.type = "button";
       cancel.onclick = async () => {
         try {
-          await request(`/v1/outbox/${encodeURIComponent(o.id)}/cancel`, {
+          await request(`/v1/outbox/${encodeURIComponent(item.id)}/cancel`, {
             method: "POST",
           });
           await refresh();
@@ -206,19 +253,296 @@ function renderThread() {
     $("outbox").append(node);
   }
 }
-async function select(id) {
-  if (pending && id !== selected) {
-    notice(
-      "Resolve the pending request using Retry same request before switching conversations.",
+function renderSelectedAttachments() {
+  const files = pendingSend?.files || selectedFiles;
+  $("selected-attachments").replaceChildren();
+  for (const file of files)
+    $("selected-attachments").append(
+      el("span", `${file.name} (${formatSize(file.size)})`, "file-chip"),
+    );
+  if (files.length) {
+    const total = files.reduce((sum, file) => sum + file.size, 0);
+    $("selected-attachments").append(
+      el(
+        "span",
+        `${files.length}/10 · ${formatSize(total)}/20 MiB`,
+        "file-total",
+      ),
+    );
+  }
+  if (pendingSend?.progress)
+    $("selected-attachments").append(el("span", pendingSend.progress));
+}
+function renderThread() {
+  const conversation = conversations.find((item) => item.id === selected);
+  $("empty").hidden = !!conversation;
+  $("thread").hidden = !conversation;
+  if (!conversation) return;
+  $("thread-title").textContent = name(conversation);
+  $("thread-info").textContent =
+    `${(conversation.protocol || "message").toUpperCase()} · ${
+      conversation.participants
+        ?.filter((participant) => !participant.is_me)
+        .map((participant) => participant.address || participant.name)
+        .join(", ") || "Phone conversation"
+    }`;
+  const container = $("messages");
+  const bottom =
+    container.scrollHeight - container.scrollTop - container.clientHeight < 70;
+  container.replaceChildren();
+  for (const message of [...messages].sort(
+    (a, b) =>
+      (a.time || "").localeCompare(b.time || "") || a.id.localeCompare(b.id),
+  )) {
+    const node = el("article", undefined, `message ${message.direction}`);
+    const sender = conversation.participants?.find(
+      (participant) => participant.id === message.sender_id,
+    );
+    if (sender && !sender.is_me)
+      node.append(el("div", sender.name || sender.address, "sender"));
+    if (message.subject) node.append(el("strong", message.subject));
+    node.append(
+      el(
+        "p",
+        message.deleted
+          ? "Message deleted on phone"
+          : message.text ||
+              (message.attachments?.length
+                ? ""
+                : "Message content unavailable"),
+      ),
+    );
+    for (const attachment of message.deleted ? [] : message.attachments || [])
+      renderAttachment(node, attachment);
+    for (const reaction of message.reactions || [])
+      node.append(
+        el(
+          "span",
+          `${reaction.emoji} ${reaction.participants?.length || 0}`,
+          "reaction",
+        ),
+      );
+    renderReactionActions(node, message, conversation);
+    node.append(
+      el(
+        "div",
+        `${new Date(message.time).toLocaleString()} · ${(message.status || "stored").replaceAll("_", " ")}`,
+        "meta",
+      ),
+    );
+    container.append(node);
+  }
+  if (!messages.length)
+    container.append(el("p", "No messages in stored history yet.", "hint"));
+  if (bottom) container.scrollTop = container.scrollHeight;
+  $("older").hidden = !before;
+  const hasPending = !!pendingSend;
+  $("text").disabled = conversation.read_only || hasPending;
+  $("attachments").disabled = conversation.read_only || hasPending;
+  $("send").disabled = conversation.read_only || sending;
+  $("send").textContent = hasPending ? "Retry same request" : "Send message";
+  $("discard-send").hidden = !hasPending;
+  $("discard-send").disabled = sending;
+  $("mark-read").disabled = !messages.length;
+  $("import-conversation").disabled = importing > 0;
+  renderSelectedAttachments();
+  renderOutbox();
+}
+function renderConnection(status) {
+  providerState = status.state || "offline";
+  $("status").textContent = providerState.replaceAll("_", " ");
+  $("provider-detail").textContent = status.detail || "";
+  $("connection-actions").hidden = ![
+    "connection_failed",
+    "authentication_required",
+  ].includes(providerState);
+  $("sync-status").textContent = status.last_sync
+    ? `Recent history checked ${new Date(status.last_sync).toLocaleTimeString()}. ${status.sync_state === "failed" ? "Latest check failed." : ""}`
+    : "Recent history has not been reconciled yet.";
+  $("send-hint").textContent =
+    providerState === "connected"
+      ? "Your phone handles delivery."
+      : providerState === "authentication_required"
+        ? "Pair through the CLI before queued requests can run."
+        : providerState === "connection_failed"
+          ? "Retry the bridge connection before queued requests can run."
+          : "Offline: requests queue until your phone connects.";
+}
+function pairingActive() {
+  return ["waiting_for_login", "connecting", "confirm_on_phone"].includes(
+    pairingState.state,
+  );
+}
+function renderPairing() {
+  const state = pairingState.state || "not started";
+  $("bridge-url").value = pairingState.ticket ? window.location.origin : "";
+  $("pairing-ticket").value = pairingState.ticket || "";
+  $("pairing-fields").hidden = !pairingState.ticket;
+  $("pairing-emoji").hidden =
+    state !== "confirm_on_phone" || !pairingState.emoji;
+  $("pairing-emoji").textContent = pairingState.emoji
+    ? `Confirm ${pairingState.emoji} on your phone`
+    : "";
+  $("pairing-status").textContent = `${state.replaceAll("_", " ")}${
+    pairingState.detail ? ` · ${pairingState.detail}` : ""
+  }${pairingActive() && pairingState.expires ? ` · expires ${new Date(pairingState.expires).toLocaleTimeString()}` : ""}`;
+  $("start-pairing").disabled = pairingActive();
+  $("start-pairing").textContent =
+    providerState === "connected" || state === "paired"
+      ? "Start re-pairing"
+      : "Start pairing";
+  $("cancel-pairing").hidden = !pairingActive();
+}
+function schedulePairingPoll() {
+  clearTimeout(pairingPoll);
+  pairingPoll = undefined;
+  if (!pairingPanelOpen || !pairingActive()) return;
+  pairingPoll = setTimeout(async () => {
+    const pollGeneration = generation;
+    try {
+      const state = await request("/v1/pairing");
+      if (pollGeneration !== generation) return;
+      pairingState = state;
+      renderPairing();
+      if (pairingState.state === "paired")
+        void refresh().catch((error) => notice(error.message));
+    } catch (error) {
+      if (pollGeneration !== generation) return;
+      $("pairing-status").textContent = error.message;
+    }
+    schedulePairingPoll();
+  }, 1000);
+}
+async function loadPairingState() {
+  const requestGeneration = generation;
+  try {
+    const state = await request("/v1/pairing");
+    if (requestGeneration !== generation) return;
+    pairingState = state;
+    renderPairing();
+    schedulePairingPoll();
+  } catch (error) {
+    if (requestGeneration !== generation) return;
+    $("pairing-status").textContent = error.message;
+  }
+}
+function jobLabel(job) {
+  if (job.conversation_id) {
+    const conversation = conversations.find(
+      (item) => item.id === job.conversation_id,
+    );
+    return conversation ? name(conversation) : "One conversation";
+  }
+  return `${job.folder || job.kind || "history"} folder`;
+}
+function historyBody(job, restart = false) {
+  const body = job.conversation_id
+    ? { conversation_id: job.conversation_id }
+    : { folder: job.folder };
+  if (restart) body.restart = true;
+  return body;
+}
+function renderHistory() {
+  $("history-jobs").replaceChildren();
+  $("import-all").disabled = importing > 0;
+  if (!historyJobs.length) {
+    $("history-jobs").append(
+      el("p", "No all-history imports requested yet.", "hint"),
     );
     return;
   }
-  if (selected) drafts.set(selected, $("text").value);
+  for (const job of [...historyJobs].sort((a, b) =>
+    (b.updated || "").localeCompare(a.updated || ""),
+  )) {
+    const node = el("div", undefined, `history-job ${job.state}`);
+    node.append(
+      el("strong", jobLabel(job)),
+      el(
+        "span",
+        `${(job.state || "queued").replaceAll("_", " ")} · ${job.pages || 0} pages · ${job.records || 0} records`,
+      ),
+    );
+    if (job.detail) node.append(el("p", job.detail, "hint"));
+    const actions = el("div", undefined, "button-row");
+    if (job.state === "queued") {
+      const pause = el("button", "Pause");
+      pause.type = "button";
+      pause.onclick = () => void pauseHistory(job.id);
+      actions.append(pause);
+    }
+    if (["paused", "failed"].includes(job.state)) {
+      const resume = el("button", "Resume");
+      resume.type = "button";
+      resume.onclick = () => void queueHistory(job, false);
+      actions.append(resume);
+    }
+    if (["complete", "failed"].includes(job.state)) {
+      const restart = el("button", "Fresh scan");
+      restart.type = "button";
+      restart.onclick = () => void queueHistory(job, true);
+      actions.append(restart);
+    }
+    if (actions.childElementCount) node.append(actions);
+    $("history-jobs").append(node);
+  }
+}
+function maybeSelectCreatedConversation() {
+  if (!createdConversation || createdConversation.selecting) return;
+  const tracked = outbox.find(
+    (item) => item.id === createdConversation.outboxID,
+  );
+  if (
+    tracked &&
+    ["canceled", "rejected", "ambiguous"].includes(tracked.state)
+  ) {
+    const recipients = tracked.request?.recipients || [];
+    $("recipients").value = recipients.join(", ");
+    $("new-conversation-form").hidden = false;
+    $("conversation-status").textContent = `${tracked.state}: ${
+      tracked.detail || "Conversation was not created."
+    } Review the recipients before submitting a new request.`;
+    createdConversation = undefined;
+    return;
+  }
+  const conversationID =
+    createdConversation.conversationID || tracked?.conversation_id;
+  if (!conversationID) {
+    $("conversation-status").textContent =
+      tracked?.detail || "Waiting for the phone to create the conversation…";
+    return;
+  }
+  createdConversation.conversationID = conversationID;
+  if (!conversations.some((item) => item.id === conversationID)) {
+    $("conversation-status").textContent =
+      "Conversation accepted; waiting for its stored record…";
+    return;
+  }
+  createdConversation.selecting = true;
+  queueMicrotask(() => {
+    createdConversation = undefined;
+    $("conversation-status").textContent = "";
+    $("new-conversation-form").hidden = true;
+    void select(conversationID);
+  });
+}
+async function select(id) {
+  if (pendingSend && id !== selected) {
+    notice(
+      "Retry or discard the pending message request before switching conversations.",
+    );
+    return;
+  }
+  if (selected) {
+    drafts.set(selected, $("text").value);
+    draftFiles.set(selected, selectedFiles);
+  }
   selected = id;
   messageUpdates.clear();
   messages = [];
   before = "";
+  selectedFiles = draftFiles.get(id) || [];
   $("text").value = drafts.get(id) || "";
+  $("attachments").value = "";
   renderConversations();
   renderThread();
   try {
@@ -233,9 +557,13 @@ async function refresh() {
   if (refreshTask) return refreshTask;
   const currentGeneration = generation;
   refreshTask = (async () => {
-    const target = targetCursor,
-      id = selected;
-    const [status, cs, os, ms] = await Promise.all([
+    const target = targetCursor;
+    const id = selected;
+    const historyResult = request("/v1/history").catch((error) => ({
+      jobs: historyJobs,
+      error,
+    }));
+    const [status, cs, os, ms, hs] = await Promise.all([
       request("/v1/status"),
       request("/v1/conversations"),
       request("/v1/outbox"),
@@ -244,37 +572,33 @@ async function refresh() {
             `/v1/conversations/${encodeURIComponent(id)}/messages?limit=100`,
           )
         : null,
+      historyResult,
     ]);
     if (currentGeneration !== generation) return;
-    conversations = cs.conversations;
-    outbox = os.outbox;
-    $("status").textContent = status.state.replaceAll("_", " ");
-    $("provider-detail").textContent = status.detail || "";
-    $("sync-status").textContent = status.last_sync
-      ? `Recent history checked ${new Date(status.last_sync).toLocaleTimeString()}. ${status.sync_state === "failed" ? "Latest check failed." : ""}`
-      : "Recent history has not been reconciled yet.";
-    $("send-hint").textContent =
-      status.state === "connected"
-        ? "Your phone handles delivery."
-        : status.state === "authentication_required"
-          ? "Pair the bridge before queued messages can send."
-          : status.state === "connection_failed"
-            ? "Restart the bridge connection before queued messages can send."
-            : "Offline: sending queues until your phone connects.";
+    conversations = cs.conversations || [];
+    outbox = os.outbox || [];
+    historyJobs = hs.jobs || [];
+    renderConnection(status);
     if (id === selected && ms) {
       const expanded = messages.length > 100;
       messages = mergeMessages(
         messages,
-        ms.messages,
+        ms.messages || [],
         ms.cursor,
         messageUpdates,
       );
-      if (!expanded) before = ms.next_before;
+      if (!expanded) before = ms.next_before || "";
     }
-    if (!cursor) cursor = Math.min(cs.cursor, os.cursor);
+    if (!cursor) cursor = Math.min(cs.cursor || 0, os.cursor || 0);
     cursor = Math.max(cursor, target);
     renderConversations();
+    renderHistory();
+    if (hs.error)
+      $("history-jobs").prepend(
+        el("p", `History status unavailable: ${hs.error.message}`, "hint"),
+      );
     renderThread();
+    maybeSelectCreatedConversation();
   })().finally(() => {
     refreshTask = undefined;
   });
@@ -323,6 +647,302 @@ async function stream(currentGeneration) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
 }
+function clearPrivateUI() {
+  pendingSend = pendingConversation = createdConversation = undefined;
+  selectedFiles = [];
+  conversations = outbox = messages = historyJobs = [];
+  selected = before = "";
+  cursor = targetCursor = 0;
+  typingUntil = 0;
+  typingConversation = "";
+  providerState = "offline";
+  sending = false;
+  creatingConversation = false;
+  importing = 0;
+  clearTimeout(typingTimer);
+  clearTimeout(pairingPoll);
+  typingTimer = undefined;
+  pairingPoll = undefined;
+  pairingPanelOpen = false;
+  pairingState = {};
+  lastTypingAt = 0;
+  drafts.clear();
+  draftFiles.clear();
+  messageUpdates.clear();
+  pendingReactions.clear();
+  for (const id of [
+    "notice",
+    "provider-detail",
+    "sync-status",
+    "conversation-status",
+    "thread-title",
+    "thread-info",
+    "typing",
+    "pairing-status",
+    "pairing-emoji",
+  ])
+    $(id).textContent = "";
+  for (const id of [
+    "search",
+    "recipients",
+    "text",
+    "attachments",
+    "bridge-url",
+    "pairing-ticket",
+  ])
+    $(id).value = "";
+  $("new-conversation-form").hidden = true;
+  $("pairing-panel").hidden = true;
+  $("pairing-fields").hidden = true;
+  $("connection-actions").hidden = true;
+  $("messages").replaceChildren();
+  $("outbox").replaceChildren();
+  $("history-jobs").replaceChildren();
+  $("selected-attachments").replaceChildren();
+  renderConversations();
+  renderThread();
+}
+const normalizeOutbox = (response) => response?.outbox || response;
+async function createConversation() {
+  if (!pendingConversation) {
+    try {
+      pendingConversation = newConversationRequest(
+        parseRecipients($("recipients").value),
+      );
+    } catch (error) {
+      $("conversation-status").textContent = error.message;
+      return;
+    }
+  }
+  const pending = pendingConversation;
+  creatingConversation = true;
+  $("recipients").disabled = true;
+  $("create-conversation").disabled = true;
+  $("conversation-status").textContent = "Requesting conversation…";
+  try {
+    const result = normalizeOutbox(
+      await request("/v1/conversations", {
+        method: "POST",
+        headers: { "Idempotency-Key": pending.key },
+        body: JSON.stringify(pending.body),
+      }),
+    );
+    if (pending !== pendingConversation) return;
+    pendingConversation = undefined;
+    createdConversation = {
+      outboxID: result.id,
+      conversationID: result.conversation_id || "",
+    };
+    $("recipients").value = "";
+    $("conversation-status").textContent =
+      "Conversation request accepted. Waiting for its stored record…";
+    await refresh();
+  } catch (error) {
+    if (pending !== pendingConversation) return;
+    $("conversation-status").textContent =
+      `${error.message} Retry preserves the same idempotency key and recipients.`;
+  } finally {
+    creatingConversation = false;
+    if (pending === pendingConversation) {
+      $("recipients").disabled = true;
+      $("create-conversation").textContent = "Retry same request";
+    } else {
+      $("recipients").disabled = false;
+      $("create-conversation").textContent = "Create";
+    }
+    $("create-conversation").disabled = false;
+  }
+}
+async function startReaction(messageID, emoji) {
+  const key = reactionKey(selected, messageID, emoji);
+  if (!pendingReactions.has(key))
+    pendingReactions.set(key, {
+      conversationID: selected,
+      request: newReactionRequest(messageID, emoji),
+      sending: false,
+    });
+  await submitReaction(key);
+}
+async function submitReaction(key) {
+  const pending = pendingReactions.get(key);
+  if (!pending || pending.sending) return;
+  pending.sending = true;
+  renderThread();
+  try {
+    await request(
+      `/v1/conversations/${encodeURIComponent(pending.conversationID)}/reactions`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": pending.request.key },
+        body: JSON.stringify(pending.request.body),
+      },
+    );
+    if (pendingReactions.get(key) !== pending) return;
+    pendingReactions.delete(key);
+    notice("Reaction queued.");
+    await refresh();
+  } catch (error) {
+    if (pendingReactions.get(key) !== pending) return;
+    notice(
+      `${error.message} The reaction was not retried automatically; Retry same request reuses its key.`,
+    );
+  } finally {
+    pending.sending = false;
+    renderThread();
+  }
+}
+async function uploadFiles(pending) {
+  while (pending.uploadIDs.length < pending.files.length) {
+    const file = pending.files[pending.uploadIDs.length];
+    pending.progress = `Uploading ${pending.uploadIDs.length + 1} of ${pending.files.length}: ${file.name}`;
+    renderSelectedAttachments();
+    const upload = await request(
+      `/v1/uploads?name=${encodeURIComponent(file.name)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      },
+    );
+    if (!upload?.id) throw new Error("Upload response did not include an ID.");
+    pending.uploadIDs.push(upload.id);
+    pending.request.body.attachment_ids = [...pending.uploadIDs];
+  }
+}
+async function sendMessage() {
+  if (sending) return;
+  if (!pendingSend) {
+    const text = $("text").value;
+    try {
+      validateAttachments(selectedFiles);
+    } catch (error) {
+      notice(error.message);
+      return;
+    }
+    if (!text.trim() && !selectedFiles.length) {
+      notice("Write a message or choose at least one attachment.");
+      return;
+    }
+    pendingSend = {
+      conversationID: selected,
+      files: [...selectedFiles],
+      uploadIDs: [],
+      request: newRequest(selected, text),
+      progress: "",
+    };
+  }
+  const pending = pendingSend,
+    sendGeneration = generation;
+  sending = true;
+  renderThread();
+  try {
+    await uploadFiles(pending);
+    pending.progress = "Queueing message…";
+    await request("/v1/messages", {
+      method: "POST",
+      headers: { "Idempotency-Key": pending.request.key },
+      body: JSON.stringify(pending.request.body),
+    });
+    if (sendGeneration !== generation || pendingSend !== pending) return;
+    pendingSend = undefined;
+    selectedFiles = [];
+    $("attachments").value = "";
+    $("text").value = "";
+    drafts.delete(selected);
+    draftFiles.delete(selected);
+    notice("");
+    await refresh();
+  } catch (error) {
+    if (sendGeneration !== generation || pendingSend !== pending) return;
+    pending.progress = "";
+    notice(
+      `${error.message} Retry same request preserves the message key, body, and completed uploads.`,
+    );
+  } finally {
+    if (sendGeneration === generation) {
+      sending = false;
+      renderThread();
+    }
+  }
+}
+async function queueHistory(job, restart) {
+  const actionGeneration = generation;
+  importing++;
+  renderHistory();
+  renderThread();
+  try {
+    await request("/v1/history", {
+      method: "POST",
+      body: JSON.stringify(historyBody(job, restart)),
+    });
+    if (actionGeneration !== generation) return;
+    notice(restart ? "Fresh history scan queued." : "History import queued.");
+    await refresh();
+  } catch (error) {
+    if (actionGeneration !== generation) return;
+    notice(error.message);
+  } finally {
+    if (actionGeneration === generation) {
+      importing--;
+      renderHistory();
+      renderThread();
+    }
+  }
+}
+async function pauseHistory(id) {
+  const actionGeneration = generation;
+  try {
+    await request(`/v1/history/${encodeURIComponent(id)}/pause`, {
+      method: "POST",
+    });
+    if (actionGeneration !== generation) return;
+    notice(
+      "History import paused. An in-flight page may finish; resuming safely re-reads it.",
+    );
+    await refresh();
+  } catch (error) {
+    if (actionGeneration !== generation) return;
+    notice(error.message);
+  }
+}
+function typingContentPresent() {
+  return !!$("text").value.trim() || selectedFiles.length > 0;
+}
+function scheduleTyping() {
+  if (
+    !token ||
+    !selected ||
+    providerState !== "connected" ||
+    !$("send-typing").checked ||
+    !typingContentPresent() ||
+    pendingSend
+  )
+    return;
+  clearTimeout(typingTimer);
+  const delay = Math.max(0, 4000 - (Date.now() - lastTypingAt));
+  const conversationID = selected;
+  typingTimer = setTimeout(async () => {
+    const typingGeneration = generation;
+    if (
+      conversationID !== selected ||
+      providerState !== "connected" ||
+      !$("send-typing").checked ||
+      !typingContentPresent()
+    )
+      return;
+    lastTypingAt = Date.now();
+    try {
+      await request(
+        `/v1/conversations/${encodeURIComponent(conversationID)}/typing`,
+        { method: "POST" },
+      );
+    } catch (error) {
+      if (typingGeneration === generation && error.status !== 503)
+        notice(error.message);
+    }
+  }, delay);
+}
+
 $("login-form").onsubmit = async (event) => {
   event.preventDefault();
   token = $("token").value.trim();
@@ -347,24 +967,108 @@ $("logout").onclick = () => {
   abort?.abort();
   generation++;
   token = "";
-  pending = undefined;
-  cursor = targetCursor = 0;
-  selected = "";
-  conversations = outbox = messages = [];
-  drafts.clear();
-  messageUpdates.clear();
-  sending = false;
-  $("text").value = "";
+  clearPrivateUI();
   $("app").hidden = true;
   $("login").hidden = false;
   $("logout").hidden = true;
   $("status").textContent = "Locked";
-  $("messages").replaceChildren();
-  $("outbox").replaceChildren();
-  renderConversations();
-  renderThread();
 };
 $("search").oninput = renderConversations;
+$("open-pairing").onclick = () => {
+  pairingPanelOpen = true;
+  $("pairing-panel").hidden = false;
+  void loadPairingState();
+};
+$("close-pairing").onclick = () => {
+  pairingPanelOpen = false;
+  clearTimeout(pairingPoll);
+  pairingPoll = undefined;
+  $("pairing-panel").hidden = true;
+};
+$("start-pairing").onclick = async () => {
+  if (
+    sending ||
+    creatingConversation ||
+    [...pendingReactions.values()].some((pending) => pending.sending)
+  ) {
+    $("pairing-status").textContent =
+      "Wait for the active browser request to finish, then start pairing.";
+    return;
+  }
+  const actionGeneration = generation;
+  $("start-pairing").disabled = true;
+  try {
+    const state = await request("/v1/pairing/start", {
+      method: "POST",
+      body: "{}",
+    });
+    if (actionGeneration !== generation) return;
+    pairingState = state;
+    const clearedLocalRetry =
+      !!pendingSend || !!pendingConversation || pendingReactions.size > 0;
+    pendingSend = undefined;
+    pendingConversation = undefined;
+    pendingReactions.clear();
+    $("recipients").disabled = false;
+    $("create-conversation").textContent = "Create";
+    renderThread();
+    renderPairing();
+    if (clearedLocalRetry)
+      notice(
+        "Pairing changed; review the recipient and submit each operation again.",
+      );
+    schedulePairingPoll();
+  } catch (error) {
+    if (actionGeneration !== generation) return;
+    $("pairing-status").textContent = error.message;
+    $("start-pairing").disabled = false;
+  }
+};
+$("cancel-pairing").onclick = async () => {
+  const actionGeneration = generation;
+  $("cancel-pairing").disabled = true;
+  try {
+    const state = await request("/v1/pairing/cancel", { method: "POST" });
+    if (actionGeneration !== generation) return;
+    pairingState = state;
+    renderPairing();
+    schedulePairingPoll();
+  } catch (error) {
+    if (actionGeneration !== generation) return;
+    $("pairing-status").textContent = error.message;
+  } finally {
+    $("cancel-pairing").disabled = false;
+  }
+};
+for (const button of document.querySelectorAll("[data-copy]"))
+  button.onclick = async () => {
+    const input = $(button.dataset.copy);
+    try {
+      await navigator.clipboard.writeText(input.value);
+      $("pairing-status").textContent = "Copied.";
+    } catch {
+      input.select();
+      document.execCommand("copy");
+      input.setSelectionRange(0, 0);
+      $("pairing-status").textContent = "Copied.";
+    }
+  };
+$("new-conversation").onclick = () => {
+  $("new-conversation-form").hidden = false;
+  $("recipients").focus();
+};
+$("cancel-conversation").onclick = () => {
+  pendingConversation = undefined;
+  $("recipients").disabled = false;
+  $("recipients").value = "";
+  $("conversation-status").textContent = "";
+  $("create-conversation").textContent = "Create";
+  $("new-conversation-form").hidden = true;
+};
+$("new-conversation-form").onsubmit = (event) => {
+  event.preventDefault();
+  void createConversation();
+};
 $("sync").onclick = async () => {
   try {
     await request("/v1/sync", { method: "POST" });
@@ -373,64 +1077,110 @@ $("sync").onclick = async () => {
     notice(error.message);
   }
 };
-$("compose").onsubmit = async (event) => {
-  event.preventDefault();
-  if (sending) return;
-  sending = true;
-  const sendGeneration = generation;
-  if (!pending) pending = newRequest(selected, $("text").value);
-  const send = pending;
-  $("send").disabled = true;
-  $("text").disabled = true;
+$("retry-connection").onclick = async () => {
+  $("retry-connection").disabled = true;
   try {
-    await request("/v1/messages", {
-      method: "POST",
-      headers: { "Idempotency-Key": send.key },
-      body: JSON.stringify(send.body),
-    });
-    if (sendGeneration !== generation) return;
-    pending = undefined;
-    $("text").value = "";
-    drafts.delete(selected);
-    notice("");
+    await request("/v1/connection/restart", { method: "POST" });
+    notice(
+      "Connection restart requested. Complete pairing through the CLI if prompted.",
+    );
     await refresh();
   } catch (error) {
-    if (sendGeneration !== generation) return;
-    if ([400, 404, 415].includes(error.status)) {
-      pending = undefined;
-      notice(`${error.message}. Edit your message and try again.`);
-    } else
-      notice(
-        `${error.message}. Retry same request preserves its idempotency key.`,
-      );
+    notice(error.message);
   } finally {
-    if (sendGeneration === generation) {
-      sending = false;
-      renderThread();
-    }
+    $("retry-connection").disabled = false;
+  }
+};
+$("import-all").onclick = async () => {
+  const actionGeneration = generation;
+  importing++;
+  renderHistory();
+  renderThread();
+  const results = await Promise.allSettled(
+    ["inbox", "archive", "spam"].map((folder) =>
+      request("/v1/history", {
+        method: "POST",
+        body: JSON.stringify({ folder }),
+      }),
+    ),
+  );
+  if (actionGeneration !== generation) return;
+  importing--;
+  const failed = results.filter((result) => result.status === "rejected");
+  notice(
+    failed.length
+      ? `${3 - failed.length} history folders queued; ${failed.length} failed to queue.`
+      : "Inbox, archive, and spam imports queued.",
+  );
+  await refresh().catch((error) => notice(error.message));
+  renderHistory();
+  renderThread();
+};
+$("import-conversation").onclick = () =>
+  void queueHistory({ conversation_id: selected }, false);
+$("compose").onsubmit = (event) => {
+  event.preventDefault();
+  void sendMessage();
+};
+$("discard-send").onclick = () => {
+  if (sending) return;
+  const uploaded = pendingSend?.uploadIDs.length || 0;
+  pendingSend = undefined;
+  notice(
+    uploaded
+      ? "Pending message discarded. Already uploaded bytes are no longer attached to a draft."
+      : "Pending message discarded.",
+  );
+  renderThread();
+};
+$("text").oninput = () => {
+  if (selected) drafts.set(selected, $("text").value);
+  scheduleTyping();
+};
+$("attachments").onchange = () => {
+  const files = [...$("attachments").files];
+  try {
+    validateAttachments(files);
+    selectedFiles = files;
+    draftFiles.set(selected, selectedFiles);
+    notice("");
+    renderSelectedAttachments();
+    scheduleTyping();
+  } catch (error) {
+    $("attachments").value = "";
+    selectedFiles = [];
+    draftFiles.delete(selected);
+    notice(error.message);
+    renderSelectedAttachments();
   }
 };
 $("older").onclick = async () => {
-  const id = selected;
+  const id = selected,
+    pageBefore = before;
+  $("older").disabled = true;
   try {
     const page = await request(
-      `/v1/conversations/${encodeURIComponent(id)}/messages?before=${encodeURIComponent(before)}&limit=100`,
+      `/v1/conversations/${encodeURIComponent(id)}/messages?before=${encodeURIComponent(pageBefore)}&limit=100`,
     );
-    if (selected !== id) return;
+    if (selected !== id || before !== pageBefore) return;
     messages = mergeMessages(
       messages,
-      page.messages,
+      page.messages || [],
       page.cursor,
       messageUpdates,
     );
-    before = page.next_before;
+    before = page.next_before || "";
     renderThread();
   } catch (error) {
     notice(error.message);
+  } finally {
+    $("older").disabled = false;
   }
 };
 $("mark-read").onclick = async () => {
-  const latest = [...messages].sort((a, b) => b.time.localeCompare(a.time))[0];
+  const latest = [...messages].sort((a, b) =>
+    (b.time || "").localeCompare(a.time || ""),
+  )[0];
   if (!latest) return;
   try {
     await request(`/v1/conversations/${encodeURIComponent(selected)}/read`, {

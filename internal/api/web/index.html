@@ -45,13 +45,104 @@
         <aside>
           <div class="section-heading">
             <h2>Conversations</h2>
-            <button id="sync" title="Reconcile recent history">Sync</button>
+            <div class="button-row">
+              <button id="new-conversation" type="button">New</button>
+              <button id="sync" title="Reconcile recent history">Sync</button>
+            </div>
           </div>
+          <form id="new-conversation-form" class="panel-form" hidden>
+            <label for="recipients">Phone numbers</label>
+            <input
+              id="recipients"
+              type="text"
+              inputmode="tel"
+              autocomplete="off"
+              placeholder="+14155550100, +442071838750"
+            />
+            <p class="hint">
+              Use E.164 numbers, separated by spaces or commas.
+            </p>
+            <div class="button-row">
+              <button id="create-conversation" type="submit">Create</button>
+              <button id="cancel-conversation" type="button">Cancel</button>
+            </div>
+            <p id="conversation-status" class="hint" role="status"></p>
+          </form>
           <label class="sr-only" for="search">Search conversations</label
           ><input id="search" type="search" placeholder="Find a conversation" />
           <p id="provider-detail" class="hint"></p>
+          <button id="open-pairing" class="wide-button" type="button">
+            Pair / Re-pair
+          </button>
+          <section id="pairing-panel" class="panel-form pairing-panel" hidden>
+            <div class="section-heading">
+              <h2>Pair with Google Messages</h2>
+              <button id="close-pairing" type="button">Close</button>
+            </div>
+            <ol>
+              <li>
+                <a href="/pairing-helper.zip" download
+                  >Download the project pairing helper</a
+                >
+                and install it as an unpacked Chrome extension.
+              </li>
+              <li>
+                <a
+                  href="https://messages.google.com/web"
+                  target="_blank"
+                  rel="noreferrer"
+                  >Sign in to Google Messages for web</a
+                >.
+              </li>
+              <li>
+                Start pairing below, then enter the bridge URL and ticket in the
+                helper popup and choose Connect.
+              </li>
+            </ol>
+            <p class="pairing-warning">
+              Starting a re-pair cancels queued operations before changing
+              phones. Review each recipient and submit again afterward.
+            </p>
+            <button id="start-pairing" type="button">Start pairing</button>
+            <div id="pairing-fields" hidden>
+              <label for="bridge-url">Local bridge URL</label>
+              <div class="copy-field">
+                <input id="bridge-url" type="text" readonly />
+                <button data-copy="bridge-url" type="button">Copy</button>
+              </div>
+              <label for="pairing-ticket">Ephemeral pairing ticket</label>
+              <div class="copy-field">
+                <input id="pairing-ticket" type="text" readonly />
+                <button data-copy="pairing-ticket" type="button">Copy</button>
+              </div>
+            </div>
+            <div id="pairing-emoji" class="pairing-emoji" hidden></div>
+            <p id="pairing-status" role="status"></p>
+            <button id="cancel-pairing" type="button" hidden>
+              Cancel pairing
+            </button>
+          </section>
+          <div id="connection-actions" class="connection-actions" hidden>
+            <button id="retry-connection" type="button">
+              Retry connection
+            </button>
+            <p class="hint">
+              Restarts the connection. If credentials changed, use Pair /
+              Re-pair above and confirm the displayed emoji on your phone.
+            </p>
+          </div>
           <p id="sync-status" class="hint"></p>
           <nav id="conversations" aria-label="Conversations"></nav>
+          <section class="history-panel" aria-labelledby="history-title">
+            <div class="section-heading">
+              <h2 id="history-title">Phone history</h2>
+              <button id="import-all" type="button">Import all</button>
+            </div>
+            <p class="hint">
+              Imports inbox, archive, and spam, then fetches every message page.
+            </p>
+            <div id="history-jobs" aria-live="polite"></div>
+          </section>
         </aside>
         <main>
           <div id="empty" class="empty">
@@ -68,7 +159,12 @@
                 <h1 id="thread-title"></h1>
                 <p id="thread-info" class="hint"></p>
               </div>
-              <button id="mark-read">Mark read</button>
+              <div class="button-row">
+                <button id="import-conversation" type="button">
+                  Import from phone
+                </button>
+                <button id="mark-read" type="button">Mark read</button>
+              </div>
             </div>
             <button id="older" hidden>Load older stored messages</button>
             <div id="messages" aria-live="polite"></div>
@@ -81,12 +177,28 @@
                 rows="3"
                 maxlength="16000"
                 placeholder="Write a message…"
-                required
               ></textarea>
+              <div class="attachment-compose">
+                <label for="attachments">Attach files</label>
+                <input id="attachments" type="file" multiple />
+                <div id="selected-attachments" class="hint"></div>
+              </div>
               <div class="compose-footer">
-                <span id="send-hint" class="hint"
-                  >Your phone handles delivery.</span
-                ><button id="send" type="submit">Send message</button>
+                <div>
+                  <span id="send-hint" class="hint"
+                    >Your phone handles delivery.</span
+                  >
+                  <label class="typing-toggle">
+                    <input id="send-typing" type="checkbox" checked />
+                    Send typing indicators
+                  </label>
+                </div>
+                <div class="button-row">
+                  <button id="discard-send" type="button" hidden>
+                    Discard pending
+                  </button>
+                  <button id="send" type="submit">Send message</button>
+                </div>
               </div>
             </form>
           </section>

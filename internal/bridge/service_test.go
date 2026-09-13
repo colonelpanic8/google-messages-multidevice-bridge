@@ -17,10 +17,15 @@ import (
 )
 
 type fakeProvider struct {
-	prepare       func(context.Context, string) (provider.SendTarget, error)
-	send          func(context.Context, model.Outbox) error
-	conversations func(context.Context) ([]provider.Snapshot, error)
-	messages      func(context.Context, string) ([]provider.Snapshot, error)
+	create           func(context.Context, []string) (provider.Snapshot, error)
+	react            func(context.Context, provider.SendTarget, string, string, bool) error
+	upload           func(context.Context, []byte, string, string) ([]byte, error)
+	messagePage      func(context.Context, string, []byte) ([]provider.Snapshot, []byte, error)
+	conversationPage func(context.Context, string, []byte) ([]provider.Snapshot, []byte, error)
+	prepare          func(context.Context, string) (provider.SendTarget, error)
+	send             func(context.Context, model.Outbox) error
+	conversations    func(context.Context) ([]provider.Snapshot, error)
+	messages         func(context.Context, string) ([]provider.Snapshot, error)
 }
 
 func (f *fakeProvider) Prepare(ctx context.Context, id string) (provider.SendTarget, error) {
@@ -390,4 +395,36 @@ func TestStorageFailureTakesPriorityOverQueuedProviderFailure(t *testing.T) {
 	if b.Status().State != "storage_failed" {
 		t.Fatal(b.Status())
 	}
+}
+
+func (f *fakeProvider) CreateConversation(ctx context.Context, recipients []string) (provider.Snapshot, error) {
+	if f.create != nil {
+		return f.create(ctx, recipients)
+	}
+	return provider.Snapshot{}, provider.ErrUnavailable
+}
+func (f *fakeProvider) React(ctx context.Context, target provider.SendTarget, id, emoji string, remove bool) error {
+	if f.react != nil {
+		return f.react(ctx, target, id, emoji, remove)
+	}
+	return provider.ErrUnavailable
+}
+func (f *fakeProvider) Typing(context.Context, provider.SendTarget) error { return nil }
+func (f *fakeProvider) Upload(ctx context.Context, data []byte, name, mime string) ([]byte, error) {
+	if f.upload != nil {
+		return f.upload(ctx, data, name, mime)
+	}
+	return nil, provider.ErrUnavailable
+}
+func (f *fakeProvider) MessagePage(ctx context.Context, id string, cursor []byte) ([]provider.Snapshot, []byte, error) {
+	if f.messagePage != nil {
+		return f.messagePage(ctx, id, cursor)
+	}
+	return nil, nil, provider.ErrUnavailable
+}
+func (f *fakeProvider) ConversationPage(ctx context.Context, folder string, cursor []byte) ([]provider.Snapshot, []byte, error) {
+	if f.conversationPage != nil {
+		return f.conversationPage(ctx, folder, cursor)
+	}
+	return nil, nil, provider.ErrUnavailable
 }

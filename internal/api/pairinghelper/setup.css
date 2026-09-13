@@ -1,0 +1,184 @@
+:root {
+  color-scheme: light dark;
+  font-family:
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  background: #f4f6fb;
+  color: #172033;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+main {
+  width: min(680px, calc(100% - 40px));
+  margin: 48px auto;
+}
+
+header,
+section,
+aside {
+  border: 1px solid #d8deea;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 12px 32px rgb(28 39 64 / 8%);
+}
+
+header,
+section {
+  padding: 28px;
+  margin-bottom: 20px;
+}
+
+aside {
+  padding: 18px 20px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  color: #3559c7;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1,
+h2 {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 10px;
+  font-size: clamp(1.8rem, 5vw, 2.5rem);
+}
+
+.intro,
+ol {
+  color: #4b5872;
+  line-height: 1.55;
+}
+
+ol {
+  padding-left: 1.4rem;
+}
+
+form {
+  display: grid;
+  margin-top: 24px;
+}
+
+label {
+  margin-top: 18px;
+  margin-bottom: 7px;
+  font-weight: 650;
+}
+
+input {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid #aeb9cd;
+  border-radius: 9px;
+  padding: 11px 12px;
+  background: #fff;
+  color: #172033;
+  font: inherit;
+}
+
+input:focus-visible,
+button:focus-visible {
+  outline: 3px solid rgb(53 89 199 / 30%);
+  outline-offset: 2px;
+}
+
+.hint {
+  margin: 6px 0 0;
+  color: #66728a;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+button {
+  border: 1px solid #244ab7;
+  border-radius: 9px;
+  padding: 11px 16px;
+  background: #3559c7;
+  color: #fff;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: #fff;
+  color: #244ab7;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+#status {
+  min-height: 1.5rem;
+  margin: 18px 0 0;
+  line-height: 1.5;
+}
+
+#status[data-kind="success"] {
+  color: #176436;
+}
+
+#status[data-kind="error"] {
+  color: #a52323;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    background: #101521;
+    color: #e9edf7;
+  }
+
+  header,
+  section,
+  aside,
+  input,
+  button.secondary {
+    border-color: #39445a;
+    background: #1a2232;
+    color: #e9edf7;
+  }
+
+  .intro,
+  ol,
+  .hint {
+    color: #b3bdd1;
+  }
+
+  .eyebrow,
+  button.secondary {
+    color: #9ab1ff;
+  }
+
+  #status[data-kind="success"] {
+    color: #70d493;
+  }
+
+  #status[data-kind="error"] {
+    color: #ff9b9b;
+  }
+}

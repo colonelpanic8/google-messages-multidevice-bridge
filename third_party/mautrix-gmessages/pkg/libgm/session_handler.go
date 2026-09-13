@@ -34,6 +34,7 @@ const responseHardTimeout = 60 * time.Second
 // maxQueuedAcks caps how many message acks are kept queued for retry when ack requests fail,
 // so the queue can't grow unboundedly if the server is unreachable for a long time.
 const maxQueuedAcks = 1024
+const ackRequestTimeout = 15 * time.Second
 
 type SessionHandler struct {
 	client *Client
@@ -44,8 +45,7 @@ type SessionHandler struct {
 	ackMapLock sync.Mutex
 	ackMap     []string
 	ackRunLock sync.Mutex
-	ackTicker  *time.Ticker
-	ackStop    chan struct{}
+	ackRunning bool
 	ackDone    chan struct{}
 
 	sessionIDLock sync.RWMutex
@@ -272,7 +272,7 @@ type SendMessageParams struct {
 	MessageType gmproto.MessageType
 
 	UserInitiated bool
-	// NoRetry sends exactly one HTTP request, even on relay server errors.
+	// NoRetry disables libgm's retry loop for relay server errors.
 	NoRetry bool
 }
 
@@ -357,44 +357,42 @@ func (s *SessionHandler) queueMessageAck(messageID string) {
 	}
 }
 
-func (s *SessionHandler) startAckInterval() {
+func (s *SessionHandler) startAckInterval(lifecycle *clientLifecycle) {
 	s.ackRunLock.Lock()
-	defer s.ackRunLock.Unlock()
-	if s.ackTicker != nil {
+	if s.ackRunning {
+		s.ackRunLock.Unlock()
 		return
 	}
-	ticker := time.NewTicker(5 * time.Second)
-	stop, done := make(chan struct{}), make(chan struct{})
-	s.ackTicker, s.ackStop, s.ackDone = ticker, stop, done
-	go func() {
-		defer close(done)
+	done := make(chan struct{})
+	s.ackRunning, s.ackDone = true, done
+	s.ackRunLock.Unlock()
+	if s.client.goWorker(lifecycle, func(ctx context.Context) {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		defer func() {
+			s.ackRunLock.Lock()
+			s.ackRunning = false
+			close(done)
+			s.ackRunLock.Unlock()
+		}()
 		for {
 			select {
 			case <-ticker.C:
-				s.sendAckRequest()
-			case <-stop:
+				s.sendAckRequest(ctx)
+			case <-ctx.Done():
 				return
 			}
 		}
-	}()
-}
-
-// stopAckInterval stops the ack goroutine and waits for it to exit. Acks still
-// queued are kept for a later startAckInterval.
-func (s *SessionHandler) stopAckInterval() {
-	s.ackRunLock.Lock()
-	defer s.ackRunLock.Unlock()
-	ticker, stop, done := s.ackTicker, s.ackStop, s.ackDone
-	if ticker == nil {
+	}) {
 		return
 	}
-	ticker.Stop()
-	close(stop)
-	<-done
-	s.ackTicker, s.ackStop, s.ackDone = nil, nil, nil
+	s.ackRunLock.Lock()
+	s.ackRunning = false
+	close(done)
+	s.ackRunLock.Unlock()
 }
 
-func (s *SessionHandler) sendAckRequest() {
+func (s *SessionHandler) sendAckRequest(ctx context.Context) {
 	s.ackMapLock.Lock()
 	dataToAck := s.ackMap
 	s.ackMap = nil
@@ -424,8 +422,10 @@ func (s *SessionHandler) sendAckRequest() {
 	if s.client.AuthData.HasCookies() {
 		url = util.AckMessagesURLGoogle
 	}
+	requestCtx, cancel := context.WithTimeout(ctx, ackRequestTimeout)
+	defer cancel()
 	_, err := typedHTTPResponse[*gmproto.OutgoingRPCResponse](
-		s.client.makeProtobufHTTPRequest(url, payload, ContentTypePBLite),
+		s.client.makeProtobufHTTPRequestContext(requestCtx, url, payload, ContentTypePBLite, false, false),
 	)
 	if err != nil {
 		// Unacked messages may stall event delivery, so re-queue them to retry on the next tick.

@@ -15,6 +15,59 @@ import (
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 )
 
+type fakeGoogleClient struct {
+	list          func(context.Context, *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error)
+	fetch         func(context.Context, string, int64, *gmproto.Cursor) (*gmproto.ListMessagesResponse, error)
+	create        func(context.Context, *gmproto.GetOrCreateConversationRequest) (*gmproto.GetOrCreateConversationResponse, error)
+	conversation  func(context.Context, string) (*gmproto.Conversation, error)
+	send          func(context.Context, *gmproto.SendMessageRequest) (*gmproto.SendMessageResponse, error)
+	react         func(context.Context, *gmproto.SendReactionRequest) (*gmproto.SendReactionResponse, error)
+	typing        func(context.Context, string, *gmproto.SIMPayload) error
+	markRead      func(context.Context, string, string) error
+	upload        func(context.Context, []byte, string, string) (*gmproto.MediaContent, error)
+	downloadMedia func(context.Context, string, []byte) (io.ReadCloser, error)
+}
+
+func (f *fakeGoogleClient) ListConversations(ctx context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
+	return f.list(ctx, req)
+}
+
+func (f *fakeGoogleClient) FetchMessages(ctx context.Context, id string, count int64, cursor *gmproto.Cursor) (*gmproto.ListMessagesResponse, error) {
+	return f.fetch(ctx, id, count, cursor)
+}
+
+func (f *fakeGoogleClient) GetOrCreateConversation(ctx context.Context, req *gmproto.GetOrCreateConversationRequest) (*gmproto.GetOrCreateConversationResponse, error) {
+	return f.create(ctx, req)
+}
+
+func (f *fakeGoogleClient) GetConversation(ctx context.Context, id string) (*gmproto.Conversation, error) {
+	return f.conversation(ctx, id)
+}
+
+func (f *fakeGoogleClient) SendMessage(ctx context.Context, req *gmproto.SendMessageRequest) (*gmproto.SendMessageResponse, error) {
+	return f.send(ctx, req)
+}
+
+func (f *fakeGoogleClient) SendReaction(ctx context.Context, req *gmproto.SendReactionRequest) (*gmproto.SendReactionResponse, error) {
+	return f.react(ctx, req)
+}
+
+func (f *fakeGoogleClient) SetTyping(ctx context.Context, id string, sim *gmproto.SIMPayload) error {
+	return f.typing(ctx, id, sim)
+}
+
+func (f *fakeGoogleClient) MarkRead(ctx context.Context, conversationID, messageID string) error {
+	return f.markRead(ctx, conversationID, messageID)
+}
+
+func (f *fakeGoogleClient) UploadMediaContext(ctx context.Context, data []byte, name, mime string) (*gmproto.MediaContent, error) {
+	return f.upload(ctx, data, name, mime)
+}
+
+func (f *fakeGoogleClient) DownloadMediaContext(ctx context.Context, id string, key []byte) (io.ReadCloser, error) {
+	return f.downloadMedia(ctx, id, key)
+}
+
 func TestMessageSnapshotKeepsMediaKeysPrivate(t *testing.T) {
 	key := bytes.Repeat([]byte{7}, 32)
 	msg := &gmproto.Message{
@@ -172,5 +225,294 @@ func TestAttachmentRejectsDeclaredOversizeWithoutNetwork(t *testing.T) {
 	missing, _ := marshalPrivate(&gmproto.MediaContent{MediaID: "x"})
 	if _, err := g.Attachment(context.Background(), missing); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("missing key: %v", err)
+	}
+}
+
+func TestConversationPagesMapFoldersAndBindCursors(t *testing.T) {
+	var requests []*gmproto.ListConversationsRequest
+	fake := &fakeGoogleClient{list: func(_ context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
+		requests = append(requests, req)
+		return &gmproto.ListConversationsResponse{
+			Conversations: []*gmproto.Conversation{{ConversationID: "c1"}},
+			Cursor:        &gmproto.Cursor{LastItemID: "c1", LastItemTimestamp: 1234},
+		}, nil
+	}}
+	g := newGoogle(fake)
+
+	first, err := g.Conversations(context.Background())
+	if err != nil || len(first) != 1 || len(requests) != 1 {
+		t.Fatalf("first page: %d snapshots, %d requests, %v", len(first), len(requests), err)
+	}
+	if req := requests[0]; req.GetCount() != RecentConversations || req.GetFolder() != gmproto.ListConversationsRequest_INBOX || req.GetCursor() != nil {
+		t.Fatalf("first-page request: %+v", req)
+	}
+
+	_, next, err := g.ConversationPage(context.Background(), "archive", nil)
+	if err != nil || len(next) == 0 {
+		t.Fatalf("archive page: cursor=%q err=%v", next, err)
+	}
+	_, _, err = g.ConversationPage(context.Background(), "archive", next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req := requests[2]; req.GetCount() != RecentConversations || req.GetFolder() != gmproto.ListConversationsRequest_ARCHIVE || req.GetCursor().GetLastItemID() != "c1" || req.GetCursor().GetLastItemTimestamp() != 1234 {
+		t.Fatalf("continuation request: %+v", req)
+	}
+
+	before := len(requests)
+	if _, _, err = g.ConversationPage(context.Background(), "spam", next); !errors.Is(err, ErrInvalidCursor) {
+		t.Fatalf("cross-folder cursor: %v", err)
+	}
+	if _, _, err = g.ConversationPage(context.Background(), "trash", nil); !errors.Is(err, ErrInvalidFolder) {
+		t.Fatalf("unknown folder: %v", err)
+	}
+	if _, _, err = g.ConversationPage(context.Background(), "inbox", []byte("not a cursor")); !errors.Is(err, ErrInvalidCursor) {
+		t.Fatalf("malformed cursor: %v", err)
+	}
+	if len(requests) != before {
+		t.Fatal("invalid pagination input reached libgm")
+	}
+}
+
+func TestConversationPageDoesNotTreatUnusableCursorBytesAsComplete(t *testing.T) {
+	fake := &fakeGoogleClient{list: func(context.Context, *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
+		return &gmproto.ListConversationsResponse{CursorBytes: []byte("opaque")}, nil
+	}}
+	if _, _, err := newGoogle(fake).ConversationPage(context.Background(), "inbox", nil); !errors.Is(err, ErrUnsupportedCursor) {
+		t.Fatalf("cursorBytes-only response: %v", err)
+	}
+}
+
+func TestMessagePagesMaintainCountAndBindConversation(t *testing.T) {
+	var ids []string
+	var counts []int64
+	var cursors []*gmproto.Cursor
+	fake := &fakeGoogleClient{fetch: func(_ context.Context, id string, count int64, cursor *gmproto.Cursor) (*gmproto.ListMessagesResponse, error) {
+		ids = append(ids, id)
+		counts = append(counts, count)
+		cursors = append(cursors, cursor)
+		return &gmproto.ListMessagesResponse{
+			Messages: []*gmproto.Message{{MessageID: "m1", ConversationID: id}},
+			Cursor:   &gmproto.Cursor{LastItemID: "m1", LastItemTimestamp: 5678},
+		}, nil
+	}}
+	g := newGoogle(fake)
+
+	first, err := g.Messages(context.Background(), "c1")
+	if err != nil || len(first) != 1 || len(ids) != 1 || ids[0] != "c1" || counts[0] != RecentMessages || cursors[0] != nil {
+		t.Fatalf("first page: ids=%v counts=%v cursors=%v snapshots=%d err=%v", ids, counts, cursors, len(first), err)
+	}
+	_, next, err := g.MessagePage(context.Background(), "c1", nil)
+	if err != nil || len(next) == 0 {
+		t.Fatalf("page cursor=%q err=%v", next, err)
+	}
+	_, _, err = g.MessagePage(context.Background(), "c1", next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor := cursors[2]; cursor.GetLastItemID() != "m1" || cursor.GetLastItemTimestamp() != 5678 {
+		t.Fatalf("continuation cursor: %+v", cursor)
+	}
+	before := len(ids)
+	if _, _, err = g.MessagePage(context.Background(), "c2", next); !errors.Is(err, ErrInvalidCursor) {
+		t.Fatalf("cross-conversation cursor: %v", err)
+	}
+	if len(ids) != before {
+		t.Fatal("invalid cursor reached libgm")
+	}
+}
+
+func TestCreateConversationMapsRequestAndOutcomes(t *testing.T) {
+	var requests []*gmproto.GetOrCreateConversationRequest
+	response := &gmproto.GetOrCreateConversationResponse{
+		Status:       gmproto.GetOrCreateConversationResponse_SUCCESS,
+		Conversation: &gmproto.Conversation{ConversationID: "c1"},
+	}
+	var responseErr error
+	fake := &fakeGoogleClient{create: func(_ context.Context, req *gmproto.GetOrCreateConversationRequest) (*gmproto.GetOrCreateConversationResponse, error) {
+		requests = append(requests, req)
+		return response, responseErr
+	}}
+	g := newGoogle(fake)
+
+	snapshot, err := g.CreateConversation(context.Background(), []string{"+15550001", "+15550002"})
+	if err != nil || snapshot.Event.Type != "conversation" || snapshot.Event.EntityID != "c1" {
+		t.Fatalf("success: %+v %v", snapshot.Event, err)
+	}
+	if len(requests) != 1 || len(requests[0].GetNumbers()) != 2 {
+		t.Fatalf("requests: %+v", requests)
+	}
+	for i, number := range requests[0].GetNumbers() {
+		if number.GetMysteriousInt() != 2 || number.GetNumber() != []string{"+15550001", "+15550002"}[i] || number.GetNumber2() != number.GetNumber() {
+			t.Fatalf("number %d: %+v", i, number)
+		}
+	}
+
+	response = &gmproto.GetOrCreateConversationResponse{Status: gmproto.GetOrCreateConversationResponse_CREATE_RCS}
+	if _, err = g.CreateConversation(context.Background(), []string{"+15550001", "+15550002"}); !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("RCS confirmation: %v", err)
+	}
+	if len(requests) != 3 || !requests[2].GetCreateRCSGroup() || requests[2].RCSGroupName == nil {
+		t.Fatal("CREATE_RCS must make exactly one explicit confirmation")
+	}
+	response = &gmproto.GetOrCreateConversationResponse{Status: gmproto.GetOrCreateConversationResponse_UNKNOWN}
+	if _, err = g.CreateConversation(context.Background(), []string{"+15550001"}); !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("unknown response: %v", err)
+	}
+	responseErr = context.DeadlineExceeded
+	if _, err = g.CreateConversation(context.Background(), []string{"+15550001"}); !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("transport outcome: %v", err)
+	}
+	before := len(requests)
+	if _, err = g.CreateConversation(context.Background(), nil); !errors.Is(err, ErrRejected) {
+		t.Fatalf("empty recipients: %v", err)
+	}
+	if len(requests) != before {
+		t.Fatal("invalid recipients reached libgm")
+	}
+}
+
+func TestReactionAndTypingMapPreparedTarget(t *testing.T) {
+	sim := &gmproto.SIMPayload{}
+	target := SendTarget{ConversationID: "c1", participantID: "self", sim: sim}
+	var reactions []*gmproto.SendReactionRequest
+	reactionResponse := &gmproto.SendReactionResponse{Success: true}
+	var reactionErr error
+	var typingCalls int
+	fake := &fakeGoogleClient{
+		react: func(_ context.Context, req *gmproto.SendReactionRequest) (*gmproto.SendReactionResponse, error) {
+			reactions = append(reactions, req)
+			return reactionResponse, reactionErr
+		},
+		typing: func(_ context.Context, id string, gotSIM *gmproto.SIMPayload) error {
+			typingCalls++
+			if id != "c1" || gotSIM != sim {
+				t.Fatalf("typing mapping: %q %p", id, gotSIM)
+			}
+			return nil
+		},
+	}
+	g := newGoogle(fake)
+
+	if err := g.React(context.Background(), target, "m1", "👍", false); err != nil {
+		t.Fatal(err)
+	}
+	if req := reactions[0]; req.GetMessageID() != "m1" || req.GetReactionData().GetUnicode() != "👍" || req.GetReactionData().GetType() != gmproto.EmojiType_LIKE || req.GetAction() != gmproto.SendReactionRequest_ADD || req.GetSIMPayload() != sim {
+		t.Fatalf("add mapping: %+v", req)
+	}
+	if err := g.React(context.Background(), target, "m1", "👍", true); err != nil {
+		t.Fatal(err)
+	}
+	if req := reactions[1]; req.GetAction() != gmproto.SendReactionRequest_REMOVE || req.GetSIMPayload() != nil {
+		t.Fatalf("remove mapping: %+v", req)
+	}
+	reactionResponse = &gmproto.SendReactionResponse{Success: false}
+	if err := g.React(context.Background(), target, "m1", "👍", false); !errors.Is(err, ErrRejected) {
+		t.Fatalf("explicit refusal: %v", err)
+	}
+	reactionErr = context.DeadlineExceeded
+	if err := g.React(context.Background(), target, "m1", "👍", false); !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("uncertain outcome: %v", err)
+	}
+	before := len(reactions)
+	if err := g.React(context.Background(), SendTarget{}, "m1", "👍", false); !errors.Is(err, ErrRejected) {
+		t.Fatalf("invalid target: %v", err)
+	}
+	if len(reactions) != before {
+		t.Fatal("invalid target reached libgm")
+	}
+	if err := g.Typing(context.Background(), target); err != nil || typingCalls != 1 {
+		t.Fatalf("typing: calls=%d err=%v", typingCalls, err)
+	}
+}
+
+func TestUploadSerializesPrivateMediaAndSendAppendsIt(t *testing.T) {
+	key := bytes.Repeat([]byte{4}, 32)
+	var uploadCalls int
+	var sent *gmproto.SendMessageRequest
+	fake := &fakeGoogleClient{
+		upload: func(_ context.Context, data []byte, name, mime string) (*gmproto.MediaContent, error) {
+			uploadCalls++
+			if string(data) != "file" || name != "photo.jpg" || mime != "image/jpeg" {
+				t.Fatalf("upload arguments: %q %q %q", data, name, mime)
+			}
+			return &gmproto.MediaContent{MediaID: "media-1", MediaName: name, MimeType: mime, Size: int64(len(data)), DecryptionKey: key}, nil
+		},
+		send: func(_ context.Context, req *gmproto.SendMessageRequest) (*gmproto.SendMessageResponse, error) {
+			sent = req
+			return &gmproto.SendMessageResponse{Status: gmproto.SendMessageResponse_SUCCESS}, nil
+		},
+	}
+	g := newGoogle(fake)
+	private, err := g.Upload(context.Background(), []byte("file"), "photo.jpg", "image/jpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var uploaded gmproto.MediaContent
+	if err = unmarshalPrivate(private, &uploaded); err != nil || uploaded.GetMediaID() != "media-1" || !bytes.Equal(uploaded.GetDecryptionKey(), key) {
+		t.Fatalf("private upload descriptor: %+v %v", &uploaded, err)
+	}
+	target := SendTarget{ConversationID: "c1", participantID: "self", sim: &gmproto.SIMPayload{}, Media: [][]byte{private}}
+	outbox := model.Outbox{TransactionID: "tmp-1", Request: model.SendRequest{ConversationID: "c1", Text: "caption"}}
+	if err = g.Send(context.Background(), target, outbox); err != nil {
+		t.Fatal(err)
+	}
+	info := sent.GetMessagePayload().GetMessageInfo()
+	if len(info) != 2 || info[0].GetMessageContent().GetContent() != "caption" || info[1].GetMediaContent().GetMediaID() != "media-1" {
+		t.Fatalf("message info: %+v", info)
+	}
+	before := sent
+	target.Media = [][]byte{[]byte("invalid")}
+	if err = g.Send(context.Background(), target, outbox); !errors.Is(err, ErrRejected) {
+		t.Fatalf("invalid media: %v", err)
+	}
+	if sent != before {
+		t.Fatal("invalid media reached send")
+	}
+	if _, err = g.Upload(context.Background(), make([]byte, MaxAttachmentBytes+1), "large", "application/octet-stream"); !errors.Is(err, ErrTooLarge) || uploadCalls != 1 {
+		t.Fatalf("oversize: calls=%d err=%v", uploadCalls, err)
+	}
+}
+
+func TestSendRejectsMediaOverCombinedLimit(t *testing.T) {
+	key := bytes.Repeat([]byte{2}, 32)
+	first, _ := marshalPrivate(&gmproto.MediaContent{MediaID: "one", Size: MaxAttachmentBytes, DecryptionKey: key})
+	second, _ := marshalPrivate(&gmproto.MediaContent{MediaID: "two", Size: 1, DecryptionKey: key})
+	sendCalls := 0
+	fake := &fakeGoogleClient{send: func(context.Context, *gmproto.SendMessageRequest) (*gmproto.SendMessageResponse, error) {
+		sendCalls++
+		return &gmproto.SendMessageResponse{Status: gmproto.SendMessageResponse_SUCCESS}, nil
+	}}
+	g := newGoogle(fake)
+	target := SendTarget{ConversationID: "c1", participantID: "self", sim: &gmproto.SIMPayload{}, Media: [][]byte{first, second}}
+	err := g.Send(context.Background(), target, model.Outbox{TransactionID: "tmp", Request: model.SendRequest{ConversationID: "c1"}})
+	if !errors.Is(err, ErrRejected) || sendCalls != 0 {
+		t.Fatalf("combined media: calls=%d err=%v", sendCalls, err)
+	}
+}
+
+func TestCreateRCSConfirmationOutcome(t *testing.T) {
+	for _, lost := range []bool{false, true} {
+		calls := 0
+		g := newGoogle(&fakeGoogleClient{create: func(_ context.Context, req *gmproto.GetOrCreateConversationRequest) (*gmproto.GetOrCreateConversationResponse, error) {
+			calls++
+			if calls == 1 {
+				if req.CreateRCSGroup != nil {
+					t.Fatal("premature confirmation")
+				}
+				return &gmproto.GetOrCreateConversationResponse{Status: gmproto.GetOrCreateConversationResponse_CREATE_RCS}, nil
+			}
+			if calls != 2 || !req.GetCreateRCSGroup() || req.RCSGroupName == nil || req.GetRCSGroupName() != "" {
+				t.Fatal("invalid confirmation")
+			}
+			if lost {
+				return nil, context.DeadlineExceeded
+			}
+			return &gmproto.GetOrCreateConversationResponse{Status: gmproto.GetOrCreateConversationResponse_SUCCESS, Conversation: &gmproto.Conversation{ConversationID: "group"}}, nil
+		}})
+		result, err := g.CreateConversation(context.Background(), []string{"+15550001", "+15550002"})
+		if calls != 2 || (lost && !errors.Is(err, ErrAmbiguous)) || (!lost && (err != nil || result.Event.EntityID != "group")) {
+			t.Fatalf("lost=%v calls=%d result=%+v err=%v", lost, calls, result, err)
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -24,15 +25,47 @@ const RecentConversations = 30
 const RecentMessages = 50
 
 var ErrTooLarge = errors.New("attachment exceeds 20 MiB")
+var ErrInvalidCursor = errors.New("invalid provider cursor")
+var ErrInvalidFolder = errors.New("invalid conversation folder")
+
+type googleClient interface {
+	ListConversations(context.Context, *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error)
+	FetchMessages(context.Context, string, int64, *gmproto.Cursor) (*gmproto.ListMessagesResponse, error)
+	GetOrCreateConversation(context.Context, *gmproto.GetOrCreateConversationRequest) (*gmproto.GetOrCreateConversationResponse, error)
+	GetConversation(context.Context, string) (*gmproto.Conversation, error)
+	SendMessage(context.Context, *gmproto.SendMessageRequest) (*gmproto.SendMessageResponse, error)
+	SendReaction(context.Context, *gmproto.SendReactionRequest) (*gmproto.SendReactionResponse, error)
+	SetTyping(context.Context, string, *gmproto.SIMPayload) error
+	MarkRead(context.Context, string, string) error
+}
+
+type contextMediaUploader interface {
+	UploadMediaContext(context.Context, []byte, string, string) (*gmproto.MediaContent, error)
+}
+
+type contextMediaDownloader interface {
+	DownloadMediaContext(context.Context, string, []byte) (io.ReadCloser, error)
+}
 
 type Google struct {
-	Client    *libgm.Client
+	Client    googleClient
 	listMu    sync.Mutex
 	mediaSlot chan struct{}
 	mediaOnce sync.Once
 }
 
+var (
+	_ Provider               = (*Google)(nil)
+	_ googleClient           = (*libgm.Client)(nil)
+	_ contextMediaUploader   = (*libgm.Client)(nil)
+	_ contextMediaDownloader = (*libgm.Client)(nil)
+)
+
 func NewGoogle(client *libgm.Client) *Google {
+	return newGoogle(client)
+}
+
+func newGoogle(client googleClient) *Google {
 	return &Google{Client: client, mediaSlot: make(chan struct{}, 1)}
 }
 
@@ -101,16 +134,63 @@ func SnapshotOf(msg proto.Message) (Snapshot, error) {
 	return Snapshot{Event: store.Event{Type: kind, EntityID: id, Time: time.Now().UTC(), Data: data}, Private: private}, err
 }
 func (g *Google) Conversations(ctx context.Context) ([]Snapshot, error) {
-	// libgm's first-list flag is not synchronized.
-	g.listMu.Lock()
-	defer g.listMu.Unlock()
-	res, err := g.Client.ListConversations(ctx, &gmproto.ListConversationsRequest{Count: RecentConversations, Folder: gmproto.ListConversationsRequest_INBOX})
-	if err != nil {
+	out, _, err := g.ConversationPage(ctx, "inbox", nil)
+	return out, err
+}
+
+func (g *Google) Messages(ctx context.Context, id string) ([]Snapshot, error) {
+	out, _, err := g.MessagePage(ctx, id, nil)
+	return out, err
+}
+
+type pageCursor struct {
+	Version  int    `json:"version"`
+	Scope    string `json:"scope"`
+	Key      string `json:"key"`
+	Position []byte `json:"position"`
+}
+
+func encodeCursor(scope, key string, cursor *gmproto.Cursor) ([]byte, error) {
+	if cursor == nil {
+		return nil, nil
+	}
+	if cursor.GetLastItemID() == "" || cursor.GetLastItemTimestamp() <= 0 {
 		return nil, ErrUnavailable
 	}
-	out := make([]Snapshot, 0, len(res.GetConversations()))
-	for _, c := range res.GetConversations() {
-		s, err := SnapshotOf(c)
+	position, err := proto.Marshal(cursor)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(pageCursor{Version: 1, Scope: scope, Key: key, Position: position})
+}
+
+func decodeCursor(data []byte, scope, key string) (*gmproto.Cursor, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var token pageCursor
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&token); err != nil {
+		return nil, ErrInvalidCursor
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, ErrInvalidCursor
+	}
+	if token.Version != 1 || token.Scope != scope || token.Key != key || len(token.Position) == 0 {
+		return nil, ErrInvalidCursor
+	}
+	var cursor gmproto.Cursor
+	if err := proto.Unmarshal(token.Position, &cursor); err != nil || cursor.GetLastItemID() == "" || cursor.GetLastItemTimestamp() <= 0 {
+		return nil, ErrInvalidCursor
+	}
+	return &cursor, nil
+}
+
+func snapshotsOf[T proto.Message](messages []T) ([]Snapshot, error) {
+	out := make([]Snapshot, 0, len(messages))
+	for _, message := range messages {
+		s, err := SnapshotOf(message)
 		if err != nil {
 			return nil, err
 		}
@@ -118,20 +198,102 @@ func (g *Google) Conversations(ctx context.Context) ([]Snapshot, error) {
 	}
 	return out, nil
 }
-func (g *Google) Messages(ctx context.Context, id string) ([]Snapshot, error) {
-	res, err := g.Client.FetchMessages(ctx, id, RecentMessages, nil)
+
+func (g *Google) MessagePage(ctx context.Context, conversationID string, cursorData []byte) ([]Snapshot, []byte, error) {
+	cursor, err := decodeCursor(cursorData, "messages", conversationID)
 	if err != nil {
-		return nil, ErrUnavailable
+		return nil, nil, err
 	}
-	out := make([]Snapshot, 0, len(res.GetMessages()))
-	for _, m := range res.GetMessages() {
-		s, err := SnapshotOf(m)
-		if err != nil {
-			return nil, err
+	res, err := g.Client.FetchMessages(ctx, conversationID, RecentMessages, cursor)
+	if err != nil || res == nil {
+		return nil, nil, ErrUnavailable
+	}
+	out, err := snapshotsOf(res.GetMessages())
+	if err != nil {
+		return nil, nil, err
+	}
+	next, err := encodeCursor("messages", conversationID, res.GetCursor())
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, next, nil
+}
+
+func conversationFolder(folder string) (gmproto.ListConversationsRequest_Folder, error) {
+	switch folder {
+	case "inbox":
+		return gmproto.ListConversationsRequest_INBOX, nil
+	case "archive":
+		return gmproto.ListConversationsRequest_ARCHIVE, nil
+	case "spam":
+		return gmproto.ListConversationsRequest_SPAM_BLOCKED, nil
+	default:
+		return gmproto.ListConversationsRequest_UNKNOWN, ErrInvalidFolder
+	}
+}
+
+func (g *Google) ConversationPage(ctx context.Context, folder string, cursorData []byte) ([]Snapshot, []byte, error) {
+	protocolFolder, err := conversationFolder(folder)
+	if err != nil {
+		return nil, nil, err
+	}
+	cursor, err := decodeCursor(cursorData, "conversations", folder)
+	if err != nil {
+		return nil, nil, err
+	}
+	// libgm's first-list flag is not synchronized.
+	g.listMu.Lock()
+	defer g.listMu.Unlock()
+	res, err := g.Client.ListConversations(ctx, &gmproto.ListConversationsRequest{Count: RecentConversations, Folder: protocolFolder, Cursor: cursor})
+	if err != nil || res == nil {
+		return nil, nil, ErrUnavailable
+	}
+	if res.GetCursor() == nil && len(res.GetCursorBytes()) > 0 {
+		return nil, nil, ErrUnsupportedCursor
+	}
+	out, err := snapshotsOf(res.GetConversations())
+	if err != nil {
+		return nil, nil, err
+	}
+	next, err := encodeCursor("conversations", folder, res.GetCursor())
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, next, nil
+}
+
+func (g *Google) CreateConversation(ctx context.Context, recipients []string) (Snapshot, error) {
+	if len(recipients) == 0 {
+		return Snapshot{}, ErrRejected
+	}
+	numbers := make([]*gmproto.ContactNumber, len(recipients))
+	for i, recipient := range recipients {
+		if recipient == "" {
+			return Snapshot{}, ErrRejected
 		}
-		out = append(out, s)
+		numbers[i] = &gmproto.ContactNumber{MysteriousInt: 2, Number: recipient, Number2: recipient}
 	}
-	return out, nil
+	req := &gmproto.GetOrCreateConversationRequest{Numbers: numbers}
+	res, err := g.Client.GetOrCreateConversation(ctx, req)
+	if err != nil {
+		return Snapshot{}, ErrAmbiguous
+	}
+	if res.GetStatus() == gmproto.GetOrCreateConversationResponse_CREATE_RCS {
+		name, create := "", true
+		req.RCSGroupName, req.CreateRCSGroup = &name, &create
+		res, err = g.Client.GetOrCreateConversation(ctx, req)
+		if err != nil {
+			return Snapshot{}, ErrAmbiguous
+		}
+	}
+	if res.GetStatus() != gmproto.GetOrCreateConversationResponse_SUCCESS || res.GetConversation().GetConversationID() == "" {
+		return Snapshot{}, ErrAmbiguous
+	}
+	snapshot, err := SnapshotOf(res.GetConversation())
+	if err != nil {
+		return Snapshot{}, ErrAmbiguous
+	}
+	return snapshot, nil
 }
 
 type simPayload = *gmproto.SIMPayload
@@ -166,7 +328,17 @@ func (g *Google) Send(ctx context.Context, target SendTarget, o model.Outbox) er
 	if target.ConversationID != o.Request.ConversationID || target.participantID == "" || target.sim == nil {
 		return ErrRejected
 	}
-	req := &gmproto.SendMessageRequest{ConversationID: o.Request.ConversationID, TmpID: o.TransactionID, SIMPayload: target.sim, MessagePayload: &gmproto.MessagePayload{TmpID: o.TransactionID, TmpID2: o.TransactionID, ConversationID: o.Request.ConversationID, ParticipantID: target.participantID, MessageInfo: []*gmproto.MessageInfo{{Data: &gmproto.MessageInfo_MessageContent{MessageContent: &gmproto.MessageContent{Content: o.Request.Text}}}}}}
+	messageInfo := []*gmproto.MessageInfo{{Data: &gmproto.MessageInfo_MessageContent{MessageContent: &gmproto.MessageContent{Content: o.Request.Text}}}}
+	var mediaBytes int64
+	for _, data := range target.Media {
+		var media gmproto.MediaContent
+		if err := unmarshalPrivate(data, &media); err != nil || media.GetMediaID() == "" || len(media.GetDecryptionKey()) != 32 || media.GetSize() < 0 || media.GetSize() > MaxAttachmentBytes-mediaBytes {
+			return ErrRejected
+		}
+		mediaBytes += media.GetSize()
+		messageInfo = append(messageInfo, &gmproto.MessageInfo{Data: &gmproto.MessageInfo_MediaContent{MediaContent: &media}})
+	}
+	req := &gmproto.SendMessageRequest{ConversationID: o.Request.ConversationID, TmpID: o.TransactionID, SIMPayload: target.sim, MessagePayload: &gmproto.MessagePayload{TmpID: o.TransactionID, TmpID2: o.TransactionID, ConversationID: o.Request.ConversationID, ParticipantID: target.participantID, MessageInfo: messageInfo}}
 	res, err := g.Client.SendMessage(ctx, req)
 	if err != nil {
 		// Transport errors, relay 4xx/5xx, timeouts and cancellation all arrive
@@ -174,6 +346,61 @@ func (g *Google) Send(ctx context.Context, target SendTarget, o model.Outbox) er
 		return ErrAmbiguous
 	}
 	return SendOutcome(res.GetStatus())
+}
+
+func (g *Google) React(ctx context.Context, target SendTarget, messageID, emoji string, remove bool) error {
+	if target.ConversationID == "" || target.participantID == "" || target.sim == nil || messageID == "" || emoji == "" {
+		return ErrRejected
+	}
+	action := gmproto.SendReactionRequest_ADD
+	var sim *gmproto.SIMPayload
+	if remove {
+		action = gmproto.SendReactionRequest_REMOVE
+	} else {
+		sim = target.sim
+	}
+	res, err := g.Client.SendReaction(ctx, &gmproto.SendReactionRequest{
+		MessageID:    messageID,
+		ReactionData: gmproto.MakeReactionData(emoji),
+		Action:       action,
+		SIMPayload:   sim,
+	})
+	if err != nil || res == nil {
+		return ErrAmbiguous
+	}
+	if !res.GetSuccess() {
+		return ErrRejected
+	}
+	return nil
+}
+
+func (g *Google) Typing(ctx context.Context, target SendTarget) error {
+	if target.ConversationID == "" || target.participantID == "" || target.sim == nil {
+		return ErrRejected
+	}
+	if err := g.Client.SetTyping(ctx, target.ConversationID, target.sim); err != nil {
+		return ErrAmbiguous
+	}
+	return nil
+}
+
+func (g *Google) Upload(ctx context.Context, data []byte, name, mime string) ([]byte, error) {
+	if len(data) > MaxAttachmentBytes {
+		return nil, ErrTooLarge
+	}
+	uploader, ok := g.Client.(contextMediaUploader)
+	if !ok {
+		return nil, ErrUnavailable
+	}
+	media, err := uploader.UploadMediaContext(ctx, data, name, mime)
+	if err != nil || media == nil || media.GetMediaID() == "" || len(media.GetDecryptionKey()) != 32 || media.GetSize() < 0 || media.GetSize() > MaxAttachmentBytes {
+		return nil, ErrUnavailable
+	}
+	private, err := marshalPrivate(media)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	return private, nil
 }
 
 // SendOutcome maps the phone's reply. Only explicit failure codes are rejections.
@@ -224,7 +451,11 @@ func (g *Google) Attachment(ctx context.Context, data []byte) ([]byte, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	r, err := g.Client.DownloadMediaContext(ctx, media.GetMediaID(), media.GetDecryptionKey())
+	downloader, ok := g.Client.(contextMediaDownloader)
+	if !ok {
+		return nil, ErrUnavailable
+	}
+	r, err := downloader.DownloadMediaContext(ctx, media.GetMediaID(), media.GetDecryptionKey())
 	if err != nil {
 		return nil, ErrUnavailable
 	}

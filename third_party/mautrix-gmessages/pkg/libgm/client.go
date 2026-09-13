@@ -185,6 +185,14 @@ const RefreshTachyonBuffer = 1 * time.Hour
 
 type Proxy func(*http.Request) (*url.URL, error)
 type EventHandler func(evt any)
+type EventHandlerWithError func(evt any) error
+
+var ErrClientDisconnecting = errors.New("client is disconnecting")
+
+type clientLifecycle struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
 
 type updateDedupItem struct {
 	id   string
@@ -195,15 +203,30 @@ const DefaultBugleDefaultCheckInterval = 2*time.Hour + 55*time.Minute
 const minBugleDefaultCheckInterval = 1 * time.Hour
 
 type Client struct {
-	Logger         zerolog.Logger
-	evHandler      EventHandler
-	sessionHandler *SessionHandler
+	Logger          zerolog.Logger
+	handlerLock     sync.RWMutex
+	evHandler       EventHandler
+	errEventHandler EventHandlerWithError
+	sessionHandler  *SessionHandler
 
+	lifecycleLock    sync.Mutex
+	disconnectLock   sync.Mutex
+	connectLock      sync.Mutex
+	lifecycle        *clientLifecycle
+	lifecycleClosing bool
+	callbackLock     sync.RWMutex
+	callbacksOpen    bool
+	workers          sync.WaitGroup
+
+	pollLock        sync.RWMutex
 	longPollingConn io.Closer
-	listenID        int
-	skipCount       int
+	pollCancel      context.CancelFunc
+	listenID        uint64
+	pollRunning     bool
 	disconnecting   bool
+	skipCount       atomic.Int64
 
+	settingsLock             sync.RWMutex
 	pingInterval             time.Duration
 	alertTimeoutCount        int
 	pingShortCircuit         chan struct{}
@@ -214,10 +237,12 @@ type Client struct {
 	lastBugleDefaultCheck    time.Time
 	bugleDefaultCheckLock    sync.Mutex
 
-	recentUpdates    [8]updateDedupItem
-	recentUpdatesPtr int
+	recentUpdates     [8]updateDedupItem
+	recentUpdatesPtr  int
+	recentUpdatesLock sync.Mutex
 
 	conversationsFetchedOnce bool
+	conversationsFetchLock   sync.Mutex
 
 	GaiaHackyDeviceSwitcher int
 
@@ -255,6 +280,7 @@ func NewClient(authData *AuthData, pk *PushKeys, logger zerolog.Logger, httpSett
 		pingInterval:             1 * time.Minute,
 		alertTimeoutCount:        4,
 		dataReceiveCheckInterval: DefaultBugleDefaultCheckInterval,
+		callbacksOpen:            true,
 	}
 	sessionHandler.client = cli
 	// A redirected POST would replay the body; surface the 3xx as an error instead.
@@ -280,18 +306,34 @@ func (c *Client) CurrentSessionID() string {
 // SetEventHandler sets the global event handler for all received data.
 // The method is called synchronously and must not make any outgoing requests or otherwise block for too long.
 func (c *Client) SetEventHandler(eventHandler EventHandler) {
+	c.handlerLock.Lock()
 	c.evHandler = eventHandler
+	c.errEventHandler = nil
+	c.handlerLock.Unlock()
+}
+
+// SetEventHandlerWithError installs a synchronous handler that can reject ACK
+// admission. An error leaves the incoming RPC unacknowledged for redelivery.
+func (c *Client) SetEventHandlerWithError(eventHandler EventHandlerWithError) {
+	c.handlerLock.Lock()
+	c.evHandler = nil
+	c.errEventHandler = eventHandler
+	c.handlerLock.Unlock()
 }
 
 func (c *Client) SetPingInterval(interval time.Duration) {
 	if interval >= 1*time.Minute && interval < 4*time.Hour {
+		c.settingsLock.Lock()
 		c.pingInterval = interval
+		c.settingsLock.Unlock()
 	}
 }
 
 func (c *Client) SetAlertTimeoutCount(count int) {
 	if count > 0 {
+		c.settingsLock.Lock()
 		c.alertTimeoutCount = count
+		c.settingsLock.Unlock()
 	}
 }
 
@@ -300,8 +342,83 @@ func (c *Client) SetAlertTimeoutCount(count int) {
 // Intervals shorter than 5 minutes are ignored to avoid draining the phone's battery.
 func (c *Client) SetDataReceiveCheckInterval(interval time.Duration) {
 	if interval >= 5*time.Minute {
+		c.settingsLock.Lock()
 		c.dataReceiveCheckInterval = interval
+		c.settingsLock.Unlock()
 	}
+}
+
+func (c *Client) lifecycleFor(ctx context.Context) (*clientLifecycle, error) {
+	c.lifecycleLock.Lock()
+	defer c.lifecycleLock.Unlock()
+	if c.lifecycleClosing {
+		return nil, ErrClientDisconnecting
+	}
+	if c.lifecycle == nil {
+		lifecycleCtx, cancel := context.WithCancel(ctx)
+		c.lifecycle = &clientLifecycle{ctx: lifecycleCtx, cancel: cancel}
+		c.callbackLock.Lock()
+		c.callbacksOpen = true
+		c.callbackLock.Unlock()
+	}
+	return c.lifecycle, nil
+}
+
+func (c *Client) goWorker(lifecycle *clientLifecycle, worker func(context.Context)) bool {
+	c.lifecycleLock.Lock()
+	if c.lifecycleClosing || c.lifecycle != lifecycle {
+		c.lifecycleLock.Unlock()
+		return false
+	}
+	c.workers.Add(1)
+	c.lifecycleLock.Unlock()
+	go func() {
+		defer c.workers.Done()
+		worker(lifecycle.ctx)
+	}()
+	return true
+}
+
+func (c *Client) goCurrentWorker(worker func(context.Context)) bool {
+	c.lifecycleLock.Lock()
+	lifecycle := c.lifecycle
+	c.lifecycleLock.Unlock()
+	if lifecycle == nil {
+		return false
+	}
+	return c.goWorker(lifecycle, worker)
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (c *Client) pollSettings() (time.Duration, int) {
+	c.settingsLock.RLock()
+	defer c.settingsLock.RUnlock()
+	return c.pingInterval, c.alertTimeoutCount
+}
+
+func (c *Client) dataCheckInterval() time.Duration {
+	c.settingsLock.RLock()
+	defer c.settingsLock.RUnlock()
+	return c.dataReceiveCheckInterval
+}
+
+func (c *Client) consumeSkip() bool {
+	for skipCount := c.skipCount.Load(); skipCount > 0; skipCount = c.skipCount.Load() {
+		if c.skipCount.CompareAndSwap(skipCount, skipCount-1) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) checkLoggedIn() error {
@@ -313,70 +430,125 @@ func (c *Client) checkLoggedIn() error {
 	return nil
 }
 
-func (c *Client) startLongPolling(ctx context.Context) {
-	c.bumpNextDataReceiveCheck(10 * time.Minute)
+func (c *Client) pollIsRunning() bool {
+	c.pollLock.RLock()
+	defer c.pollLock.RUnlock()
+	return c.pollRunning
+}
 
-	//webEncryptionKeyResponse, err := c.GetWebEncryptionKey()
-	//if err != nil {
-	//	return fmt.Errorf("failed to get web encryption key: %w", err)
-	//}
-	//c.updateWebEncryptionKey(webEncryptionKeyResponse.GetKey())
-	go c.doLongPoll(ctx, true, false, c.postConnect)
-	c.sessionHandler.startAckInterval()
+func (c *Client) startLongPolling(lifecycle *clientLifecycle, loggedIn, background bool, onFirstConnect func(context.Context)) (<-chan bool, error) {
+	c.bumpNextDataReceiveCheck(10 * time.Minute)
+	c.pollLock.Lock()
+	if c.pollRunning {
+		c.pollLock.Unlock()
+		return nil, nil
+	}
+	c.listenID++
+	listenID := c.listenID
+	pollCtx, pollCancel := context.WithCancel(lifecycle.ctx)
+	c.pollCancel = pollCancel
+	c.pollRunning = true
+	c.disconnecting = false
+	c.pollLock.Unlock()
+
+	result := make(chan bool, 1)
+	if !c.goWorker(lifecycle, func(context.Context) {
+		clean := c.doLongPoll(lifecycle, pollCtx, listenID, loggedIn, background, onFirstConnect)
+		result <- clean
+		close(result)
+	}) {
+		c.finishLongPoll(listenID)
+		return nil, ErrClientDisconnecting
+	}
+	return result, nil
 }
 
 func (c *Client) Connect(ctx context.Context) error {
+	c.connectLock.Lock()
+	defer c.connectLock.Unlock()
 	if err := c.checkLoggedIn(); err != nil {
 		return err
+	}
+	lifecycle, err := c.lifecycleFor(ctx)
+	if err != nil {
+		return err
+	}
+	if c.pollIsRunning() {
+		c.sessionHandler.startAckInterval(lifecycle)
+		return nil
 	}
 
 	// Refresh the auth token here rather than leaving it to the long polling loop, so that
 	// callers connecting for the first time (i.e. right after logging in) find out about
 	// bad credentials synchronously.
-	err := c.refreshAuthToken(nil)
+	err = c.refreshAuthToken(lifecycle.ctx, nil)
 	if err != nil {
 		if isFatalRefreshError(err) {
 			return fmt.Errorf("failed to refresh auth token: %w", err)
 		}
 		c.Logger.Warn().Err(err).Msg("Transient error refreshing auth token on connect, will retry in long polling loop")
 	}
-	c.startLongPolling(ctx)
-	return nil
+	_, err = c.startLongPolling(lifecycle, true, false, c.postConnect)
+	if err == nil {
+		c.sessionHandler.startAckInterval(lifecycle)
+	}
+	return err
 }
 
 func (c *Client) ConnectBackground(ctx context.Context) error {
+	c.connectLock.Lock()
 	if err := c.checkLoggedIn(); err != nil {
+		c.connectLock.Unlock()
 		return err
 	}
-	cleanExit := c.doLongPoll(ctx, true, true, nil)
-	c.sessionHandler.sendAckRequest()
+	lifecycle, err := c.lifecycleFor(ctx)
+	if err != nil {
+		c.connectLock.Unlock()
+		return err
+	}
+	result, err := c.startLongPolling(lifecycle, true, true, nil)
+	c.connectLock.Unlock()
+	if err != nil {
+		return err
+	}
+	if result == nil {
+		return errors.New("client is already connected")
+	}
+	cleanExit := <-result
+	c.sessionHandler.sendAckRequest(lifecycle.ctx)
 	if !cleanExit {
 		return fmt.Errorf("polling exited uncleanly")
 	}
 	return nil
 }
 
-func (c *Client) postConnect() {
-	time.Sleep(2 * time.Second)
-	if c.skipCount > 0 {
-		c.Logger.Warn().Int("skip_count", c.skipCount).Msg("Skip count is non-zero in postConnect, waiting longer")
-		for i := 0; i < 3 && c.skipCount > 0; i++ {
-			time.Sleep(1 * time.Second)
-		}
-		if c.skipCount > 0 {
-			c.Logger.Warn().Int("skip_count", c.skipCount).Msg("Skip count is still non-zero")
-		}
-		c.triggerEvent(&events.HackySetActiveMayFail{})
+func (c *Client) postConnect(ctx context.Context) {
+	if !sleepContext(ctx, 2*time.Second) {
+		return
 	}
-	ctx := c.Logger.WithContext(context.TODO())
+	if skipCount := c.skipCount.Load(); skipCount > 0 {
+		c.Logger.Warn().Int64("skip_count", skipCount).Msg("Skip count is non-zero in postConnect, waiting longer")
+		for i := 0; i < 3 && c.skipCount.Load() > 0; i++ {
+			if !sleepContext(ctx, time.Second) {
+				return
+			}
+		}
+		if skipCount = c.skipCount.Load(); skipCount > 0 {
+			c.Logger.Warn().Int64("skip_count", skipCount).Msg("Skip count is still non-zero")
+		}
+		_ = c.triggerEvent(&events.HackySetActiveMayFail{})
+	}
+	ctx = c.Logger.WithContext(ctx)
 	c.Logger.Debug().Msg("Sending acks before get updates request")
-	c.sessionHandler.sendAckRequest()
-	time.Sleep(1 * time.Second)
+	c.sessionHandler.sendAckRequest(ctx)
+	if !sleepContext(ctx, time.Second) {
+		return
+	}
 	c.Logger.Debug().Msg("Sending get updates request")
 	err := c.SetActiveSession(ctx)
 	if err != nil {
 		c.Logger.Err(err).Msg("Failed to set active session")
-		c.triggerEvent(&events.PingFailed{
+		_ = c.triggerEvent(&events.PingFailed{
 			Error: fmt.Errorf("failed to set active session: %w", err),
 		})
 		return
@@ -388,7 +560,7 @@ func (c *Client) postConnect() {
 		return
 	}
 	doneChan := make(chan struct{})
-	go func() {
+	c.goCurrentWorker(func(workerCtx context.Context) {
 		select {
 		case <-time.After(5 * time.Second):
 			c.Logger.Warn().Msg("Checking bugle default on connect is taking long")
@@ -397,8 +569,9 @@ func (c *Client) postConnect() {
 			default:
 			}
 		case <-doneChan:
+		case <-workerCtx.Done():
 		}
-	}()
+	})
 	bugleRes, err := c.IsBugleDefault(ctx)
 	close(doneChan)
 	if err != nil {
@@ -419,18 +592,38 @@ func (c *Client) shouldCheckBugleDefault() bool {
 }
 
 func (c *Client) Disconnect() {
+	c.disconnectLock.Lock()
+	defer c.disconnectLock.Unlock()
+	c.lifecycleLock.Lock()
+	lifecycle := c.lifecycle
+	if lifecycle != nil {
+		c.lifecycleClosing = true
+		lifecycle.cancel()
+	}
+	c.lifecycleLock.Unlock()
+	c.callbackLock.Lock()
+	c.callbacksOpen = false
+	c.callbackLock.Unlock()
 	c.closeLongPolling()
-	c.sessionHandler.stopAckInterval()
 	// Fail any requests that are still waiting for a response from the phone:
 	// the responses are delivered over the long polling connection, so they can
 	// never arrive after it has been torn down.
 	c.sessionHandler.cancelAllResponseWaiters()
+	c.workers.Wait()
 	c.http.CloseIdleConnections()
+	c.lphttp.CloseIdleConnections()
+	c.lifecycleLock.Lock()
+	if c.lifecycle == lifecycle {
+		c.lifecycle = nil
+	}
+	c.lifecycleClosing = false
+	c.lifecycleLock.Unlock()
 }
 
 func (c *Client) IsConnected() bool {
-	// TODO add better check (longPollingConn is set to nil while the polling reconnects)
-	return c.longPollingConn != nil
+	c.pollLock.RLock()
+	defer c.pollLock.RUnlock()
+	return c.pollRunning && c.longPollingConn != nil
 }
 
 func (c *Client) IsLoggedIn() bool {
@@ -442,22 +635,56 @@ func (c *Client) IsLoggedIn() bool {
 }
 
 func (c *Client) Reconnect(ctx context.Context) error {
+	c.connectLock.Lock()
+	defer c.connectLock.Unlock()
 	c.closeLongPolling()
 	err := c.checkLoggedIn()
 	if err != nil {
 		c.Logger.Err(err).Msg("Failed to reconnect")
-		c.triggerEvent(&events.ListenFatalError{Error: fmt.Errorf("failed to reconnect: %w", err)})
+		_ = c.triggerEvent(&events.ListenFatalError{Error: fmt.Errorf("failed to reconnect: %w", err)})
 		return err
 	}
-	c.startLongPolling(ctx)
+	lifecycle, err := c.lifecycleFor(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = c.startLongPolling(lifecycle, true, false, c.postConnect)
+	if err != nil {
+		return err
+	}
+	c.sessionHandler.startAckInterval(lifecycle)
 	c.Logger.Debug().Msg("Successfully reconnected to server")
 	return nil
 }
 
-func (c *Client) triggerEvent(evt interface{}) {
-	if c.evHandler != nil {
-		c.evHandler(evt)
+func (c *Client) triggerEvent(evt interface{}) error {
+	if !c.beginCallback() {
+		return ErrConnectionClosed
 	}
+	defer c.endCallback()
+	c.handlerLock.RLock()
+	handler, errHandler := c.evHandler, c.errEventHandler
+	c.handlerLock.RUnlock()
+	if errHandler != nil {
+		return errHandler(evt)
+	}
+	if handler != nil {
+		handler(evt)
+	}
+	return nil
+}
+
+func (c *Client) beginCallback() bool {
+	c.callbackLock.RLock()
+	if !c.callbacksOpen {
+		c.callbackLock.RUnlock()
+		return false
+	}
+	return true
+}
+
+func (c *Client) endCallback() {
+	c.callbackLock.RUnlock()
 }
 
 func (c *Client) FetchConfig(ctx context.Context) error {
@@ -543,7 +770,7 @@ type PushKeys struct {
 
 func (c *Client) RegisterPush(ctx context.Context, keys *PushKeys) error {
 	if c.PushKeys == nil || c.PushKeys.URL != keys.URL {
-		err := c.refreshAuthToken(keys)
+		err := c.refreshAuthToken(ctx, keys)
 		if err != nil {
 			return fmt.Errorf("failed to refresh auth token: %w", err)
 		}
@@ -574,7 +801,7 @@ func isFatalRefreshError(err error) bool {
 	return false
 }
 
-func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
+func (c *Client) refreshAuthToken(ctx context.Context, pushKeyOverride *PushKeys) error {
 	_, browser := c.AuthData.devices()
 	if browser == nil || (time.Until(c.AuthData.tachyonExpiry()) > RefreshTachyonBuffer && pushKeyOverride == nil) {
 		return nil
@@ -633,7 +860,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
 	}
 
 	resp, err := typedHTTPResponse[*gmproto.RegisterRefreshResponse](
-		c.makeProtobufHTTPRequest(util.RegisterRefreshURL, payload, ContentTypePBLite),
+		c.makeProtobufHTTPRequestContext(ctx, util.RegisterRefreshURL, payload, ContentTypePBLite, false, false),
 	)
 	if err != nil {
 		return err

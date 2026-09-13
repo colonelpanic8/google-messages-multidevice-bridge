@@ -144,6 +144,9 @@ func (s *Store) Apply(event Event, private map[string][]byte, watermark *uint64)
 			stale = len(v) == 8 && binary.BigEndian.Uint64(v) > *watermark
 		}
 		if !stale {
+			if err := stampEpoch(tx, event.Type, event.EntityID); err != nil {
+				return err
+			}
 			var err error
 			changed, err = s.appendTx(tx, event)
 			if err != nil {

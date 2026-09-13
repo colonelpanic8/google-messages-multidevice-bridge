@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -79,6 +80,8 @@ var FormatToMediaType = map[gmproto.MediaFormats]MediaType{
 	//gmproto.MediaFormats_CAL_APPLICATION_HBSVCS: ???
 }
 
+const maxUploadResponseBytes = 1 << 20
+
 func init() {
 	for key, mediaType := range MimeToMediaType {
 		if strings.ContainsRune(key, '/') {
@@ -89,6 +92,13 @@ func init() {
 }
 
 func (c *Client) UploadMedia(data []byte, fileName, mime string) (*gmproto.MediaContent, error) {
+	return c.UploadMediaContext(context.Background(), data, fileName, mime)
+}
+
+func (c *Client) UploadMediaContext(ctx context.Context, data []byte, fileName, mime string) (*gmproto.MediaContent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	mediaType := MimeToMediaType[mime]
 	if mediaType.Type == 0 {
 		mediaType = MimeToMediaType[strings.Split(mime, "/")[0]]
@@ -102,11 +112,11 @@ func (c *Client) UploadMedia(data []byte, fileName, mime string) (*gmproto.Media
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt media: %w", err)
 	}
-	startUploadImage, err := c.StartUploadMedia(encryptedBytes, mime)
+	startUploadImage, err := c.StartUploadMediaContext(ctx, encryptedBytes, mime)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start upload: %w", err)
 	}
-	upload, err := c.FinalizeUploadMedia(startUploadImage)
+	upload, err := c.FinalizeUploadMediaContext(ctx, startUploadImage)
 	if err != nil {
 		return nil, fmt.Errorf("failed to finalize upload: %w", err)
 	}
@@ -153,10 +163,14 @@ func isStandardBase64(data []byte) bool {
 }
 
 func (c *Client) FinalizeUploadMedia(upload *StartGoogleUpload) (*MediaUpload, error) {
+	return c.FinalizeUploadMediaContext(context.Background(), upload)
+}
+
+func (c *Client) FinalizeUploadMediaContext(ctx context.Context, upload *StartGoogleUpload) (*MediaUpload, error) {
 	encryptedImageSize := strconv.Itoa(len(upload.EncryptedMediaBytes))
 
 	finalizeUploadHeaders := util.NewMediaUploadHeaders(encryptedImageSize, "upload, finalize", "0", upload.MimeType, "")
-	req, err := http.NewRequest(http.MethodPost, upload.UploadURL, bytes.NewBuffer(upload.EncryptedMediaBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upload.UploadURL, bytes.NewBuffer(upload.EncryptedMediaBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare request: %w", err)
 	}
@@ -171,9 +185,12 @@ func (c *Client) FinalizeUploadMedia(upload *StartGoogleUpload) (*MediaUpload, e
 	if res.StatusCode != 200 {
 		return nil, fmt.Errorf("unexpected status code %d", res.StatusCode)
 	}
-	respData, err := io.ReadAll(res.Body)
+	respData, err := io.ReadAll(io.LimitReader(res.Body, maxUploadResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if len(respData) > maxUploadResponseBytes {
+		return nil, fmt.Errorf("upload response exceeds %d bytes", maxUploadResponseBytes)
 	}
 	if isStandardBase64(respData) {
 		n, err := base64.StdEncoding.Decode(respData, respData)
@@ -192,13 +209,20 @@ func (c *Client) FinalizeUploadMedia(upload *StartGoogleUpload) (*MediaUpload, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
+	if mediaIDs.GetMedia() == nil {
+		return nil, errors.New("upload response is missing media data")
+	}
 	return &MediaUpload{
-		MediaID:     mediaIDs.Media.MediaID,
-		MediaNumber: mediaIDs.Media.MediaNumber,
+		MediaID:     mediaIDs.GetMedia().GetMediaID(),
+		MediaNumber: mediaIDs.GetMedia().GetMediaNumber(),
 	}, nil
 }
 
 func (c *Client) StartUploadMedia(encryptedImageBytes []byte, mime string) (*StartGoogleUpload, error) {
+	return c.StartUploadMediaContext(context.Background(), encryptedImageBytes, mime)
+}
+
+func (c *Client) StartUploadMediaContext(ctx context.Context, encryptedImageBytes []byte, mime string) (*StartGoogleUpload, error) {
 	encryptedImageSize := strconv.Itoa(len(encryptedImageBytes))
 
 	startUploadHeaders := util.NewMediaUploadHeaders(encryptedImageSize, "start", "", mime, "resumable")
@@ -207,7 +231,7 @@ func (c *Client) StartUploadMedia(encryptedImageBytes []byte, mime string) (*Sta
 		return nil, fmt.Errorf("failed to build payload: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, util.UploadMediaURL, bytes.NewBuffer([]byte(startUploadPayload)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, util.UploadMediaURL, bytes.NewBuffer([]byte(startUploadPayload)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare request: %w", err)
 	}

@@ -103,7 +103,7 @@ func (s *Store) Enqueue(id, transactionID string, req model.SendRequest) (model.
 		var err error
 		o, err = s.readOutbox(tx, []byte(id))
 		if err == nil {
-			if o.Request != req {
+			if !o.Request.Equal(req) {
 				return ErrConflict
 			}
 			return nil
@@ -207,7 +207,7 @@ func (s *Store) confirmSendTx(tx *bolt.Tx, m model.Message) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if o.Request.ConversationID != m.ConversationID || o.State == "queued" || o.State == "canceled" || o.State == "confirmed" {
+	if (o.Request.Kind != "" && o.Request.Kind != "message") || o.Request.ConversationID != m.ConversationID || o.State == "queued" || o.State == "canceled" || o.State == "confirmed" {
 		return false, nil
 	}
 	o.State, o.MessageID, o.Detail, o.Updated = "confirmed", m.ID, "Observed in Google history; see message status for delivery", time.Now().UTC()

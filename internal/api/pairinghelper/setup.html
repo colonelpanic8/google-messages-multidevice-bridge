@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Google Messages Bridge Pairing</title>
+    <link rel="stylesheet" href="setup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">Google Messages Bridge</p>
+        <h1>Pair this browser securely</h1>
+        <p class="intro">
+          This helper keeps setup in its own tab. It reads the seven allowlisted
+          Google cookies only after you click Connect, sends them directly to
+          your chosen bridge with a one-time ticket, and then releases site
+          access.
+        </p>
+      </header>
+
+      <section aria-labelledby="steps-heading">
+        <h2 id="steps-heading">Setup</h2>
+        <ol>
+          <li>
+            Enter the bridge origin and one-time pairing ticket displayed by
+            your bridge.
+          </li>
+          <li>
+            Open Google sign-in and finish signing in to the account used by
+            Google Messages.
+          </li>
+          <li>Return to this tab and explicitly connect the account.</li>
+        </ol>
+
+        <form id="pairing-form" autocomplete="off">
+          <label for="bridge-url">Bridge URL</label>
+          <input
+            id="bridge-url"
+            name="bridge-url"
+            type="url"
+            inputmode="url"
+            placeholder="https://bridge.example.com"
+            autocomplete="off"
+            autocapitalize="none"
+            spellcheck="false"
+            required
+          />
+          <p class="hint">
+            HTTPS is required except for loopback and literal Tailscale
+            100.64.0.0/10 addresses.
+          </p>
+
+          <label for="pairing-ticket">One-time pairing ticket</label>
+          <input
+            id="pairing-ticket"
+            name="pairing-ticket"
+            type="password"
+            autocomplete="off"
+            autocapitalize="none"
+            spellcheck="false"
+            required
+          />
+          <p class="hint">
+            This is not your API bearer token. The bridge accepts it once and
+            expires it after ten minutes.
+          </p>
+
+          <div class="actions">
+            <button id="sign-in" type="button" class="secondary">
+              Open Google sign-in
+            </button>
+            <button id="connect" type="button">
+              Connect this Google account
+            </button>
+          </div>
+        </form>
+
+        <p id="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <aside>
+        <strong>Cookie access is narrowly scoped.</strong>
+        Required: SID, HSID, OSID, SSID, APISID, SAPISID. Optional:
+        __Secure-1PSIDTS. Nothing is saved by this extension.
+      </aside>
+    </main>
+    <script type="module" src="setup.mjs"></script>
+  </body>
+</html>

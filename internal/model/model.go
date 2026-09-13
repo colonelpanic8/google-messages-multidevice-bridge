@@ -1,7 +1,10 @@
 // Package model defines the bridge's versioned, provider-independent wire records.
 package model
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 const Schema = 1
 
@@ -55,18 +58,53 @@ type Typing struct {
 	ParticipantID  string `json:"participant_id"`
 	Active         bool   `json:"active"`
 }
-type SendRequest struct {
-	ConversationID string `json:"conversation_id"`
-	Text           string `json:"text"`
+type Upload struct {
+	Schema  int       `json:"schema"`
+	ID      string    `json:"id"`
+	Name    string    `json:"name"`
+	MIME    string    `json:"mime"`
+	Size    int64     `json:"size"`
+	Created time.Time `json:"created"`
 }
+type SendRequest struct {
+	Kind           string   `json:"kind,omitempty"`
+	Recipients     []string `json:"recipients,omitempty"`
+	AttachmentIDs  []string `json:"attachment_ids,omitempty"`
+	MessageID      string   `json:"message_id,omitempty"`
+	Emoji          string   `json:"emoji,omitempty"`
+	Remove         bool     `json:"remove,omitempty"`
+	ConversationID string   `json:"conversation_id"`
+	Text           string   `json:"text"`
+}
+
+func (r SendRequest) Equal(other SendRequest) bool {
+	return r.Kind == other.Kind && r.ConversationID == other.ConversationID && r.Text == other.Text && r.MessageID == other.MessageID && r.Emoji == other.Emoji && r.Remove == other.Remove && slices.Equal(r.Recipients, other.Recipients) && slices.Equal(r.AttachmentIDs, other.AttachmentIDs)
+}
+
 type Outbox struct {
-	Schema        int         `json:"schema"`
-	ID            string      `json:"id"`
-	Request       SendRequest `json:"request"`
-	TransactionID string      `json:"transaction_id"`
-	State         string      `json:"state"`
-	MessageID     string      `json:"message_id,omitempty"`
-	Detail        string      `json:"detail,omitempty"`
-	Created       time.Time   `json:"created"`
-	Updated       time.Time   `json:"updated"`
+	ConversationID string      `json:"conversation_id,omitempty"`
+	Schema         int         `json:"schema"`
+	ID             string      `json:"id"`
+	Request        SendRequest `json:"request"`
+	TransactionID  string      `json:"transaction_id"`
+	State          string      `json:"state"`
+	MessageID      string      `json:"message_id,omitempty"`
+	Detail         string      `json:"detail,omitempty"`
+	Created        time.Time   `json:"created"`
+	Updated        time.Time   `json:"updated"`
+}
+
+type HistoryJob struct {
+	Generation     uint64    `json:"generation"`
+	Schema         int       `json:"schema"`
+	ID             string    `json:"id"`
+	Kind           string    `json:"kind"`
+	ConversationID string    `json:"conversation_id,omitempty"`
+	Folder         string    `json:"folder,omitempty"`
+	State          string    `json:"state"`
+	Pages          int64     `json:"pages"`
+	Records        int64     `json:"records"`
+	Detail         string    `json:"detail,omitempty"`
+	Updated        time.Time `json:"updated"`
+	RetryAt        time.Time `json:"retry_at,omitempty"`
 }

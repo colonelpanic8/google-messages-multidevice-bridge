@@ -30,7 +30,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -307,14 +306,16 @@ func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string)) 
 	if err != nil {
 		return err
 	}
-	c.triggerEvent(&events.PairSuccessful{PhoneID: phoneID})
+	if err := c.triggerEvent(&events.PairSuccessful{PhoneID: phoneID}); err != nil {
+		return err
+	}
 
-	go func() {
-		err := c.Reconnect(context.TODO())
+	c.goCurrentWorker(func(workerCtx context.Context) {
+		err := c.Reconnect(workerCtx)
 		if err != nil {
 			c.Logger.Err(err).Msg("Failed to reconnect after Google pair success")
 		}
-	}()
+	})
 	return nil
 }
 
@@ -372,10 +373,23 @@ func (c *Client) StartGaiaPairing(ctx, bgCtx context.Context) (string, *PairingS
 		return "", nil, fmt.Errorf("failed to parse destination UUID: %w", err)
 	}
 	c.AuthData.setDestRegID(destRegUUID)
-	var longPollConnectWait sync.WaitGroup
-	longPollConnectWait.Add(1)
-	go c.doLongPoll(bgCtx, false, false, longPollConnectWait.Done)
-	longPollConnectWait.Wait()
+	lifecycle, err := c.lifecycleFor(bgCtx)
+	if err != nil {
+		return "", nil, err
+	}
+	c.closeLongPolling()
+	connected := make(chan struct{})
+	pollResult, err := c.startLongPolling(lifecycle, false, false, func(context.Context) { close(connected) })
+	if err != nil {
+		return "", nil, err
+	}
+	select {
+	case <-connected:
+	case <-pollResult:
+		return "", nil, errors.New("pairing poll stopped before connecting")
+	case <-ctx.Done():
+		return "", nil, ctx.Err()
+	}
 	ps := NewPairingSession(*destRegDev)
 	clientInit, _, err := ps.PreparePayloads()
 	if err != nil {

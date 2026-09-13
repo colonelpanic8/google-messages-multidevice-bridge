@@ -33,23 +33,35 @@ type Status struct {
 }
 
 type Bridge struct {
-	Store       *store.Store
-	Hub         *Hub
-	client      *libgm.Client
-	fatal       chan error
-	mu          sync.RWMutex
-	status      Status
-	provider    provider.Provider
-	providerCtx context.Context
-	providerOps sync.WaitGroup
-	prepareOnce sync.Once
-	prepareErr  error
-	storageErr  error
-	syncWake    chan struct{}
-	sendWake    chan struct{}
-	eventMu     sync.Mutex
-	stopped     bool
-	pairing     bool
+	mutationMu       sync.Mutex
+	offlineOnly      bool
+	pairingState     PairingState
+	pairCookies      map[string]string
+	pairWake         chan struct{}
+	pairCancel       context.CancelFunc
+	pairAttempt      func(context.Context, map[string]string, func(string)) error
+	connectionCancel context.CancelFunc
+	reconnectWake    chan struct{}
+	reconnectDelay   time.Duration
+	historyWake      chan struct{}
+	typingSent       map[string]time.Time
+	Store            *store.Store
+	Hub              *Hub
+	client           *libgm.Client
+	fatal            chan error
+	mu               sync.RWMutex
+	status           Status
+	provider         provider.Provider
+	providerCtx      context.Context
+	providerOps      sync.WaitGroup
+	prepareOnce      sync.Once
+	prepareErr       error
+	storageErr       error
+	syncWake         chan struct{}
+	sendWake         chan struct{}
+	eventMu          sync.Mutex
+	stopped          bool
+	pairing          bool
 
 	syncEvery   time.Duration
 	sendRetry   time.Duration
@@ -57,7 +69,7 @@ type Bridge struct {
 }
 
 func New(s *store.Store) *Bridge {
-	b := &Bridge{Store: s, Hub: NewHub(), fatal: make(chan error, 1), syncWake: make(chan struct{}, 1), sendWake: make(chan struct{}, 1), syncEvery: 5 * time.Minute, sendRetry: 5 * time.Second, sendTimeout: 90 * time.Second}
+	b := &Bridge{pairWake: make(chan struct{}, 1), reconnectWake: make(chan struct{}, 1), reconnectDelay: 5 * time.Second, historyWake: make(chan struct{}, 1), Store: s, Hub: NewHub(), fatal: make(chan error, 1), syncWake: make(chan struct{}, 1), sendWake: make(chan struct{}, 1), syncEvery: 5 * time.Minute, sendRetry: 5 * time.Second, sendTimeout: 90 * time.Second}
 	b.setStatus("offline", "")
 	return b
 }
@@ -85,73 +97,103 @@ func (b *Bridge) storageFailure(err error) {
 	b.mu.Unlock()
 	b.setStatus("storage_failed", "Database write failed; stop the service and inspect storage")
 	b.fail(fmt.Errorf("%w: %v", ErrStorage, err))
+	wake(b.reconnectWake)
+	wake(b.pairWake)
 }
 
-// persist commits synchronously inside the provider callback so the upstream
-// ack boundary is as close to local persistence as the library allows.
-// Upstream queues the ack first; reconciliation can repair recent gaps.
-func (b *Bridge) persist(snap provider.Snapshot) {
+// persist commits before the error-aware provider callback admits its ACK.
+func (b *Bridge) persist(snap provider.Snapshot) error {
 	changed, err := b.Store.Apply(snap.Event, snap.Private, nil)
 	if err != nil {
 		b.storageFailure(err)
-		return
+		return fmt.Errorf("%w: %v", ErrStorage, err)
 	}
 	if changed {
 		b.Hub.Notify()
 	}
+	return nil
 }
-func (b *Bridge) ingest(msg proto.Message) {
+func (b *Bridge) ingest(msg proto.Message) error {
 	snapshot, err := provider.SnapshotOf(msg)
 	if err != nil {
 		b.fail(err)
-		return
+		return err
 	}
-	b.persist(snapshot)
+	return b.persist(snapshot)
 }
-func (b *Bridge) snapshotSession() {
+func (b *Bridge) authSnapshot() ([]byte, error) {
 	b.client.AuthData.CookiesLock.RLock()
+	defer b.client.AuthData.CookiesLock.RUnlock()
 	data, err := json.Marshal(b.client.AuthData)
-	b.client.AuthData.CookiesLock.RUnlock()
 	if err != nil {
-		b.fail(errors.New("serialize session"))
-		return
+		return nil, errors.New("serialize session")
 	}
-	if err := b.Store.SaveSession(data); err != nil {
+	return data, nil
+}
+func (b *Bridge) snapshotSession() error {
+	data, err := b.authSnapshot()
+	if err != nil {
+		b.fail(err)
+		return err
+	}
+	if err = b.Store.SaveSession(data); err != nil {
 		b.storageFailure(err)
+		return fmt.Errorf("%w: %v", ErrStorage, err)
 	}
+	return nil
 }
 
 // Handle runs on the provider's polling goroutine. It is gated so nothing
-// reaches the store after Run returns, even if upstream goroutines linger.
-func (b *Bridge) Handle(event any) {
+// reaches the store after Run returns.
+func (b *Bridge) Handle(event any) error {
 	b.eventMu.Lock()
 	defer b.eventMu.Unlock()
 	if b.stopped {
-		return
+		return context.Canceled
 	}
 	switch e := event.(type) {
 	case *libgm.WrappedMessage:
-		b.ingest(e.Message)
+		if e.IsOld {
+			snap, err := provider.SnapshotOf(e.Message)
+			if err != nil {
+				return err
+			}
+			if err = b.apply(snap, 0); err != nil {
+				return err
+			}
+		} else {
+			if err := b.ingest(e.Message); err != nil {
+				return err
+			}
+		}
 	case *gmproto.Message:
-		b.ingest(e)
+		if err := b.ingest(e); err != nil {
+			return err
+		}
 	case *gmproto.Conversation:
-		b.ingest(e)
+		if err := b.ingest(e); err != nil {
+			return err
+		}
 	case *gmproto.TypingData:
 		out, err := provider.SnapshotOf(e)
 		if err != nil {
 			b.fail(err)
-			return
+			return err
 		}
 		b.Hub.Publish(out.Event)
 	case *events.ClientReady:
 		b.connection(true, true)
 		for _, conv := range e.Conversations {
-			b.ingest(conv)
+			if err := b.ingest(conv); err != nil {
+				return err
+			}
 		}
 		b.RequestSync()
 	case *events.AuthTokenRefreshed:
 		if !b.pairing {
-			b.snapshotSession()
+			if err := b.snapshotSession(); err != nil {
+				return err
+			}
 		}
 	case *events.ListenTemporaryError:
 		b.connection(false, b.Status().Phone)
@@ -170,13 +212,15 @@ func (b *Bridge) Handle(event any) {
 		b.setStatus("connection_failed", "Google connection failed; restart the service or pair again")
 		b.fail(errors.New("google connection failed"))
 	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.storageErr
 }
 
 // Run owns the provider connection until ctx ends or the provider fails. It
 // returns only after every goroutine it started has exited and the event
 // handler is closed. Stored history stays readable afterwards unless the
-// error wraps ErrStorage. Upstream polling helpers are not joined; see
-// third_party/mautrix-gmessages/PATCHES.md.
+// error wraps ErrStorage. The patched client joins its connection workers.
 func (b *Bridge) Run(ctx context.Context, offline bool, cookies map[string]string, emoji func(string)) (result error) {
 	defer func() {
 		b.closeHandler()
@@ -210,8 +254,8 @@ func (b *Bridge) Run(ctx context.Context, offline bool, cookies map[string]strin
 			return fmt.Errorf("%w: %v", ErrStorage, err)
 		}
 		if len(data) == 0 {
-			b.setStatus("authentication_required", "No paired session; run pair first")
-			return errors.New("no session; run pair first")
+			b.setStatus("authentication_required", "No paired session; open Pair phone in the web client")
+			return errors.New("no paired session")
 		}
 		if err := json.Unmarshal(data, auth); err != nil {
 			b.setStatus("authentication_required", "Invalid stored session; pair again")
@@ -223,8 +267,9 @@ func (b *Bridge) Run(ctx context.Context, offline bool, cookies map[string]strin
 	providerLog := zerolog.Nop()
 	providerCtx = providerLog.WithContext(providerCtx)
 	b.pairing = cookies != nil
+	pairGeneration := b.PairingStatus().generation
 	b.client = libgm.NewClient(auth, nil, providerLog, exhttp.SensibleClientSettings)
-	b.client.SetEventHandler(b.Handle)
+	b.client.SetEventHandlerWithError(b.Handle)
 	b.mu.Lock()
 	b.providerCtx = providerCtx
 	b.mu.Unlock()
@@ -258,7 +303,14 @@ func (b *Bridge) Run(ctx context.Context, offline bool, cookies map[string]strin
 				started <- errors.New("google pairing did not complete")
 				return
 			}
-			b.snapshotSession()
+			data, err := b.authSnapshot()
+			if err == nil {
+				err = b.commitPairedSession(pairCtx, pairGeneration, data)
+			}
+			if err != nil {
+				started <- err
+				return
+			}
 			started <- nil
 			return
 		}
@@ -288,9 +340,10 @@ func (b *Bridge) Run(ctx context.Context, offline bool, cookies map[string]strin
 		return nil
 	}
 	b.setProvider(provider.NewGoogle(b.client))
-	owned.Add(2)
+	owned.Add(3)
 	go func() { defer owned.Done(); b.syncLoop(providerCtx) }()
 	go func() { defer owned.Done(); b.sendLoop(providerCtx) }()
+	go func() { defer owned.Done(); b.historyLoop(providerCtx) }()
 	select {
 	case err := <-b.fatal:
 		return err

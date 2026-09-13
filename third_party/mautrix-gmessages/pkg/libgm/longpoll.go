@@ -150,7 +150,8 @@ func (pl *phoneLiveness) advanceRecoveryInterval() {
 // unresponsive the loop still has to run data receive checks, which are the only thing
 // that notices silently stalled event delivery.
 type dittoPinger struct {
-	client *Client
+	client    *Client
+	lifecycle *clientLifecycle
 
 	pingInterval      time.Duration
 	alertTimeoutCount int
@@ -175,10 +176,7 @@ func newResetter() *resetter {
 
 func (r *resetter) Done() {
 	if r.d.CompareAndSwap(false, true) {
-		go func() {
-			time.Sleep(5 * time.Second)
-			close(r.C)
-		}()
+		close(r.C)
 	}
 }
 
@@ -198,7 +196,9 @@ func (dp *dittoPinger) OnRespond(pingID uint64, dur time.Duration, reset *resett
 		dp.client.triggerEvent(&events.PhoneRespondingAgain{})
 	}
 	if needsCatchUp {
-		go dp.client.requestUpdatesAfterGap(dp.log, "phone started responding to pings again")
+		dp.client.goWorker(dp.lifecycle, func(ctx context.Context) {
+			dp.client.requestUpdatesAfterGap(ctx, dp.log, "phone started responding to pings again")
+		})
 	}
 	reset.Done()
 }
@@ -275,19 +275,23 @@ func (dp *dittoPinger) Ping(pingID uint64, timeout time.Duration, reset *resette
 		})
 		return
 	}
-	go dp.WaitForResponse(pendingPing{
-		id:        pingID,
-		requestID: requestID,
-		start:     now,
-		ch:        pingChan,
-	}, timeout, reset)
+	dp.client.goWorker(dp.lifecycle, func(context.Context) {
+		dp.WaitForResponse(pendingPing{
+			id:        pingID,
+			requestID: requestID,
+			start:     now,
+			ch:        pingChan,
+		}, timeout, reset)
+	})
 }
 
 // startRecovery hands an unresponsive phone off to a background goroutine, unless recovery
 // is already running.
 func (dp *dittoPinger) startRecovery(reset *resetter) {
 	if dp.recovering.CompareAndSwap(false, true) {
-		go dp.recoveryLoop(reset)
+		if !dp.client.goWorker(dp.lifecycle, func(context.Context) { dp.recoveryLoop(reset) }) {
+			dp.recovering.Store(false)
+		}
 	}
 }
 
@@ -386,7 +390,9 @@ func (dp *dittoPinger) Loop() {
 		}
 		if dp.client.shouldDoDataReceiveCheck() {
 			dp.log.Warn().Msg("No data received recently, sending extra GET_UPDATES call")
-			go dp.client.requestUpdatesAfterGap(dp.log, "no data received recently")
+			dp.client.goWorker(dp.lifecycle, func(ctx context.Context) {
+				dp.client.requestUpdatesAfterGap(ctx, dp.log, "no data received recently")
+			})
 		}
 	}
 }
@@ -411,13 +417,15 @@ func (c *Client) onPhoneActivity(source string) {
 		c.triggerEvent(&events.PhoneRespondingAgain{})
 	}
 	if needsCatchUp {
-		go c.requestUpdatesAfterGap(&c.Logger, "phone started responding again")
+		c.goCurrentWorker(func(ctx context.Context) {
+			c.requestUpdatesAfterGap(ctx, &c.Logger, "phone started responding again")
+		})
 	}
 }
 
-func (c *Client) requestUpdatesAfterGap(log *zerolog.Logger, reason string) {
-	c.triggerEvent(&events.NoDataReceived{})
-	err := c.sessionHandler.sendMessageNoResponse(log.WithContext(context.TODO()), SendMessageParams{
+func (c *Client) requestUpdatesAfterGap(ctx context.Context, log *zerolog.Logger, reason string) {
+	_ = c.triggerEvent(&events.NoDataReceived{})
+	err := c.sessionHandler.sendMessageNoResponse(log.WithContext(ctx), SendMessageParams{
 		Action:    gmproto.ActionType_GET_UPDATES,
 		OmitTTL:   true,
 		RequestID: c.sessionHandler.SessionID(),
@@ -430,10 +438,11 @@ func (c *Client) requestUpdatesAfterGap(log *zerolog.Logger, reason string) {
 }
 
 func (c *Client) shouldDoDataReceiveCheck() bool {
+	interval := c.dataCheckInterval()
 	c.nextDataReceiveCheckLock.Lock()
 	defer c.nextDataReceiveCheckLock.Unlock()
 	if time.Until(c.nextDataReceiveCheck) <= 0 {
-		c.nextDataReceiveCheck = time.Now().Add(c.dataReceiveCheckInterval)
+		c.nextDataReceiveCheck = time.Now().Add(interval)
 		return true
 	}
 	return false
@@ -453,47 +462,49 @@ func tryReadBody(resp io.ReadCloser) []byte {
 	return data
 }
 
-func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFirstConnect func()) bool {
-	c.listenID++
-	listenID := c.listenID
+func (c *Client) doLongPoll(lifecycle *clientLifecycle, ctx context.Context, listenID uint64, loggedIn, background bool, onFirstConnect func(context.Context)) bool {
 	listenReqID := uuid.NewString()
-
-	origCtx := ctx
-	log := c.Logger.With().Int("listen_id", listenID).Logger()
+	log := c.Logger.With().Uint64("listen_id", listenID).Logger()
 	defer func() {
+		c.finishLongPoll(listenID)
 		log.Debug().Msg("Long polling stopped")
 	}()
 	ctx = log.WithContext(ctx)
+	pollCtx := ctx
 	log.Debug().Str("listen_uuid", listenReqID).Msg("Long polling starting")
 
 	if loggedIn {
-		stopDittoPinger := make(chan struct{})
-		defer close(stopDittoPinger)
-		go (&dittoPinger{
-			pingInterval:      c.pingInterval,
-			alertTimeoutCount: c.alertTimeoutCount,
-			stop:              stopDittoPinger,
+		pingInterval, alertTimeoutCount := c.pollSettings()
+		pinger := &dittoPinger{
+			pingInterval:      pingInterval,
+			alertTimeoutCount: alertTimeoutCount,
+			stop:              pollCtx.Done(),
 			log:               &log,
 			client:            c,
-			ctx:               ctx,
-			reconnectCtx:      origCtx,
-		}).Loop()
+			lifecycle:         lifecycle,
+			ctx:               pollCtx,
+			reconnectCtx:      lifecycle.ctx,
+		}
+		c.goWorker(lifecycle, func(context.Context) { pinger.Loop() })
 	}
 
 	errorCount := 1
 	var disconnectedAt time.Time
-	for c.listenID == listenID {
-		err := c.refreshAuthToken(nil)
+	for c.pollCurrent(listenID) {
+		err := c.refreshAuthToken(pollCtx, nil)
 		if err != nil {
+			if pollCtx.Err() != nil || !c.pollCurrent(listenID) {
+				return true
+			}
 			if isFatalRefreshError(err) {
 				log.Err(err).Msg("Error refreshing auth token")
 				if loggedIn {
-					c.triggerEvent(&events.ListenFatalError{Error: fmt.Errorf("failed to refresh auth token: %w", err)})
+					_ = c.triggerEvent(&events.ListenFatalError{Error: fmt.Errorf("failed to refresh auth token: %w", err)})
 				}
 				return false
 			}
 			if loggedIn {
-				c.triggerEvent(&events.ListenTemporaryError{Error: fmt.Errorf("failed to refresh auth token: %w", err)})
+				_ = c.triggerEvent(&events.ListenTemporaryError{Error: fmt.Errorf("failed to refresh auth token: %w", err)})
 			}
 			errorCount++
 			sleepSeconds := (errorCount + 1) * 5
@@ -504,7 +515,9 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
 				sleepSeconds = errorCount * 2
 			}
 			log.Err(err).Int("sleep_seconds", sleepSeconds).Msg("Error refreshing auth token, retrying in a while")
-			time.Sleep(time.Duration(sleepSeconds) * time.Second)
+			if !sleepContext(pollCtx, time.Duration(sleepSeconds)*time.Second) {
+				return true
+			}
 			continue
 		}
 		log.Trace().Msg("Starting new long-polling request")
@@ -527,8 +540,11 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
 		resp, err := c.makeProtobufHTTPRequestContext(connCtx, url, payload, ContentTypePBLite, true, false)
 		if err != nil {
 			cancel()
+			if pollCtx.Err() != nil || !c.pollCurrent(listenID) {
+				return true
+			}
 			if loggedIn {
-				c.triggerEvent(&events.ListenTemporaryError{Error: err})
+				_ = c.triggerEvent(&events.ListenTemporaryError{Error: err})
 			}
 			errorCount++
 			sleepSeconds := (errorCount + 1) * 5
@@ -539,7 +555,9 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
 				sleepSeconds = errorCount * 2
 			}
 			log.Err(err).Int("sleep_seconds", sleepSeconds).Msg("Error making listen request, retrying in a while")
-			time.Sleep(time.Duration(sleepSeconds) * time.Second)
+			if !sleepContext(pollCtx, time.Duration(sleepSeconds)*time.Second) {
+				return true
+			}
 			continue
 		}
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
@@ -550,13 +568,13 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
 				Bytes("resp_body", body).
 				Msg("Error making listen request")
 			if loggedIn {
-				c.triggerEvent(&events.ListenFatalError{Error: events.HTTPError{Action: "polling", Resp: resp, Body: body}})
+				_ = c.triggerEvent(&events.ListenFatalError{Error: events.HTTPError{Action: "polling", Resp: resp, Body: body}})
 			}
 			return false
 		} else if resp.StatusCode >= 400 {
 			cancel()
 			if loggedIn {
-				c.triggerEvent(&events.ListenTemporaryError{Error: events.HTTPError{Action: "polling", Resp: resp, Body: tryReadBody(resp.Body)}})
+				_ = c.triggerEvent(&events.ListenTemporaryError{Error: events.HTTPError{Action: "polling", Resp: resp, Body: tryReadBody(resp.Body)}})
 			} else {
 				_ = resp.Body.Close()
 			}
@@ -572,10 +590,12 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
 				Int("statusCode", resp.StatusCode).
 				Int("sleep_seconds", sleepSeconds).
 				Msg("Error in long polling, retrying in a while")
-			time.Sleep(time.Duration(sleepSeconds) * time.Second)
+			if !sleepContext(pollCtx, time.Duration(sleepSeconds)*time.Second) {
+				return true
+			}
 			continue
 		}
-		if c.listenID != listenID {
+		if !c.installLongPolling(listenID, resp.Body) {
 			cancel()
 			log.Debug().Msg("Long polling stopped while opening stream, closing it")
 			_ = resp.Body.Close()
@@ -584,25 +604,27 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
 		if errorCount > 0 {
 			errorCount = 0
 			if loggedIn {
-				c.triggerEvent(&events.ListenRecovered{})
+				_ = c.triggerEvent(&events.ListenRecovered{})
 			}
 		}
 		log.Debug().Int("statusCode", resp.StatusCode).Msg("Long polling opened")
-		c.longPollingConn = resp.Body
 		if loggedIn && !disconnectedAt.IsZero() && time.Since(disconnectedAt) > longPollGapCatchUp {
 			// Events the phone sent while the connection was down may not be redelivered.
 			log.Warn().
 				Time("disconnected_at", disconnectedAt).
 				Msg("Long polling was disconnected for a while, requesting updates")
-			go c.requestUpdatesAfterGap(&log, "long polling was disconnected")
+			c.goWorker(lifecycle, func(ctx context.Context) {
+				c.requestUpdatesAfterGap(ctx, &log, "long polling was disconnected")
+			})
 		}
 		if onFirstConnect != nil {
-			go onFirstConnect()
+			callback := onFirstConnect
+			c.goWorker(lifecycle, func(context.Context) { callback(pollCtx) })
 			onFirstConnect = nil
 		}
-		cleanClose := c.readLongPoll(&log, resp.Body, background, cancel)
+		cleanClose := c.readLongPoll(lifecycle, pollCtx, listenID, &log, resp.Body, background, cancel)
 		cancel()
-		c.longPollingConn = nil
+		c.clearLongPolling(listenID)
 		if background {
 			return cleanClose
 		}
@@ -611,9 +633,8 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
 	return true
 }
 
-func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background bool, cancel context.CancelFunc) bool {
+func (c *Client) readLongPoll(lifecycle *clientLifecycle, ctx context.Context, listenID uint64, log *zerolog.Logger, rc io.ReadCloser, background bool, cancel context.CancelFunc) bool {
 	defer rc.Close()
-	c.disconnecting = false
 	reader := bufio.NewReader(rc)
 	buf := make([]byte, 2621440)
 	var accumulatedData []byte
@@ -638,40 +659,35 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background 
 			closeIn.Reset(1 * time.Minute)
 		}
 	}
-	streamEnded := make(chan struct{})
-	defer close(streamEnded)
-	var lastRead, lastReadStart time.Time
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	defer stopWatch()
 	if background {
 		closeIn = time.NewTimer(10 * time.Second)
-		go func() {
+		c.goWorker(lifecycle, func(context.Context) {
 			select {
 			case <-closeIn.C:
-				c.closeLongPolling()
-			case <-streamEnded:
+				c.closeLongPollingID(listenID)
+			case <-watchCtx.Done():
 			}
-		}()
+		})
 	} else {
 		closeIn = time.NewTimer(1 * time.Minute)
-		go func() {
+		c.goWorker(lifecycle, func(context.Context) {
 			select {
 			case <-closeIn.C:
-				log.Warn().
-					Time("last_read_start", lastReadStart).
-					Time("last_read", lastRead).
-					Msg("Long polling read timed out")
+				log.Warn().Msg("Long polling read timed out")
 				cancel()
-			case <-streamEnded:
+			case <-watchCtx.Done():
 			}
-		}()
+		})
 	}
+	defer closeIn.Stop()
 	var expectEOF bool
 	for {
-		lastReadStart = time.Now()
 		n, err = reader.Read(buf)
-		lastRead = time.Now()
 		if err != nil {
 			var logEvt *zerolog.Event
-			if (errors.Is(err, io.EOF) && expectEOF) || c.disconnecting {
+			if (errors.Is(err, io.EOF) && expectEOF) || c.pollWasDisconnected(listenID) {
 				logEvt = log.Trace()
 			} else {
 				logEvt = log.Warn()
@@ -715,7 +731,7 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background 
 				level = zerolog.DebugLevel
 			}
 			log.WithLevel(level).Int32("count", msg.GetAck().GetCount()).Msg("Got startup ack count message")
-			c.skipCount = int(msg.GetAck().GetCount())
+			c.skipCount.Store(int64(msg.GetAck().GetCount()))
 		case msg.GetStartRead() != nil:
 			log.Trace().Msg("Got startRead message")
 		case msg.GetHeartbeat() != nil:
@@ -729,15 +745,75 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background 
 }
 
 func (c *Client) closeLongPolling() {
-	conn := c.longPollingConn
+	c.closeLongPollingID(0)
+}
+
+func (c *Client) closeLongPollingID(onlyListenID uint64) {
+	c.pollLock.Lock()
+	if onlyListenID != 0 && c.listenID != onlyListenID {
+		c.pollLock.Unlock()
+		return
+	}
+	conn, cancel, listenID := c.longPollingConn, c.pollCancel, c.listenID
+	c.listenID++
+	c.pollRunning = false
+	c.disconnecting = true
+	c.longPollingConn = nil
+	c.pollCancel = nil
+	c.pollLock.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	c.Logger.Debug().
-		Int("current_listen_id", c.listenID).
+		Uint64("current_listen_id", listenID).
 		Bool("connection_open", conn != nil).
 		Msg("Closing long polling connection manually")
-	c.listenID++
-	c.disconnecting = true
 	if conn != nil {
 		_ = conn.Close()
+	}
+}
+
+func (c *Client) pollCurrent(listenID uint64) bool {
+	c.pollLock.RLock()
+	defer c.pollLock.RUnlock()
+	return c.pollRunning && c.listenID == listenID
+}
+
+func (c *Client) pollWasDisconnected(listenID uint64) bool {
+	c.pollLock.RLock()
+	defer c.pollLock.RUnlock()
+	return c.disconnecting || c.listenID != listenID
+}
+
+func (c *Client) installLongPolling(listenID uint64, conn io.Closer) bool {
+	c.pollLock.Lock()
+	defer c.pollLock.Unlock()
+	if !c.pollRunning || c.listenID != listenID {
+		return false
+	}
+	c.longPollingConn = conn
+	return true
+}
+
+func (c *Client) clearLongPolling(listenID uint64) {
+	c.pollLock.Lock()
+	if c.listenID == listenID {
 		c.longPollingConn = nil
+	}
+	c.pollLock.Unlock()
+}
+
+func (c *Client) finishLongPoll(listenID uint64) {
+	c.pollLock.Lock()
+	var cancel context.CancelFunc
+	if c.listenID == listenID {
+		c.longPollingConn = nil
+		c.pollRunning = false
+		cancel = c.pollCancel
+		c.pollCancel = nil
+	}
+	c.pollLock.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }

@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Google Messages Bridge Pairing Helper",
+  "version": "1.0.0",
+  "description": "Securely hands Google Messages pairing cookies to a bridge using a one-time ticket.",
+  "incognito": "not_allowed",
+  "permissions": ["cookies"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "Open bridge pairing setup"
+  },
+  "content_security_policy": {
+    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src https: http:; object-src 'none'; base-uri 'none'; frame-src 'none'"
+  }
+}

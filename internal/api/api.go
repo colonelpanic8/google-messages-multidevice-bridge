@@ -16,6 +16,8 @@ import (
 func New(b *bridge.Bridge, token string) http.Handler {
 	mux := http.NewServeMux()
 	registerRecords(mux, b)
+	registerFeatures(mux, b)
+	registerPairing(mux, b)
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, b.Status()) })
 	mux.HandleFunc("GET /v1/events", func(w http.ResponseWriter, r *http.Request) {
 		after, err := cursor(r)
@@ -148,6 +150,13 @@ func New(b *bridge.Bridge, token string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if servePairingHelper(w, r) {
+			return
+		}
+		if r.URL.Path == "/v1/pairing/credentials" {
+			pairingCredentials(w, r, b)
+			return
+		}
 		if serveAsset(w, r) {
 			return
 		}

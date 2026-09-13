@@ -33,7 +33,7 @@
               runHook postCheck
             '';
 
-            vendorHash = "sha256-rKfwqmtYvb5b13SvglO+bai/QAmkUXegX8LOqajHW2Y=";
+            vendorHash = "sha256-5P5SvPptqc/aMTNN7uMzgO0wKlqKki6GgEUrxVJUZwk=";
 
             meta = {
               description = "One Google Messages connection for all your devices";
@@ -56,6 +56,10 @@
 
       checks = forAllSystems (system: {
         package = self.packages.${system}.default;
+        home-manager-module = import ./nix/module-check.nix {
+          pkgs = nixpkgs.legacyPackages.${system};
+          bridgePackage = self.packages.${system}.default;
+        };
       });
 
       devShells = forAllSystems (
@@ -80,6 +84,8 @@
       );
 
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixfmt);
+
+      homeManagerModules.default = import ./nix/home-manager.nix;
 
       overlays.default = final: _prev: {
         google-messages-multidevice-bridge = self.packages.${final.stdenv.hostPlatform.system}.default;
