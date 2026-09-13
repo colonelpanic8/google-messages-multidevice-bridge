@@ -38,9 +38,10 @@ be disabled from outside the package.
    `StartUploadMediaContext`, and `FinalizeUploadMediaContext` bind caller
    cancellation to their HTTP requests, including the wait for response
    headers. The old methods remain as background-context compatibility
-   wrappers. Final upload response parsing is capped at 1 MiB. The provider
-   bounds downloaded plaintext, closes it once on cancellation, and joins its
-   watcher.
+   wrappers. Final upload response parsing is capped at 1 MiB.
+   `DownloadMediaContext` rejects non-2xx responses instead of handing an
+   error body to the decrypting stream. The provider bounds downloaded
+   plaintext, closes it once on cancellation, and joins its watcher.
 5. `client.go`, `longpoll.go`, `session_handler.go`, `pair.go`, and
    `pair_google.go`: each active client lifecycle owns the poll loop, ack
    ticker, pinger and its response/recovery workers, poll timeout watchers,

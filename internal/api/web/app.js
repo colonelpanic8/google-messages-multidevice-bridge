@@ -163,7 +163,49 @@ function renderReactionActions(container, message, conversation) {
     container.append(row);
   }
 }
+const previewCache = new Map();
+const previewObserver =
+  typeof IntersectionObserver === "function"
+    ? new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          previewObserver.unobserve(entry.target);
+          loadPreview(entry.target);
+        }
+      })
+    : null;
+async function loadPreview(img) {
+  const id = img.dataset.attachmentId;
+  let pending = previewCache.get(id);
+  if (!pending) {
+    pending = fetch(`/v1/attachments/${encodeURIComponent(id)}`, {
+      signal: abort.signal,
+      headers: { Authorization: `Bearer ${token}` },
+    }).then((response) => {
+      if (!response.ok) throw new Error("preview unavailable");
+      return response.blob().then((blob) => URL.createObjectURL(blob));
+    });
+    previewCache.set(id, pending);
+  }
+  try {
+    img.src = await pending;
+  } catch {
+    previewCache.delete(id);
+    img.remove();
+  }
+}
+function renderPreview(container, attachment) {
+  if (!attachment.available || !/^image\//.test(attachment.mime || "")) return;
+  const img = el("img", undefined, "preview");
+  img.alt = attachment.name || "Image attachment";
+  img.loading = "lazy";
+  img.dataset.attachmentId = attachment.id;
+  container.append(img);
+  if (previewObserver) previewObserver.observe(img);
+  else loadPreview(img);
+}
 function renderAttachment(container, attachment) {
+  renderPreview(container, attachment);
   const label = `${attachment.name || "Attachment"} · ${formatSize(attachment.size || 0)}${attachment.available ? " · Download" : " · Unavailable"}`;
   const button = el("button", label, "attachment");
   button.type = "button";

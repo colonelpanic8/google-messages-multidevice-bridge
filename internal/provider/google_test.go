@@ -516,3 +516,23 @@ func TestCreateRCSConfirmationOutcome(t *testing.T) {
 		}
 	}
 }
+
+func TestAttachmentPrefersFullMediaThenThumbnailOverInlinePreview(t *testing.T) {
+	full, thumb := bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32)
+	fake := &fakeGoogleClient{downloadMedia: func(_ context.Context, id string, key []byte) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(id + ":" + string(key[:1]))), nil
+	}}
+	g := &Google{Client: fake}
+	both, _ := marshalPrivate(&gmproto.MediaContent{MediaID: "full", DecryptionKey: full, ThumbnailMediaID: "thumb", ThumbnailDecryptionKey: thumb, MediaData: []byte("preview")})
+	if out, err := g.Attachment(context.Background(), both); err != nil || string(out) != "full:\x01" {
+		t.Fatalf("%q %v", out, err)
+	}
+	thumbOnly, _ := marshalPrivate(&gmproto.MediaContent{ThumbnailMediaID: "thumb", ThumbnailDecryptionKey: thumb, MediaData: []byte("preview")})
+	if out, err := g.Attachment(context.Background(), thumbOnly); err != nil || string(out) != "thumb:\x02" {
+		t.Fatalf("%q %v", out, err)
+	}
+	fake.downloadMedia = func(context.Context, string, []byte) (io.ReadCloser, error) { return nil, errors.New("http 500") }
+	if _, err := g.Attachment(context.Background(), both); !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "http 500") {
+		t.Fatalf("download failure: %v", err)
+	}
+}

@@ -351,6 +351,13 @@ main {
   font-size: 0.9rem;
   line-height: 1.6;
 }
+.message img.preview {
+  display: block;
+  max-width: min(100%, 360px);
+  max-height: 360px;
+  border-radius: 8px;
+  margin: 4px 0 8px;
+}
 .message .meta {
   font-size: 0.65rem;
   color: var(--muted);

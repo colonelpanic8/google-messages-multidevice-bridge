@@ -1488,7 +1488,7 @@ index b3dbb40..9f79385 100644
  	}
  }
 diff --git a/upstream/pkg/libgm/media.go b/local/pkg/libgm/media.go
-index 8fe2775..c761071 100644
+index 8fe2775..bb70e32 100644
 --- a/upstream/pkg/libgm/media.go
 +++ b/local/pkg/libgm/media.go
 @@ -4,6 +4,7 @@ import (
@@ -1647,6 +1647,17 @@ index 8fe2775..c761071 100644
  	if err != nil {
  		return nil, fmt.Errorf("failed to prepare request: %w", err)
  	}
+@@ -293,6 +322,10 @@ func (c *Client) DownloadMedia(mediaID string, key []byte) (io.ReadCloser, error
+ 	if err != nil {
+ 		return nil, fmt.Errorf("failed to send request: %w", err)
+ 	}
++	if res.StatusCode < 200 || res.StatusCode >= 300 {
++		_ = res.Body.Close()
++		return nil, fmt.Errorf("media download http %d", res.StatusCode)
++	}
+ 	return cryptor.DecryptStream(res.Body), nil
+ }
+ 
 diff --git a/upstream/pkg/libgm/methods.go b/local/pkg/libgm/methods.go
 index 947ed69..33e16a0 100644
 --- a/upstream/pkg/libgm/methods.go

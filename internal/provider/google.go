@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -101,7 +102,8 @@ func SnapshotOf(msg proto.Message) (Snapshot, error) {
 				if mime == "" {
 					mime = "application/octet-stream"
 				}
-				available := len(media.GetMediaData()) > 0 || (media.GetMediaID() != "" && len(media.GetDecryptionKey()) == 32)
+				remoteID, _ := remoteMedia(media)
+				available := remoteID != "" || len(media.GetMediaData()) > 0
 				out.Attachments = append(out.Attachments, model.Attachment{ID: aid, Name: media.GetMediaName(), MIME: mime, Size: media.GetSize(), Available: available})
 			}
 		}
@@ -431,13 +433,14 @@ func (g *Google) Attachment(ctx context.Context, data []byte) ([]byte, error) {
 	if media.GetSize() > MaxAttachmentBytes {
 		return nil, ErrTooLarge
 	}
-	if len(media.GetMediaData()) > 0 {
-		if len(media.GetMediaData()) > MaxAttachmentBytes {
-			return nil, ErrTooLarge
+	mediaID, key := remoteMedia(&media)
+	if mediaID == "" {
+		if inline := media.GetMediaData(); len(inline) > 0 {
+			if len(inline) > MaxAttachmentBytes {
+				return nil, ErrTooLarge
+			}
+			return inline, nil
 		}
-		return media.GetMediaData(), nil
-	}
-	if media.GetMediaID() == "" || len(media.GetDecryptionKey()) != 32 {
 		return nil, ErrUnavailable
 	}
 	g.mediaOnce.Do(func() {
@@ -455,11 +458,23 @@ func (g *Google) Attachment(ctx context.Context, data []byte) ([]byte, error) {
 	if !ok {
 		return nil, ErrUnavailable
 	}
-	r, err := downloader.DownloadMediaContext(ctx, media.GetMediaID(), media.GetDecryptionKey())
+	r, err := downloader.DownloadMediaContext(ctx, mediaID, key)
 	if err != nil {
-		return nil, ErrUnavailable
+		return nil, fmt.Errorf("%w: download: %v", ErrUnavailable, err)
 	}
 	return ReadBounded(ctx, r)
+}
+
+// remoteMedia prefers the full upload over its thumbnail, matching upstream.
+// Inline mediaData is only a preview, so it is the last resort.
+func remoteMedia(media *gmproto.MediaContent) (string, []byte) {
+	if media.GetMediaID() != "" && len(media.GetDecryptionKey()) == 32 {
+		return media.GetMediaID(), media.GetDecryptionKey()
+	}
+	if media.GetThumbnailMediaID() != "" && len(media.GetThumbnailDecryptionKey()) == 32 {
+		return media.GetThumbnailMediaID(), media.GetThumbnailDecryptionKey()
+	}
+	return "", nil
 }
 
 // ReadBounded reads up to MaxAttachmentBytes and aborts the body on cancellation.
@@ -484,7 +499,7 @@ func ReadBounded(ctx context.Context, r io.ReadCloser) ([]byte, error) {
 		return nil, ctx.Err()
 	}
 	if err != nil {
-		return nil, ErrUnavailable
+		return nil, fmt.Errorf("%w: read: %v", ErrUnavailable, err)
 	}
 	if len(out) > MaxAttachmentBytes {
 		return nil, ErrTooLarge
