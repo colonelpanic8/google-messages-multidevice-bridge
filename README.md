@@ -132,9 +132,11 @@ guidance, and offline-consistent backups, see [deployment](docs/deployment.md).
 ## Web client and API
 
 The browser keeps the bearer token only in that tab's memory; locking or reloading
-requires it again. Web assets and the pairing-helper ZIP are public. Every `/v1/`
-route requires bearer authentication except the ticket-only
-`POST /v1/pairing/credentials` handoff.
+requires it again. Image attachments render as inline previews that are discarded on
+lock. An opt-in toggle raises browser notifications for new incoming messages in
+hidden tabs or unselected conversations; replayed history never notifies. Web assets
+and the pairing-helper ZIP are public. Every `/v1/` route requires bearer
+authentication except the ticket-only `POST /v1/pairing/credentials` handoff.
 
 The web app can create conversations from E.164 phone numbers, queue text or up to
 ten attachments totaling 20 MiB, add reactions, send typing indicators, mark a

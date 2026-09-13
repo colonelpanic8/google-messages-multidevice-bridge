@@ -768,6 +768,10 @@ $("notify").checked =
   typeof Notification === "function" &&
   Notification.permission === "granted";
 function clearPrivateUI() {
+  for (const pending of previewCache.values())
+    pending.then((url) => URL.revokeObjectURL(url)).catch(() => {});
+  previewCache.clear();
+  notified.clear();
   pendingSend = pendingConversation = createdConversation = undefined;
   selectedFiles = [];
   conversations = outbox = messages = historyJobs = [];
