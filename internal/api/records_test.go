@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/bridge"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
 )
@@ -51,6 +52,66 @@ func TestOutboxHTTPIdempotencyAndCancellation(t *testing.T) {
 	}
 	request("GET", "/v1/outbox/idempotency-key-01", "", "", 200)
 	request("GET", "/v1/events?after=999999", "", "", 400)
+}
+
+func TestSessionBoundaryIsVisibleInStatusPairingAndStoredRecords(t *testing.T) {
+	b, server := fixture(t)
+	conversation, _ := json.Marshal(model.Conversation{Schema: 1, ID: "old", Name: "Previous account", Updated: time.Now()})
+	message, _ := json.Marshal(model.Message{Schema: 1, ID: "old-message", ConversationID: "old", Time: time.Now(), Text: "synthetic"})
+	if _, err := b.Store.Append(store.Event{Type: "conversation", EntityID: "old", Data: conversation}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Store.Append(store.Event{Type: "message", EntityID: "old-message", Data: message}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Store.SavePairedSession([]byte("new-session")); err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(path string, out any) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, server.URL+path, nil)
+		req.Header.Set("Authorization", "Bearer test-token")
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: %s", path, resp.Status)
+		}
+		if err = json.NewDecoder(resp.Body).Decode(out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var status struct {
+		SessionEpoch          uint64 `json:"session_epoch"`
+		PreviousConversations int    `json:"previous_session_conversations"`
+		PreviousMessages      int    `json:"previous_session_messages"`
+	}
+	get("/v1/status", &status)
+	if status.SessionEpoch != 1 || status.PreviousConversations != 1 || status.PreviousMessages != 1 {
+		t.Fatalf("status boundary: %+v", status)
+	}
+	var pairing bridge.PairingState
+	get("/v1/pairing", &pairing)
+	if pairing.SessionEpoch != 1 || pairing.PreviousConversations != 1 || pairing.PreviousMessages != 1 {
+		t.Fatalf("pairing boundary: %+v", pairing)
+	}
+	var conversations struct {
+		Conversations []model.Conversation `json:"conversations"`
+	}
+	get("/v1/conversations", &conversations)
+	if len(conversations.Conversations) != 1 || !conversations.Conversations[0].ReadOnly {
+		t.Fatalf("conversation boundary: %+v", conversations)
+	}
+	var messages struct {
+		Messages []model.Message `json:"messages"`
+	}
+	get("/v1/conversations/old/messages", &messages)
+	if len(messages.Messages) != 1 || !messages.Messages[0].ReadOnly {
+		t.Fatalf("message boundary: %+v", messages)
+	}
 }
 func TestLegacyReplayDoesNotExposeMediaKeys(t *testing.T) {
 	b, server := fixture(t)

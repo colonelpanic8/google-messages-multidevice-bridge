@@ -63,6 +63,14 @@ record is claimed for its single message-send attempt.
 
 ## Pairing
 
+`GET /v1/status` includes a machine-readable `reason` when recovery needs an
+explicit action. `session_expired`, `no_session`, and `invalid_session` accompany
+`authentication_required`; clients should direct the user to Pair / Re-pair instead
+of repeatedly restarting. `provider_failure` and `transient_connection_failure`
+accompany retryable connection failures. Both status and pairing responses include
+`session_epoch`, `previous_session_conversations`, and
+`previous_session_messages` so clients can disclose the stored account boundary.
+
 Authenticated pairing control uses these states:
 
 - `waiting_for_login`: a ticket is available for the helper.
@@ -72,9 +80,11 @@ Authenticated pairing control uses these states:
 
 `POST /v1/pairing/start` returns the existing state if pairing is already active.
 Otherwise it creates a random 32-byte base64url ticket: exactly 43 characters,
-one-use, credential-handoff-only, and expiring after ten minutes. Starting pairing is
-disabled under `serve --offline` and returns 400. A pairing generation guard prevents
-a canceled older attempt from overwriting a newer ticket or result.
+one-use, credential-handoff-only, and expiring after ten minutes.
+`POST /v1/pairing/cancel` cancels and joins an in-flight provider attempt before
+returning, so a fresh start cannot overlap it. Starting pairing is disabled under
+`serve --offline` and returns 400. A pairing generation guard prevents a canceled
+older attempt from overwriting a newer ticket or result.
 
 The extension sends this request without bearer authentication:
 
@@ -106,6 +116,13 @@ any allowlisted cookie over 8192 bytes returns 400. Unknown cookie-map entries a
 discarded. The ticket is cleared when a valid handoff transitions to `connecting`;
 it is never accepted again.
 
+Pairing responses include `required`, `required_reason`, and the attempt's `reason`.
+`required_reason` preserves the authentication cause after a canceled or failed
+attempt. An expired ticket transitions to `failed` with `ticket_expired`. A bridge
+restart during an active attempt invalidates the in-memory ticket, preserves the last
+saved session, and reports `failed` with `bridge_restarted`. No ticket or Google
+cookies are persisted in the recovery marker.
+
 The helper does not receive the bearer token. It validates the bridge as an origin
 with no userinfo, non-root path, query, or fragment; requires HTTPS except for
 loopback or a literal Tailscale `100.64.0.0/10` HTTP address; requests optional host
@@ -120,7 +137,12 @@ cancellations back, but it also does not change the entity epoch, provider uploa
 descriptors, or history jobs. Only successfully saving the new paired session clears
 provider upload descriptors, pauses and resets existing history jobs, and advances
 the entity epoch. Previously stored entities remain readable, but conversations and
-messages cannot be mutation targets until the new session observes them again.
+messages cannot be mutation targets until the new session observes them again. Their
+snapshot records carry `read_only:true` while stale. Outbox and history records carry
+the `session_epoch` that owns them; an old attempted outbox record cannot be confirmed
+by an event from the new epoch. A successful pairing clears all private provider
+descriptors, preventing an attachment, history, or upload credential from being used
+against a different account, while retaining locally cached attachment bytes.
 
 ## Durable operations and idempotency
 

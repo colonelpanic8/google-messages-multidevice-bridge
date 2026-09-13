@@ -18,6 +18,7 @@ import (
 	"go.mau.fi/util/exhttp"
 	"google.golang.org/protobuf/proto"
 
+	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 )
 
@@ -710,4 +711,29 @@ func TestStartLoginCancellationBeforeHeaders(t *testing.T) {
 		t.Fatal("StartLogin did not stop after cancellation")
 	}
 	c.Disconnect()
+}
+
+func TestAuthFailureClassificationSeparatesCredentialsFromTransport(t *testing.T) {
+	for _, err := range []error{
+		ErrNoAuthToken,
+		ErrNotLoggedIn,
+		events.ErrInvalidCredentials,
+		events.ErrRequestedEntityNotFound,
+		events.HTTPError{Resp: &http.Response{StatusCode: http.StatusUnauthorized}},
+		events.HTTPError{Resp: &http.Response{StatusCode: http.StatusForbidden}},
+		events.HTTPError{Resp: &http.Response{StatusCode: http.StatusNotFound}},
+	} {
+		if !IsAuthFailure(err) {
+			t.Errorf("expected authentication failure: %v", err)
+		}
+	}
+	for _, err := range []error{
+		context.DeadlineExceeded,
+		errors.New("network unavailable"),
+		events.HTTPError{Resp: &http.Response{StatusCode: http.StatusInternalServerError}},
+	} {
+		if IsAuthFailure(err) {
+			t.Errorf("transient failure classified as authentication: %v", err)
+		}
+	}
 }

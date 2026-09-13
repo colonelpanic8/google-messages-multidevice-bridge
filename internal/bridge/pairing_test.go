@@ -1,13 +1,16 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 )
@@ -133,6 +136,126 @@ func TestPairingCompletionCannotReplaceNewTicket(t *testing.T) {
 	b.SetOfflineOnly(true)
 	if _, err = b.BeginPairing(); err == nil {
 		t.Fatal("offline mode allowed pairing")
+	}
+}
+
+func TestSecondPairingStartReusesActiveAttempt(t *testing.T) {
+	b := testBridge(t)
+	first, err := b.BeginPairing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := b.BeginPairing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Ticket != second.Ticket || first.generation != second.generation || second.State != "waiting_for_login" {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+}
+
+func TestExpiredPairingRejectsTicketAndAllowsFreshAttempt(t *testing.T) {
+	b := testBridge(t)
+	first, err := b.BeginPairing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.mu.Lock()
+	b.pairingState.Expires = time.Now().Add(-time.Second)
+	b.mu.Unlock()
+	if err = b.SubmitPairingCookies(first.Ticket, syntheticCookies()); !errors.Is(err, ErrPairingTicket) {
+		t.Fatalf("expired ticket: %v", err)
+	}
+	if state := b.PairingStatus(); state.State != "failed" || state.Reason != "ticket_expired" || state.Ticket != "" {
+		t.Fatalf("expired state: %+v", state)
+	}
+	second, err := b.BeginPairing()
+	if err != nil || second.Ticket == first.Ticket || second.State != "waiting_for_login" {
+		t.Fatalf("fresh attempt: %+v %v", second, err)
+	}
+}
+
+func TestCancelWaitsForPairingAttemptToJoin(t *testing.T) {
+	b := testBridge(t)
+	state, err := b.BeginPairing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = b.SubmitPairingCookies(state.Ticket, syntheticCookies()); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	b.pairAttempt = func(ctx context.Context, _ map[string]string, _ func(string)) error {
+		close(started)
+		<-ctx.Done()
+		<-release
+		return ctx.Err()
+	}
+	done := make(chan error, 1)
+	go func() { done <- b.processPairing(context.Background()) }()
+	<-started
+	canceled := make(chan error, 1)
+	go func() {
+		_, err := b.CancelPairingAndWait(context.Background())
+		canceled <- err
+	}()
+	select {
+	case err := <-canceled:
+		t.Fatalf("cancel returned before join: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err = <-canceled; err != nil {
+		t.Fatal(err)
+	}
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err = b.BeginPairing(); err != nil {
+		t.Fatalf("new attempt remained blocked after cancel joined: %v", err)
+	}
+}
+
+func TestRestartDuringPairingKeepsSavedSessionAndReportsInterruption(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bridge.db")
+	key := bytes.Repeat([]byte{7}, 32)
+	s, err := store.Open(path, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SaveSession([]byte("previous-session")); err != nil {
+		t.Fatal(err)
+	}
+	b := New(s)
+	state, err := b.BeginPairing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = b.SubmitPairingCookies(state.Ticket, syntheticCookies()); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = store.Open(path, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	restarted := New(s)
+	if err = restarted.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	if saved, readErr := s.Session(); readErr != nil || string(saved) != "previous-session" {
+		t.Fatalf("saved session changed: %q %v", saved, readErr)
+	}
+	got := restarted.PairingStatus()
+	if got.State != "failed" || got.Reason != "bridge_restarted" || got.Ticket != "" {
+		t.Fatalf("restart state: %+v", got)
+	}
+	if err = restarted.SubmitPairingCookies(state.Ticket, syntheticCookies()); !errors.Is(err, ErrPairingTicket) {
+		t.Fatalf("pre-restart ticket accepted: %v", err)
 	}
 }
 

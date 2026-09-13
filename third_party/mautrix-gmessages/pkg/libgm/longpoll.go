@@ -496,7 +496,7 @@ func (c *Client) doLongPoll(lifecycle *clientLifecycle, ctx context.Context, lis
 			if pollCtx.Err() != nil || !c.pollCurrent(listenID) {
 				return true
 			}
-			if isFatalRefreshError(err) {
+			if IsAuthFailure(err) {
 				log.Err(err).Msg("Error refreshing auth token")
 				if loggedIn {
 					_ = c.triggerEvent(&events.ListenFatalError{Error: fmt.Errorf("failed to refresh auth token: %w", err)})

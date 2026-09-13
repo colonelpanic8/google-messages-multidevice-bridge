@@ -27,7 +27,7 @@ func (b *Bridge) connection(transport, phone bool) {
 		b.mu.Unlock()
 		return
 	}
-	b.status.Detail = ""
+	b.status.Reason, b.status.Detail = "", ""
 	b.status.Transport, b.status.Phone = transport, phone
 	b.status.State = "degraded"
 	if transport && phone {
@@ -79,6 +79,18 @@ func (b *Bridge) Prepare() error {
 	return b.prepareErr
 }
 func (b *Bridge) prepare() error {
+	interrupted, err := b.Store.RecoverPairingAttempt()
+	if err != nil {
+		return err
+	}
+	if interrupted {
+		b.mu.Lock()
+		b.pairingState = PairingState{generation: b.pairingState.generation + 1, State: "failed", Reason: "bridge_restarted", Detail: "The bridge restarted during pairing; the previous saved session was kept. Start pairing again"}
+		b.mu.Unlock()
+	}
+	if err := b.Store.UpgradeSessionMetadata(); err != nil {
+		return err
+	}
 	if err := b.Store.RecoverSending(); err != nil {
 		return err
 	}

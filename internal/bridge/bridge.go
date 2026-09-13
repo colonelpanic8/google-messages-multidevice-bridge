@@ -23,13 +23,17 @@ import (
 var ErrStorage = errors.New("storage failure")
 
 type Status struct {
-	State     string     `json:"state"`
-	Detail    string     `json:"detail,omitempty"`
-	Updated   time.Time  `json:"updated"`
-	Transport bool       `json:"transport_connected"`
-	Phone     bool       `json:"phone_responsive"`
-	SyncState string     `json:"sync_state"`
-	LastSync  *time.Time `json:"last_sync,omitempty"`
+	State                 string     `json:"state"`
+	Reason                string     `json:"reason,omitempty"`
+	Detail                string     `json:"detail,omitempty"`
+	Updated               time.Time  `json:"updated"`
+	Transport             bool       `json:"transport_connected"`
+	Phone                 bool       `json:"phone_responsive"`
+	SyncState             string     `json:"sync_state"`
+	LastSync              *time.Time `json:"last_sync,omitempty"`
+	SessionEpoch          uint64     `json:"session_epoch"`
+	PreviousConversations int        `json:"previous_session_conversations"`
+	PreviousMessages      int        `json:"previous_session_messages"`
 }
 
 type Bridge struct {
@@ -39,6 +43,7 @@ type Bridge struct {
 	pairCookies      map[string]string
 	pairWake         chan struct{}
 	pairCancel       context.CancelFunc
+	pairDone         chan struct{}
 	pairAttempt      func(context.Context, map[string]string, func(string)) error
 	connectionCancel context.CancelFunc
 	reconnectWake    chan struct{}
@@ -74,10 +79,23 @@ func New(s *store.Store) *Bridge {
 	b.setStatus("offline", "")
 	return b
 }
-func (b *Bridge) Status() Status { b.mu.RLock(); defer b.mu.RUnlock(); return b.status }
+func (b *Bridge) Status() Status {
+	b.mu.RLock()
+	status := b.status
+	b.mu.RUnlock()
+	if summary, err := b.Store.SessionSummary(); err == nil {
+		status.SessionEpoch = summary.Epoch
+		status.PreviousConversations = summary.PreviousConversations
+		status.PreviousMessages = summary.PreviousMessages
+	}
+	return status
+}
 func (b *Bridge) setStatus(state, detail string) {
+	b.setStatusReason(state, "", detail)
+}
+func (b *Bridge) setStatusReason(state, reason, detail string) {
 	b.mu.Lock()
-	b.status.State, b.status.Detail, b.status.Updated = state, detail, time.Now().UTC()
+	b.status.State, b.status.Reason, b.status.Detail, b.status.Updated = state, reason, detail, time.Now().UTC()
 	if state != "connected" && state != "degraded" {
 		b.status.Transport, b.status.Phone = false, false
 	}
@@ -207,11 +225,15 @@ func (b *Bridge) Handle(event any) error {
 		b.connection(b.Status().Transport, true)
 		b.RequestSync()
 	case *events.GaiaLoggedOut:
-		b.setStatus("authentication_required", "Google signed this device out; pair again")
+		b.setStatusReason("authentication_required", "session_expired", "Your Google Messages phone session expired or was revoked; re-pair to reconnect")
 		b.fail(errors.New("google session expired; pair again"))
 	case *events.ListenFatalError:
-		b.setStatus("connection_failed", "Google connection failed; restart the service or pair again")
-		b.fail(errors.New("google connection failed"))
+		if libgm.IsAuthFailure(e.Error) {
+			b.setStatusReason("authentication_required", "session_expired", "Your Google Messages phone session expired or was revoked; re-pair to reconnect")
+		} else {
+			b.setStatusReason("connection_failed", "provider_failure", "Google connection failed; retry the connection")
+		}
+		b.fail(fmt.Errorf("google connection failed: %w", e.Error))
 	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -255,11 +277,11 @@ func (b *Bridge) Run(ctx context.Context, offline bool, cookies map[string]strin
 			return fmt.Errorf("%w: %v", ErrStorage, err)
 		}
 		if len(data) == 0 {
-			b.setStatus("authentication_required", "No paired session; open Pair phone in the web client")
+			b.setStatusReason("authentication_required", "no_session", "No paired session; open Pair / Re-pair in the web client")
 			return errors.New("no paired session")
 		}
 		if err := json.Unmarshal(data, auth); err != nil {
-			b.setStatus("authentication_required", "Invalid stored session; pair again")
+			b.setStatusReason("authentication_required", "invalid_session", "The stored Google Messages session is invalid; re-pair to replace it")
 			return errors.New("invalid stored session")
 		}
 	}
@@ -268,7 +290,10 @@ func (b *Bridge) Run(ctx context.Context, offline bool, cookies map[string]strin
 	providerLog := zerolog.Nop()
 	providerCtx = providerLog.WithContext(providerCtx)
 	b.pairing = cookies != nil
-	pairGeneration := b.PairingStatus().generation
+	pairGeneration := uint64(0)
+	if state := b.PairingStatus(); cookies != nil && activePair(state.State) {
+		pairGeneration = state.generation
+	}
 	b.client = libgm.NewClient(auth, nil, providerLog, exhttp.SensibleClientSettings)
 	b.client.SetEventHandlerWithError(b.Handle)
 	b.mu.Lock()
@@ -296,12 +321,12 @@ func (b *Bridge) Run(ctx context.Context, offline bool, cookies map[string]strin
 			defer done()
 			code, session, err := b.client.StartGaiaPairing(pairCtx, providerCtx)
 			if err != nil {
-				started <- errors.New("could not start Google pairing; check cookies and account pairing mode")
+				started <- fmt.Errorf("could not start Google pairing: %w", err)
 				return
 			}
 			emoji(code)
 			if _, err := b.client.FinishGaiaPairing(pairCtx, session); err != nil {
-				started <- errors.New("google pairing did not complete")
+				started <- fmt.Errorf("google pairing did not complete: %w", err)
 				return
 			}
 			data, err := b.authSnapshot()
@@ -316,7 +341,7 @@ func (b *Bridge) Run(ctx context.Context, offline bool, cookies map[string]strin
 			return
 		}
 		if err := b.client.Connect(providerCtx); err != nil {
-			started <- errors.New("could not connect Google session; re-pair may be needed")
+			started <- fmt.Errorf("could not connect Google session: %w", err)
 			return
 		}
 		started <- nil
@@ -324,7 +349,11 @@ func (b *Bridge) Run(ctx context.Context, offline bool, cookies map[string]strin
 	select {
 	case err := <-started:
 		if err != nil {
-			b.setStatus("connection_failed", err.Error())
+			if cookies == nil && libgm.IsAuthFailure(err) {
+				b.setStatusReason("authentication_required", "session_expired", "Your Google Messages phone session expired or was revoked; re-pair to reconnect")
+			} else {
+				b.setStatusReason("connection_failed", "provider_failure", err.Error())
+			}
 			return err
 		}
 		if cookies != nil {

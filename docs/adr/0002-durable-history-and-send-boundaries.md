@@ -82,11 +82,15 @@ old/new-session boundary. Starting re-pair cancels still-queued operations. Alre
 attempted records retain their state because silently replaying them against another
 phone/session would be unsafe.
 
-Each saved paired session advances a store epoch, clears provider upload descriptors,
-and pauses/resets every history job. Previous-session records are retained for
-read-only access. A conversation or message becomes a valid mutation target again
-only after the new connection observes it. Pairing generation checks prevent a
-canceled older attempt or callback from replacing a newer ticket or result.
+Each saved paired session advances a store epoch, clears private provider upload and
+download descriptors and history cursors, and pauses/resets every history job.
+Previous-session records are retained for explicitly labeled read-only access. A
+conversation or message becomes a valid mutation target again only after the new
+connection observes it. Outbox and history records retain their owning epoch, so a
+new-session event cannot confirm an old-session attempt. Pairing generation checks
+prevent a canceled older attempt or callback from replacing a newer ticket or result.
+An active-attempt marker contains timestamps but no ticket or credentials; startup
+consumes it to report an interrupted attempt while keeping the last saved session.
 
 ## History and client synchronization
 
@@ -122,8 +126,10 @@ history cursors are separate domains; neither is portable to another database.
 
 Keep the HTTP service and stored history available while a supervisor reconnects
 transient provider failures with bounded exponential backoff. Authentication failure
-waits for explicit restart or re-pair. Storage failure is fatal because further
-serving could conceal lost commits.
+is classified from libgm's invalid-credential, missing-registration, and HTTP
+401/403/404 errors, is surfaced as an explicit re-pair requirement, and waits for
+explicit restart or re-pair. Storage failure is fatal because further serving could
+conceal lost commits.
 
 The patched libgm lifecycle owns and joins its poll loop, ACK ticker, pinger,
 response/recovery workers, timeout watchers, catch-up requests, post-connect work,

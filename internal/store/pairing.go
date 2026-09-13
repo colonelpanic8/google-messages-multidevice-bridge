@@ -3,11 +3,23 @@ package store
 import (
 	"bytes"
 	"encoding/binary"
-	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
+	"encoding/json"
+	"errors"
 	"time"
 
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
 	bolt "go.etcd.io/bbolt"
 )
+
+const pairingAttemptKey = "pairing-attempt"
+
+func previousCountKey(kind string) []byte { return []byte("previous-session-" + kind + "s") }
+
+type SessionSummary struct {
+	Epoch                 uint64 `json:"session_epoch"`
+	PreviousConversations int    `json:"previous_session_conversations"`
+	PreviousMessages      int    `json:"previous_session_messages"`
+}
 
 func epoch(tx *bolt.Tx) uint64 {
 	v := tx.Bucket([]byte("meta")).Get([]byte("session-epoch"))
@@ -24,7 +36,20 @@ func stampEpoch(tx *bolt.Tx, kind, id string) error {
 	if err != nil {
 		return err
 	}
-	return b.Put([]byte(kind+":"+id), sequence(epoch(tx)))
+	current := epoch(tx)
+	key := []byte(kind + ":" + id)
+	previous := b.Get(key)
+	if current > 0 && tx.Bucket([]byte("latest")).Get(key) != nil && (len(previous) != 8 || binary.BigEndian.Uint64(previous) != current) {
+		meta := tx.Bucket([]byte("meta"))
+		countKey := previousCountKey(kind)
+		count := meta.Get(countKey)
+		if len(count) == 8 && binary.BigEndian.Uint64(count) > 0 {
+			if err := meta.Put(countKey, sequence(binary.BigEndian.Uint64(count)-1)); err != nil {
+				return err
+			}
+		}
+	}
+	return b.Put(key, sequence(current))
 }
 func (s *Store) EntityCurrent(kind, id string) (bool, error) {
 	current := true
@@ -43,6 +68,122 @@ func (s *Store) EntityCurrent(kind, id string) (bool, error) {
 		return nil
 	})
 	return current, err
+}
+
+func (s *Store) SessionSummary() (SessionSummary, error) {
+	var summary SessionSummary
+	err := s.db.View(func(tx *bolt.Tx) error {
+		summary.Epoch = epoch(tx)
+		if summary.Epoch == 0 {
+			return nil
+		}
+		meta := tx.Bucket([]byte("meta"))
+		if value := meta.Get(previousCountKey("conversation")); len(value) == 8 {
+			summary.PreviousConversations = int(binary.BigEndian.Uint64(value))
+		}
+		if value := meta.Get(previousCountKey("message")); len(value) == 8 {
+			summary.PreviousMessages = int(binary.BigEndian.Uint64(value))
+		}
+		return nil
+	})
+	return summary, err
+}
+
+// UpgradeSessionMetadata assigns records created before session ownership was
+// explicit to the session that was current when this version first opened the
+// database. Future re-pairs preserve that ownership instead of guessing.
+func (s *Store) UpgradeSessionMetadata() error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		current := epoch(tx)
+		if current == 0 {
+			return nil
+		}
+		var outbox []model.Outbox
+		if err := tx.Bucket([]byte("outbox")).ForEach(func(k, _ []byte) error {
+			o, err := s.readOutbox(tx, k)
+			if err != nil {
+				return err
+			}
+			if o.SessionEpoch == 0 {
+				o.SessionEpoch = current
+				outbox = append(outbox, o)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, o := range outbox {
+			if err := s.writeOutbox(tx, o); err != nil {
+				return err
+			}
+		}
+		var jobs []model.HistoryJob
+		latest := tx.Bucket([]byte("latest"))
+		c := latest.Cursor()
+		for k, _ := c.Seek([]byte("history:")); k != nil && bytes.HasPrefix(k, []byte("history:")); k, _ = c.Next() {
+			job, err := s.historyTx(tx, string(k[len("history:"):]))
+			if err != nil {
+				return err
+			}
+			if job.SessionEpoch == 0 {
+				job.SessionEpoch = current
+				jobs = append(jobs, job)
+			}
+		}
+		for i := range jobs {
+			if err := s.writeHistory(tx, &jobs[i]); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Store) BeginPairingAttempt(started, expires time.Time) error {
+	marker, err := json.Marshal(struct {
+		Started time.Time `json:"started"`
+		Expires time.Time `json:"expires"`
+	}{Started: started, Expires: expires})
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		if err := s.cancelQueuedForPairing(tx); err != nil {
+			return err
+		}
+		return tx.Bucket([]byte("meta")).Put([]byte(pairingAttemptKey), s.encrypt(marker, pairingAttemptKey))
+	})
+}
+
+func (s *Store) ClearPairingAttempt() error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("meta")).Delete([]byte(pairingAttemptKey))
+	})
+}
+
+func (s *Store) RecoverPairingAttempt() (bool, error) {
+	interrupted := false
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket([]byte("meta"))
+		data := meta.Get([]byte(pairingAttemptKey))
+		if data == nil {
+			return nil
+		}
+		plain, err := s.decrypt(data, pairingAttemptKey)
+		if err != nil {
+			return err
+		}
+		var marker struct {
+			Started time.Time `json:"started"`
+			Expires time.Time `json:"expires"`
+		}
+		if err = json.Unmarshal(plain, &marker); err != nil || marker.Started.IsZero() || marker.Expires.IsZero() {
+			return errors.New("invalid pairing attempt marker")
+		}
+		interrupted = true
+		return meta.Delete([]byte(pairingAttemptKey))
+	})
+	return interrupted, err
 }
 func (s *Store) cancelQueuedForPairing(tx *bolt.Tx) error {
 	var pending []model.Outbox
@@ -71,10 +212,24 @@ func (s *Store) CancelQueuedForPairing() error { return s.db.Update(s.cancelQueu
 func (s *Store) SavePairedSession(data []byte) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket([]byte("meta"))
+		for _, kind := range []string{"conversation", "message"} {
+			var count uint64
+			prefix := []byte(kind + ":")
+			c := tx.Bucket([]byte("latest")).Cursor()
+			for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+				count++
+			}
+			if err := meta.Put(previousCountKey(kind), sequence(count)); err != nil {
+				return err
+			}
+		}
 		if err := meta.Put([]byte("session"), s.encrypt(data, "session")); err != nil {
 			return err
 		}
 		if err := meta.Put([]byte("session-epoch"), sequence(epoch(tx)+1)); err != nil {
+			return err
+		}
+		if err := meta.Delete([]byte(pairingAttemptKey)); err != nil {
 			return err
 		}
 		if err := s.cancelQueuedForPairing(tx); err != nil {
@@ -82,7 +237,7 @@ func (s *Store) SavePairedSession(data []byte) error {
 		}
 		private := tx.Bucket([]byte("private"))
 		cursor := private.Cursor()
-		for k, _ := cursor.Seek([]byte("upload:")); k != nil && bytes.HasPrefix(k, []byte("upload:")); k, _ = cursor.Next() {
+		for k, _ := cursor.First(); k != nil; k, _ = cursor.Next() {
 			if err := cursor.Delete(); err != nil {
 				return err
 			}
@@ -102,9 +257,6 @@ func (s *Store) SavePairedSession(data []byte) error {
 			job.Generation++
 			job.Pages, job.Records = 0, 0
 			job.RetryAt = time.Time{}
-			if err := private.Delete([]byte("history:" + job.ID)); err != nil {
-				return err
-			}
 			if seen := tx.Bucket([]byte("history-pages")); seen != nil {
 				prefix := historyPrefix(job.ID)
 				c := seen.Cursor()

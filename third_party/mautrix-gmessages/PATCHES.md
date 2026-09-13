@@ -59,6 +59,10 @@ be disabled from outside the package.
    admits the incoming event ACK; an error leaves the RPC unacknowledged for
    redelivery. The original `SetEventHandler(func(any))` remains compatible and
    treats normal handler return as acceptance.
+7. `client.go`, `longpoll.go`: `IsAuthFailure` exposes the structured
+   classification used by token refresh and polling. Invalid credentials,
+   missing or revoked registrations, and HTTP 401/403/404 responses require a
+   new pairing; transport failures and 5xx responses remain retryable.
 
 ## Accepted upstream limitations
 
