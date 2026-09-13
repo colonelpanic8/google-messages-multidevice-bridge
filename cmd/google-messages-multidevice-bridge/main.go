@@ -20,6 +20,7 @@ import (
 
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/api"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/bridge"
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/push"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
 )
 
@@ -42,6 +43,7 @@ func run() error {
 	listen := flags.String("listen", "127.0.0.1:0", "API listen address (port 0 selects a free port)")
 	storagePass := flags.String("storage-key-pass-entry", "", "pass entry containing the base64 storage key")
 	tokenPass := flags.String("api-token-pass-entry", "", "pass entry containing the API token")
+	pushSubject := flags.String("push-subject", "https://github.com/colonelpanic8/google-messages-multidevice-bridge", "VAPID subject identifying this deployment to push services")
 	offline := flags.Bool("offline", false, "serve stored history without connecting to Google")
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -97,10 +99,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	return serve(ctx, b, *offline, token, listener)
+	sender, err := push.New(b.Store, *pushSubject)
+	if err != nil {
+		_ = listener.Close()
+		return err
+	}
+	return serve(ctx, b, *offline, token, listener, sender)
 }
 
-func serve(parent context.Context, b *bridge.Bridge, offline bool, token string, listener net.Listener) error {
+func serve(parent context.Context, b *bridge.Bridge, offline bool, token string, listener net.Listener, sender *push.Sender) error {
 	if err := b.Prepare(); err != nil {
 		_ = listener.Close()
 		return err
@@ -112,7 +119,11 @@ func serve(parent context.Context, b *bridge.Bridge, offline bool, token string,
 	var handlerMu sync.Mutex
 	closing := false
 	b.SetOfflineOnly(offline)
-	handler := api.New(b, token)
+	var pushService api.PushService
+	if sender != nil {
+		pushService = pushAdapter{sender}
+	}
+	handler := api.New(b, token, pushService)
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handlerMu.Lock()
 		if closing {
@@ -129,6 +140,12 @@ func serve(parent context.Context, b *bridge.Bridge, offline bool, token string,
 	go func() { serverErr <- server.Serve(listener) }()
 	bridgeErr := make(chan error, 1)
 	go func() { bridgeErr <- b.ServeConnection(ctx, offline) }()
+	var watcher sync.WaitGroup
+	if sender != nil {
+		watcher.Add(1)
+		go func() { defer watcher.Done(); _ = b.WatchForPush(ctx, pushAdapter{sender}) }()
+	}
+	defer watcher.Wait()
 	fmt.Fprintln(os.Stderr, "Google Messages Multi-Device Bridge listening on", listener.Addr())
 	bridgeFinished := false
 serveLoop:
@@ -197,4 +214,15 @@ func (w *boundedSecret) Write(data []byte) (int, error) {
 		return 0, errors.New("secret exceeds size limit")
 	}
 	return w.value.Write(data)
+}
+
+// pushAdapter bridges the notifier's positional arguments to the push payload.
+type pushAdapter struct{ sender *push.Sender }
+
+func (a pushAdapter) PublicKey() string                    { return a.sender.PublicKey() }
+func (a pushAdapter) Subscribe(raw []byte) (string, error) { return a.sender.Subscribe(raw) }
+func (a pushAdapter) Unsubscribe(endpoint string) error    { return a.sender.Unsubscribe(endpoint) }
+func (a pushAdapter) Count() (int, error)                  { return a.sender.Count() }
+func (a pushAdapter) Send(ctx context.Context, title, body, tag, conversation string) error {
+	return a.sender.Send(ctx, push.Notification{Title: title, Body: body, Tag: tag, Conversation: conversation})
 }

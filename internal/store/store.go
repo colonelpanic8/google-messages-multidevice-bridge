@@ -52,7 +52,7 @@ func Open(path string, key []byte) (*Store, error) {
 	}
 	s := &Store{db: db, cipher: aead}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, name := range []string{"meta", "events", "latest", "versions", "outbox", "private", "media", "outbox-txn"} {
+		for _, name := range []string{"meta", "events", "latest", "versions", "outbox", "private", "media", "outbox-txn", "push"} {
 			if _, err := tx.CreateBucketIfNotExists([]byte(name)); err != nil {
 				return err
 			}

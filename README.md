@@ -22,6 +22,8 @@ reliability patches; see its [patch notes](third_party/mautrix-gmessages/PATCHES
   in addition to bounded recent-history reconciliation.
 - An authenticated schema-1 API, resumable SSE, a multi-client web app, and a
   connection supervisor that retains the local service while reconnecting.
+- An installable app: a web app manifest, icons, and a service worker that caches
+  the static shell and delivers Web Push notifications while no window is open.
 - A Nix package and Home Manager user service with direct `pass` integration.
 
 This is a **live-verified integration on one phone**, not yet a replacement for

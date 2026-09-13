@@ -597,6 +597,9 @@ function maybeSelectCreatedConversation() {
   });
 }
 let pendingConversationFromLink = "";
+// Re-post the browser's subscription once per unlock so a bridge that lost its
+// database, or a subscription the browser rotated, heals without user action.
+let pushSynced = false;
 async function select(id) {
   if (pendingSend && id !== selected) {
     notice(
@@ -651,6 +654,10 @@ async function refresh() {
     outbox = os.outbox || [];
     historyJobs = hs.jobs || [];
     renderConnection(status);
+    if (!pushSynced && $("notify").checked) {
+      pushSynced = true;
+      void enablePush().catch(() => {});
+    }
     if (
       pendingConversationFromLink &&
       conversations.some((c) => c.id === pendingConversationFromLink)
@@ -765,26 +772,99 @@ function notifyIncoming(message) {
   });
   notification.onclick = () => {
     window.focus();
-    select(message.conversation_id);
+    void select(message.conversation_id);
     notification.close();
   };
 }
+
+// Base64url as the Push API wants it for the server's VAPID public key.
+function decodeKey(value) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(padded.padEnd(Math.ceil(padded.length / 4) * 4, "="));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+async function pushRegistration() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window))
+    throw new Error(
+      "This browser cannot deliver notifications in the background.",
+    );
+  return navigator.serviceWorker.ready;
+}
+async function enablePush() {
+  if (typeof Notification !== "function")
+    throw new Error("This browser has no notification support.");
+  if (Notification.permission === "default")
+    await Notification.requestPermission();
+  if (Notification.permission !== "granted")
+    throw new Error("Browser notifications were not allowed.");
+  const state = await request("/v1/push");
+  if (!state.enabled || !state.public_key)
+    throw new Error("This bridge has notifications turned off.");
+  const registration = await pushRegistration();
+  const subscription =
+    (await registration.pushManager.getSubscription()) ||
+    (await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: decodeKey(state.public_key),
+    }));
+  await request("/v1/push/subscriptions", {
+    method: "POST",
+    body: JSON.stringify(subscription),
+  });
+}
+async function disablePush() {
+  if (!("serviceWorker" in navigator)) return;
+  const registration = await navigator.serviceWorker.getRegistration();
+  const subscription = await registration?.pushManager.getSubscription();
+  if (!subscription) return;
+  await request("/v1/push/subscriptions", {
+    method: "DELETE",
+    body: JSON.stringify({ endpoint: subscription.endpoint }),
+  }).catch(() => {});
+  await subscription.unsubscribe().catch(() => {});
+}
 $("notify").onchange = async () => {
-  if ($("notify").checked && typeof Notification === "function") {
-    if (Notification.permission === "default")
-      await Notification.requestPermission();
-    if (Notification.permission !== "granted") {
-      $("notify").checked = false;
-      notice("Browser notifications were not allowed.");
+  const wanted = $("notify").checked;
+  $("notify").disabled = true;
+  try {
+    if (wanted) {
+      await enablePush();
+      notice("Notifications on, including while this app is closed.");
+    } else {
+      await disablePush();
+      notice("Notifications off on this device.");
     }
+    localStorage.setItem("notify", wanted ? "1" : "");
+  } catch (error) {
+    $("notify").checked = false;
+    localStorage.setItem("notify", "");
+    notice(error.message);
+  } finally {
+    $("notify").disabled = false;
+    renderNotifyControls();
   }
-  localStorage.setItem("notify", $("notify").checked ? "1" : "");
 };
+$("test-notification").onclick = async () => {
+  $("test-notification").disabled = true;
+  try {
+    await request("/v1/push/test", { method: "POST" });
+    notice("Test notification sent to every subscribed device.");
+  } catch (error) {
+    notice(error.message);
+  } finally {
+    $("test-notification").disabled = false;
+  }
+};
+function renderNotifyControls() {
+  $("test-notification").hidden = !$("notify").checked;
+}
 $("notify").checked =
   !!localStorage.getItem("notify") &&
   typeof Notification === "function" &&
   Notification.permission === "granted";
+renderNotifyControls();
 function clearPrivateUI() {
+  pushSynced = false;
   for (const pending of previewCache.values())
     pending.then((url) => URL.revokeObjectURL(url)).catch(() => {});
   previewCache.clear();

@@ -42,6 +42,10 @@ commit time. Unknown normalized Google status strings must remain displayable.
 | `GET /v1/attachments/{id}`                                          | Download a stored attachment, fetching and caching it encrypted when necessary; at most 20 MiB |
 | `POST /v1/attachments/{id}/request`                                 | Ask the phone to upload full media for a `requestable` attachment; returns 202, once a minute  |
 | `GET /v1/events?after=0&limit=100`                                  | Durable events and `next_cursor`; limit 1–1000                                                 |
+| `GET /v1/push`                                                      | Whether notifications are enabled, the VAPID public key, and the subscription count            |
+| `POST /v1/push/subscriptions`                                       | Store one browser push subscription, keyed by endpoint so re-subscribing replaces it; 201      |
+| `DELETE /v1/push/subscriptions`                                     | Remove a subscription by `{"endpoint":"..."}`; returns 204                                     |
+| `POST /v1/push/test`                                                | Send a test notification to every subscribed device; 409 when none, 502 when delivery fails    |
 | `GET /v1/stream?after=0`                                            | Durable event replay, a `live` marker once caught up, then SSE notifications and typing        |
 
 ## JSON and upload limits
@@ -259,3 +263,17 @@ Legacy protobuf events are sanitized into schema 1 before replay. Provider media
 decryption keys, cookies, pairing state, and history cursors are not public schema.
 Attachments use opaque bridge IDs and download as files; clients must not render
 arbitrary attachment HTML in the bridge origin.
+
+## Notifications
+
+The bridge signs Web Push messages with a VAPID key pair generated on first use
+and stored encrypted alongside everything else. Clients read the public key from
+`GET /v1/push` and subscribe through their browser, then post the resulting
+subscription. Payloads are encrypted for each subscription's own keys (RFC 8291),
+so the relaying push service sees delivery metadata but never message content.
+
+A notification is raised only for a message that is incoming, not deleted, less
+than five minutes old, and not already announced. History imports and
+reconciliation replay old messages through the same event log and must never
+light up a phone, which is what the age check is for. Subscriptions the push
+service reports as `404` or `410` are deleted.

@@ -13,11 +13,14 @@ import (
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/bridge"
 )
 
-func New(b *bridge.Bridge, token string) http.Handler {
+// New builds the HTTP surface. push may be nil, which disables notifications
+// without removing the routes that report their state.
+func New(b *bridge.Bridge, token string, push PushService) http.Handler {
 	mux := http.NewServeMux()
 	registerRecords(mux, b)
 	registerFeatures(mux, b)
 	registerPairing(mux, b)
+	registerPush(mux, push)
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, b.Status()) })
 	mux.HandleFunc("GET /v1/events", func(w http.ResponseWriter, r *http.Request) {
 		after, err := cursor(r)

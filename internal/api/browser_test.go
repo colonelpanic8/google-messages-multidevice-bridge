@@ -58,7 +58,7 @@ func TestBrowserFixture(t *testing.T) {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	server := &http.Server{Handler: New(b, "synthetic-browser-test-token-only"), ReadHeaderTimeout: 5 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
+	server := &http.Server{Handler: New(b, "synthetic-browser-test-token-only", nil), ReadHeaderTimeout: 5 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	fmt.Printf("SYNTHETIC_BROWSER_PORT=%d\n", listener.Addr().(*net.TCPAddr).Port)

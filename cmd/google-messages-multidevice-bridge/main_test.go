@@ -29,7 +29,7 @@ func TestServeKeepsHistoryAvailableWithoutPairingAndJoinsShutdown(t *testing.T) 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, b, false, "synthetic-test-token", listener) }()
+	go func() { done <- serve(ctx, b, false, "synthetic-test-token", listener, nil) }()
 	// There is no session and no cookies: this must not contact Google.
 	client := &http.Client{Timeout: 2 * time.Second}
 	req, _ := http.NewRequest("GET", "http://"+listener.Addr().String()+"/v1/conversations", nil)

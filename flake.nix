@@ -33,7 +33,7 @@
               runHook postCheck
             '';
 
-            vendorHash = "sha256-5P5SvPptqc/aMTNN7uMzgO0wKlqKki6GgEUrxVJUZwk=";
+            vendorHash = "sha256-V8R9eCaQmnbv3ETpiHlxyXnRMx5vkuZdBbDkBubmaCY=";
 
             meta = {
               description = "One Google Messages connection for all your devices";

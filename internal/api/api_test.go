@@ -24,7 +24,7 @@ func fixture(t *testing.T) (*bridge.Bridge, *httptest.Server) {
 	}
 	t.Cleanup(func() { s.Close() })
 	b := bridge.New(s)
-	server := httptest.NewServer(New(b, "test-token"))
+	server := httptest.NewServer(New(b, "test-token", nil))
 	t.Cleanup(server.Close)
 	return b, server
 }
