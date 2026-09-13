@@ -98,6 +98,9 @@ func TestSSEReplayLiveAndResume(t *testing.T) {
 	if id, kind := next(); id != "2" || kind != "message" {
 		t.Fatalf("replay: %s %s", id, kind)
 	}
+	if id, kind := next(); id != "" || kind != "live" {
+		t.Fatalf("replay boundary: %s %s", id, kind)
+	}
 	b.Hub.Publish(store.Event{Type: "typing", Time: time.Now(), Data: json.RawMessage(`{"conversationID":"c1"}`)})
 	if id, kind := next(); id != "" || kind != "typing" {
 		t.Fatalf("ephemeral: %s %s", id, kind)

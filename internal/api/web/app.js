@@ -677,7 +677,12 @@ async function stream(currentGeneration) {
       if (!response.ok) throw new Error("Live updates unavailable");
       const reader = response.body.getReader(),
         decoder = new TextDecoder();
+      let live = false;
       const parse = createParser((event) => {
+        if (event.type === "live") {
+          live = true;
+          return;
+        }
         if (event.type === "typing" && event.data.active) {
           typingUntil = Date.now() + 5000;
           typingConversation = event.entity_id;
@@ -689,6 +694,7 @@ async function stream(currentGeneration) {
             event.data.conversation_id === selected
           )
             messageUpdates.set(event.entity_id, event);
+          if (live && event.type === "message") notifyIncoming(event.data);
         }
       });
       try {
@@ -710,6 +716,57 @@ async function stream(currentGeneration) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
 }
+const notified = new Set();
+function notifyIncoming(message) {
+  if (
+    !$("notify").checked ||
+    typeof Notification !== "function" ||
+    Notification.permission !== "granted" ||
+    message.direction !== "incoming" ||
+    message.deleted ||
+    notified.has(message.id) ||
+    (!document.hidden && message.conversation_id === selected)
+  )
+    return;
+  notified.add(message.id);
+  const conversation = conversations.find(
+    (c) => c.id === message.conversation_id,
+  );
+  const sender = conversation?.participants?.find(
+    (p) => p.id === message.sender_id,
+  );
+  const title = conversation?.name || sender?.name || "New message";
+  const body =
+    message.text ||
+    (message.attachments?.length ? "Attachment" : "New message");
+  const notification = new Notification(title, {
+    body:
+      sender && conversation?.participants?.length > 2
+        ? `${sender.name || sender.address}: ${body}`
+        : body,
+    tag: message.id,
+  });
+  notification.onclick = () => {
+    window.focus();
+    select(message.conversation_id);
+    notification.close();
+  };
+}
+$("notify").onchange = async () => {
+  if ($("notify").checked && typeof Notification === "function") {
+    if (Notification.permission === "default")
+      await Notification.requestPermission();
+    if (Notification.permission !== "granted") {
+      $("notify").checked = false;
+      notice("Browser notifications were not allowed.");
+    }
+  }
+  localStorage.setItem("notify", $("notify").checked ? "1" : "");
+};
+$("notify").checked =
+  !!localStorage.getItem("notify") &&
+  typeof Notification === "function" &&
+  Notification.permission === "granted";
 function clearPrivateUI() {
   pendingSend = pendingConversation = createdConversation = undefined;
   selectedFiles = [];

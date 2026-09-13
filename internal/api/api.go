@@ -88,10 +88,22 @@ func New(b *bridge.Bridge, token string) http.Handler {
 		}
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
+		caughtUp := false
 		for {
 			events, err := b.Store.Events(after, 100)
 			if err != nil {
 				return
+			}
+			if len(events) == 0 && !caughtUp {
+				// Marks the end of replay so clients can treat later events as new.
+				caughtUp = true
+				deadline()
+				if _, err := fmt.Fprint(w, "event: live\ndata: {\"type\":\"live\"}\n\n"); err != nil {
+					return
+				}
+				if flush() != nil {
+					return
+				}
 			}
 			for _, event := range events {
 				event, err = publicEvent(event)

@@ -24,15 +24,19 @@ reliability patches; see its [patch notes](third_party/mautrix-gmessages/PATCHES
   connection supervisor that retains the local service while reconnecting.
 - A Nix package and Home Manager user service with direct `pass` integration.
 
-This remains a **partially verified live integration**, not yet a replacement for
-Google Messages. Guided Google sign-in, helper credential handoff, phone emoji
-confirmation, and paired-session persistence have passed a live check. Initial
-history sync exposed a startup readiness bug; the fix has focused fake-provider
-coverage but still needs live validation. Other automated tests use fake providers,
-synthetic protocol messages, and local HTTP servers. SIM selection, conversation
-creation, media upload/download, sending, reactions, receipts, history pagination,
-and reconnection still require phone validation. No real messages were sent during
-implementation.
+This is a **live-verified integration on one phone**, not yet a replacement for
+Google Messages. Verified against a paired Android phone on 2026-09-12: guided
+Google sign-in, helper credential handoff, emoji confirmation, paired-session
+persistence across restarts, initial history sync, inbox history import across
+hundreds of conversations, SSE replay, attachment download, full-media requests,
+and, in a conversation with the owner's own number over RCS, conversation creation,
+text sends, image sends, a caption queued as a second message, a reaction, typing,
+and mark-read, each confirmed through Google's history echo and delivery status.
+Not yet live-verified: incoming traffic from other parties beyond the sender's own
+echo, SMS/MMS sends to non-RCS recipients, multi-SIM selection, RCS group creation,
+and authentication expiry handling. Automated tests use fake providers, synthetic
+protocol messages, and local HTTP servers. No messages were sent to other people
+during implementation.
 
 The history importer follows the pages exposed by the current private protocol. A
 job marked `complete` means that response stream ended; it is not proof of a complete
