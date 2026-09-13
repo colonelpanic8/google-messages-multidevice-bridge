@@ -120,6 +120,33 @@ bearer except `POST /v1/pairing/credentials`, which accepts only the current
 one-use ticket and fixed cookie handoff. Do not expose a second proxy route that
 bypasses these application checks.
 
+## Installing as an app, and notifications
+
+Installing the client and receiving notifications both require a secure context,
+which plain HTTP over a tailnet address is not. Serving over HTTPS unlocks the web
+app manifest, the service worker, and Web Push on desktop and Android.
+
+On a tailnet with HTTPS certificates enabled, the simplest route is to let
+`tailscaled` terminate TLS and renew the certificate:
+
+```sh
+tailscale serve --bg --https=8443 http://127.0.0.1:<bridge-port>
+tailscale serve status
+```
+
+That publishes `https://<machine>.<tailnet>.ts.net:8443` to the tailnet only. Pick a
+port that is not already serving something else; `tailscale serve status` lists the
+current mappings, and `tailscale serve --https=8443 off` removes just that one. Any
+authenticated TLS reverse proxy works equally well, subject to the routing rules
+above.
+
+Notifications are then enabled per device from the client. The bridge generates a
+VAPID key pair on first use, each browser subscribes through its own push service,
+and `POST /v1/push/test` proves the whole chain end to end. Delivery while no window
+is open depends on the platform: a running browser on desktop, or the system push
+service on Android. A browser that is fully quit receives nothing until it starts
+again.
+
 ## Initial pairing and re-pairing
 
 1. Start the service and open its web origin.
