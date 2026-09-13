@@ -458,8 +458,15 @@ func TestUploadSerializesPrivateMediaAndSendAppendsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	info := sent.GetMessagePayload().GetMessageInfo()
-	if len(info) != 2 || info[0].GetMessageContent().GetContent() != "caption" || info[1].GetMediaContent().GetMediaID() != "media-1" {
+	if len(info) != 2 || info[0].GetMediaContent().GetMediaID() != "media-1" || info[1].GetMessageContent().GetContent() != "caption" {
 		t.Fatalf("message info: %+v", info)
+	}
+	outbox.Request.Text = ""
+	if err = g.Send(context.Background(), target, outbox); err != nil {
+		t.Fatal(err)
+	}
+	if info = sent.GetMessagePayload().GetMessageInfo(); len(info) != 1 || info[0].GetMediaContent().GetMediaID() != "media-1" {
+		t.Fatalf("media-only message info: %+v", info)
 	}
 	before := sent
 	target.Media = [][]byte{[]byte("invalid")}

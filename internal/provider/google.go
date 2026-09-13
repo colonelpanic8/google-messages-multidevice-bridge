@@ -330,7 +330,9 @@ func (g *Google) Send(ctx context.Context, target SendTarget, o model.Outbox) er
 	if target.ConversationID != o.Request.ConversationID || target.participantID == "" || target.sim == nil {
 		return ErrRejected
 	}
-	messageInfo := []*gmproto.MessageInfo{{Data: &gmproto.MessageInfo_MessageContent{MessageContent: &gmproto.MessageContent{Content: o.Request.Text}}}}
+	// Media entries lead and a text entry follows only when nonblank, as
+	// upstream sends; a leading empty text entry drops the media on the phone.
+	messageInfo := make([]*gmproto.MessageInfo, 0, len(target.Media)+1)
 	var mediaBytes int64
 	for _, data := range target.Media {
 		var media gmproto.MediaContent
@@ -339,6 +341,9 @@ func (g *Google) Send(ctx context.Context, target SendTarget, o model.Outbox) er
 		}
 		mediaBytes += media.GetSize()
 		messageInfo = append(messageInfo, &gmproto.MessageInfo{Data: &gmproto.MessageInfo_MediaContent{MediaContent: &media}})
+	}
+	if strings.TrimSpace(o.Request.Text) != "" || len(messageInfo) == 0 {
+		messageInfo = append(messageInfo, &gmproto.MessageInfo{Data: &gmproto.MessageInfo_MessageContent{MessageContent: &gmproto.MessageContent{Content: o.Request.Text}}})
 	}
 	req := &gmproto.SendMessageRequest{ConversationID: o.Request.ConversationID, TmpID: o.TransactionID, SIMPayload: target.sim, MessagePayload: &gmproto.MessagePayload{TmpID: o.TransactionID, TmpID2: o.TransactionID, ConversationID: o.Request.ConversationID, ParticipantID: target.participantID, MessageInfo: messageInfo}}
 	res, err := g.Client.SendMessage(ctx, req)
