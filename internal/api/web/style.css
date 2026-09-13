@@ -233,6 +233,15 @@ aside {
 .connection-actions p {
   margin: 7px 0 0;
 }
+.session-boundary {
+  padding: 9px;
+  margin: 8px 0;
+  border-left: 3px solid #b87b24;
+  background: #fffbf2;
+  color: #6f4b18;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
 .conversation {
   display: block;
   width: 100%;
@@ -263,6 +272,12 @@ aside {
   content: "• ";
   color: var(--accent);
 }
+.conversation.previous-session {
+  border-left: 2px solid #b87b24;
+}
+.conversation .stale-label {
+  color: #82571b;
+}
 .history-panel {
   border-top: 1px solid var(--border);
   margin-top: 18px;
@@ -280,6 +295,9 @@ aside {
 }
 .history-job.failed > span {
   color: #9a4d35;
+}
+.history-job.previous-session > span {
+  color: #82571b;
 }
 .history-job button {
   padding: 0.35rem 0.55rem;
@@ -337,6 +355,10 @@ main {
 .message.outgoing {
   align-self: flex-end;
   background: var(--tint);
+}
+.message.previous-session {
+  border: 1px dashed #d6b986;
+  background: #fffbf2;
 }
 .message.system {
   align-self: center;

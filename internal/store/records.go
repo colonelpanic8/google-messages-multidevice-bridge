@@ -112,7 +112,7 @@ func (s *Store) Enqueue(id, transactionID string, req model.SendRequest) (model.
 			return err
 		}
 		now := time.Now().UTC()
-		o = model.Outbox{Schema: model.Schema, ID: id, Request: req, TransactionID: transactionID, State: "queued", Created: now, Updated: now}
+		o = model.Outbox{Schema: model.Schema, SessionEpoch: epoch(tx), ID: id, Request: req, TransactionID: transactionID, State: "queued", Created: now, Updated: now}
 		created = true
 		if err := tx.Bucket([]byte("outbox-txn")).Put([]byte(transactionID), []byte(id)); err != nil {
 			return err
@@ -207,7 +207,7 @@ func (s *Store) confirmSendTx(tx *bolt.Tx, m model.Message) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if (o.Request.Kind != "" && o.Request.Kind != "message") || o.Request.ConversationID != m.ConversationID || o.State == "queued" || o.State == "canceled" || o.State == "confirmed" {
+	if o.SessionEpoch != epoch(tx) || (o.Request.Kind != "" && o.Request.Kind != "message") || o.Request.ConversationID != m.ConversationID || o.State == "queued" || o.State == "canceled" || o.State == "confirmed" {
 		return false, nil
 	}
 	o.State, o.MessageID, o.Detail, o.Updated = "confirmed", m.ID, "Observed in Google history; see message status for delivery", time.Now().UTC()

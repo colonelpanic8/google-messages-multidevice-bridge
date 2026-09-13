@@ -52,6 +52,7 @@ type Message struct {
 	Direction      string       `json:"direction"`
 	Status         string       `json:"status"`
 	Deleted        bool         `json:"deleted"`
+	ReadOnly       bool         `json:"read_only,omitempty"`
 	TransactionID  string       `json:"transaction_id,omitempty"`
 	Attachments    []Attachment `json:"attachments"`
 	Reactions      []Reaction   `json:"reactions"`
@@ -87,6 +88,7 @@ func (r SendRequest) Equal(other SendRequest) bool {
 
 type Outbox struct {
 	ConversationID string      `json:"conversation_id,omitempty"`
+	SessionEpoch   uint64      `json:"session_epoch"`
 	Schema         int         `json:"schema"`
 	ID             string      `json:"id"`
 	Request        SendRequest `json:"request"`
@@ -100,6 +102,7 @@ type Outbox struct {
 
 type HistoryJob struct {
 	Generation     uint64    `json:"generation"`
+	SessionEpoch   uint64    `json:"session_epoch"`
 	Schema         int       `json:"schema"`
 	ID             string    `json:"id"`
 	Kind           string    `json:"kind"`

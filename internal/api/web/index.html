@@ -76,6 +76,7 @@
           <label class="sr-only" for="search">Search conversations</label
           ><input id="search" type="search" placeholder="Find a conversation" />
           <p id="provider-detail" class="hint"></p>
+          <p id="session-boundary" class="session-boundary" hidden></p>
           <button id="open-pairing" class="wide-button" type="button">
             Pair / Re-pair
           </button>
@@ -131,7 +132,7 @@
             <button id="retry-connection" type="button">
               Retry connection
             </button>
-            <p class="hint">
+            <p id="connection-recovery" class="hint">
               Restarts the connection. If credentials changed, use Pair /
               Re-pair above and confirm the displayed emoji on your phone.
             </p>

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -355,6 +356,104 @@ func TestMissingSessionReportsAuthenticationRequired(t *testing.T) {
 	if s.State != "authentication_required" || s.Transport || s.Phone {
 		t.Fatalf("%+v", s)
 	}
+}
+
+func TestFatalProviderEventsDistinguishExpiredAuthentication(t *testing.T) {
+	t.Run("expired authentication", func(t *testing.T) {
+		b := testBridge(t)
+		if err := b.Handle(&events.ListenFatalError{Error: events.ErrInvalidCredentials}); err != nil {
+			t.Fatal(err)
+		}
+		status := b.Status()
+		if status.State != "authentication_required" || status.Reason != "session_expired" {
+			t.Fatalf("%+v", status)
+		}
+		pairing := b.PairingStatus()
+		if !pairing.Required || pairing.Reason != "session_expired" || pairing.RequiredReason != "session_expired" {
+			t.Fatalf("%+v", pairing)
+		}
+	})
+	t.Run("non-authentication fatal error", func(t *testing.T) {
+		b := testBridge(t)
+		if err := b.Handle(&events.ListenFatalError{Error: errors.New("synthetic transport failure")}); err != nil {
+			t.Fatal(err)
+		}
+		status := b.Status()
+		if status.State != "connection_failed" || status.Reason != "provider_failure" {
+			t.Fatalf("%+v", status)
+		}
+		if b.PairingStatus().Required {
+			t.Fatal("transient/provider failure demanded re-pairing")
+		}
+	})
+}
+
+func TestSupervisorWaitsForAuthRecoveryButRetriesTransientFailure(t *testing.T) {
+	t.Run("authentication waits", func(t *testing.T) {
+		b := testBridge(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		var calls atomic.Int32
+		first := make(chan struct{})
+		second := make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			done <- b.supervise(ctx, false, func(context.Context) error {
+				call := calls.Add(1)
+				if call == 1 {
+					close(first)
+					b.setStatusReason("authentication_required", "session_expired", "re-pair")
+					return errors.New("expired")
+				}
+				close(second)
+				<-ctx.Done()
+				return nil
+			})
+		}()
+		<-first
+		time.Sleep(20 * time.Millisecond)
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("authentication failure retried %d times", got)
+		}
+		b.RequestReconnect()
+		select {
+		case <-second:
+		case <-time.After(time.Second):
+			t.Fatal("explicit recovery did not wake supervisor")
+		}
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("transient retries", func(t *testing.T) {
+		b := testBridge(t)
+		b.reconnectDelay = time.Millisecond
+		ctx, cancel := context.WithCancel(context.Background())
+		second := make(chan struct{})
+		done := make(chan error, 1)
+		var calls atomic.Int32
+		go func() {
+			done <- b.supervise(ctx, false, func(context.Context) error {
+				if calls.Add(1) == 2 {
+					close(second)
+				}
+				return errors.New("temporary network failure")
+			})
+		}()
+		select {
+		case <-second:
+		case <-time.After(time.Second):
+			t.Fatal("transient failure was not retried")
+		}
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if b.PairingStatus().Required {
+			t.Fatal("transient failure demanded re-pairing")
+		}
+	})
 }
 
 func TestShutdownDuringAttemptRecordsAmbiguityAndStopsWorker(t *testing.T) {

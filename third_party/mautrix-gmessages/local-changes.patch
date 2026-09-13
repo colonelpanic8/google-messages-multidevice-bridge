@@ -1,5 +1,5 @@
 diff --git a/upstream/pkg/libgm/client.go b/local/pkg/libgm/client.go
-index d385f4b..ffa38cd 100644
+index d385f4b..b8adf7c 100644
 --- a/upstream/pkg/libgm/client.go
 +++ b/local/pkg/libgm/client.go
 @@ -44,8 +44,87 @@ type AuthData struct {
@@ -237,15 +237,15 @@ index d385f4b..ffa38cd 100644
 +		c.settingsLock.Lock()
  		c.dataReceiveCheckInterval = interval
 +		c.settingsLock.Unlock()
- 	}
- }
- 
++	}
++}
++
 +func (c *Client) lifecycleFor(ctx context.Context) (*clientLifecycle, error) {
 +	c.lifecycleLock.Lock()
 +	defer c.lifecycleLock.Unlock()
 +	if c.lifecycleClosing {
 +		return nil, ErrClientDisconnecting
-+	}
+ 	}
 +	if c.lifecycle == nil {
 +		lifecycleCtx, cancel := context.WithCancel(ctx)
 +		c.lifecycle = &clientLifecycle{ctx: lifecycleCtx, cancel: cancel}
@@ -311,15 +311,17 @@ index d385f4b..ffa38cd 100644
 +		}
 +	}
 +	return false
-+}
-+
+ }
+ 
  func (c *Client) checkLoggedIn() error {
 -	if c.AuthData.TachyonAuthToken == nil {
-+	if c.AuthData.TachyonToken() == nil {
- 		return fmt.Errorf("no auth token")
+-		return fmt.Errorf("no auth token")
 -	} else if c.AuthData.Browser == nil {
+-		return fmt.Errorf("not logged in")
++	if c.AuthData.TachyonToken() == nil {
++		return ErrNoAuthToken
 +	} else if _, browser := c.AuthData.devices(); browser == nil {
- 		return fmt.Errorf("not logged in")
++		return ErrNotLoggedIn
  	}
  	return nil
  }
@@ -387,7 +389,8 @@ index d385f4b..ffa38cd 100644
 -	err := c.refreshAuthToken(nil)
 +	err = c.refreshAuthToken(lifecycle.ctx, nil)
  	if err != nil {
- 		if isFatalRefreshError(err) {
+-		if isFatalRefreshError(err) {
++		if IsAuthFailure(err) {
  			return fmt.Errorf("failed to refresh auth token: %w", err)
  		}
  		c.Logger.Warn().Err(err).Msg("Transient error refreshing auth token on connect, will retry in long polling loop")
@@ -410,15 +413,15 @@ index d385f4b..ffa38cd 100644
 +	lifecycle, err := c.lifecycleFor(ctx)
 +	if err != nil {
 +		c.connectLock.Unlock()
++		return err
++	}
++	result, err := c.startLongPolling(lifecycle, true, true, nil)
++	c.connectLock.Unlock()
++	if err != nil {
  		return err
  	}
 -	cleanExit := c.doLongPoll(ctx, true, true, nil)
 -	c.sessionHandler.sendAckRequest()
-+	result, err := c.startLongPolling(lifecycle, true, true, nil)
-+	c.connectLock.Unlock()
-+	if err != nil {
-+		return err
-+	}
 +	if result == nil {
 +		return errors.New("client is already connected")
 +	}
@@ -551,17 +554,17 @@ index d385f4b..ffa38cd 100644
  		c.Logger.Err(err).Msg("Failed to reconnect")
 -		c.triggerEvent(&events.ListenFatalError{Error: fmt.Errorf("failed to reconnect: %w", err)})
 +		_ = c.triggerEvent(&events.ListenFatalError{Error: fmt.Errorf("failed to reconnect: %w", err)})
- 		return err
- 	}
--	c.startLongPolling(ctx)
++		return err
++	}
 +	lifecycle, err := c.lifecycleFor(ctx)
 +	if err != nil {
 +		return err
 +	}
 +	_, err = c.startLongPolling(lifecycle, true, false, c.postConnect)
 +	if err != nil {
-+		return err
-+	}
+ 		return err
+ 	}
+-	c.startLongPolling(ctx)
 +	c.sessionHandler.startAckInterval(lifecycle)
  	c.Logger.Debug().Msg("Successfully reconnected to server")
  	return nil
@@ -583,7 +586,7 @@ index d385f4b..ffa38cd 100644
 +	}
 +	if handler != nil {
 +		handler(evt)
-+	}
+ 	}
 +	return nil
 +}
 +
@@ -592,7 +595,7 @@ index d385f4b..ffa38cd 100644
 +	if !c.callbacksOpen {
 +		c.callbackLock.RUnlock()
 +		return false
- 	}
++	}
 +	return true
 +}
 +
@@ -646,7 +649,26 @@ index d385f4b..ffa38cd 100644
  		if err != nil {
  			return fmt.Errorf("failed to refresh auth token: %w", err)
  		}
-@@ -471,8 +801,9 @@ func isFatalRefreshError(err error) bool {
+@@ -457,7 +787,17 @@ func (c *Client) RegisterPush(ctx context.Context, keys *PushKeys) error {
+ 	return nil
+ }
+ 
+-func isFatalRefreshError(err error) bool {
++var (
++	ErrNoAuthToken = errors.New("no auth token")
++	ErrNotLoggedIn = errors.New("not logged in")
++)
++
++// IsAuthFailure reports errors which mean the stored phone session cannot
++// recover by retrying. Transport failures and server errors are not included.
++func IsAuthFailure(err error) bool {
++	if errors.Is(err, ErrNoAuthToken) || errors.Is(err, ErrNotLoggedIn) {
++		return true
++	}
+ 	if errors.Is(err, events.ErrInvalidCredentials) || errors.Is(err, events.ErrRequestedEntityNotFound) {
+ 		return true
+ 	}
+@@ -471,8 +811,9 @@ func isFatalRefreshError(err error) bool {
  	return false
  }
  
@@ -658,7 +680,7 @@ index d385f4b..ffa38cd 100644
  		return nil
  	}
  	jwk := c.AuthData.RefreshKey
-@@ -506,7 +837,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
+@@ -506,7 +847,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
  		}
  	}
  	c.Logger.Debug().
@@ -667,7 +689,7 @@ index d385f4b..ffa38cd 100644
  		Bool("force_refresh", pushKeyOverride != nil).
  		Bool("include_push_keys", moreParams.GetPushReg() != nil).
  		Msg("Refreshing auth token")
-@@ -514,11 +845,11 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
+@@ -514,11 +855,11 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
  	payload := &gmproto.RegisterRefreshRequest{
  		MessageAuth: &gmproto.AuthMessage{
  			RequestID:        requestID,
@@ -681,7 +703,7 @@ index d385f4b..ffa38cd 100644
  		UnixTimestamp:     timestamp,
  		Signature:         sig,
  		Parameters: &gmproto.RegisterRefreshRequest_Parameters{
-@@ -529,7 +860,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
+@@ -529,7 +870,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
  	}
  
  	resp, err := typedHTTPResponse[*gmproto.RegisterRefreshResponse](
@@ -1038,7 +1060,7 @@ index fa0590b..d95f45e 100644
  		}
  		retryIn := time.Duration(attempt) * ServerErrorRetryInterval
 diff --git a/upstream/pkg/libgm/longpoll.go b/local/pkg/libgm/longpoll.go
-index b3dbb40..9f79385 100644
+index b3dbb40..ac6ac17 100644
 --- a/upstream/pkg/libgm/longpoll.go
 +++ b/local/pkg/libgm/longpoll.go
 @@ -150,7 +150,8 @@ func (pl *phoneLiveness) advanceRecoveryInterval() {
@@ -1205,10 +1227,11 @@ index b3dbb40..9f79385 100644
 +	for c.pollCurrent(listenID) {
 +		err := c.refreshAuthToken(pollCtx, nil)
  		if err != nil {
+-			if isFatalRefreshError(err) {
 +			if pollCtx.Err() != nil || !c.pollCurrent(listenID) {
 +				return true
 +			}
- 			if isFatalRefreshError(err) {
++			if IsAuthFailure(err) {
  				log.Err(err).Msg("Error refreshing auth token")
  				if loggedIn {
 -					c.triggerEvent(&events.ListenFatalError{Error: fmt.Errorf("failed to refresh auth token: %w", err)})

@@ -113,6 +113,7 @@ func (s *Store) QueueHistory(job model.HistoryJob, restart bool) (model.HistoryJ
 			}
 		}
 		job.Generation++
+		job.SessionEpoch = epoch(tx)
 		job.Updated = time.Now().UTC()
 		job.Schema, job.State, job.Detail, job.RetryAt = model.Schema, "queued", "", time.Time{}
 		return s.writeHistory(tx, &job)

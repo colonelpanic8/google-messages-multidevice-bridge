@@ -17,6 +17,7 @@ import (
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/bridge"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
+	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"
 )
 
 // TestBrowserFixture is an opt-in, synthetic-only browser test server.
@@ -52,6 +53,14 @@ func TestBrowserFixture(t *testing.T) {
 	appendRecord("message", "m3", model.Message{Schema: 1, ID: "m3", ConversationID: "synthetic-conversation", SenderID: "friend", Time: now.Add(-time.Minute), Text: "See you at the park! The video is still on the phone.", Direction: "incoming", Status: "incoming_complete", Reactions: []model.Reaction{}, Attachments: []model.Attachment{{ID: unavailableMediaID, Name: "park-preview.mp4", MIME: "video/mp4", Size: 7340032, Available: false}}})
 	appendRecord("message", "m4", model.Message{Schema: 1, ID: "m4", ConversationID: "synthetic-conversation", SenderID: "me", Time: now, Direction: "outgoing", Status: "outgoing_complete", Reactions: []model.Reaction{}, Attachments: []model.Attachment{{ID: availableMediaID, Name: "park-map.svg", MIME: "image/svg+xml", Size: 171, Available: true}}})
 	appendRecord("history", "conversations:inbox", model.HistoryJob{Schema: 1, ID: "conversations:inbox", Kind: "conversations", Folder: "inbox", State: "queued", Pages: 3, Records: 147, Updated: now})
+	if os.Getenv("BRIDGE_BROWSER_RECOVERY_TEST") == "1" {
+		if err := s.SavePairedSession([]byte("synthetic replacement session")); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Handle(&events.GaiaLoggedOut{}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		t.Fatal(err)

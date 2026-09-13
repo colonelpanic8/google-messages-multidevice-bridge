@@ -138,6 +138,13 @@ func TestPairingChangesRoutingEpochAndCancelsOldWork(t *testing.T) {
 	if err := s.PutPrivate("upload:u", []byte("old-google-upload")); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.PutPrivate("attachment", []byte("old-google-download")); err != nil {
+		t.Fatal(err)
+	}
+	message := Event{Type: "message", EntityID: "m", Data: json.RawMessage(`{"schema":1,"id":"m","conversation_id":"c"}`)}
+	if _, err := s.Append(message); err != nil {
+		t.Fatal(err)
+	}
 	job, err := s.QueueHistory(model.HistoryJob{ID: "messages:c", Kind: "messages", ConversationID: "c"}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -158,6 +165,9 @@ func TestPairingChangesRoutingEpochAndCancelsOldWork(t *testing.T) {
 	if _, err = s.Private("upload:u"); err != ErrNotFound {
 		t.Fatal("old upload credential retained", err)
 	}
+	if _, err = s.Private("attachment"); err != ErrNotFound {
+		t.Fatal("old attachment credential retained", err)
+	}
 	cursor, err := s.HistoryCursor(job.ID)
 	if err != nil || len(cursor) != 0 {
 		t.Fatalf("old history cursor retained: %q %v", cursor, err)
@@ -168,5 +178,40 @@ func TestPairingChangesRoutingEpochAndCancelsOldWork(t *testing.T) {
 	}
 	if current, err := s.EntityCurrent("conversation", "c"); err != nil || !current {
 		t.Fatalf("new routing unavailable: %v %v", current, err)
+	}
+	summary, err := s.SessionSummary()
+	if err != nil || summary.Epoch != 1 || summary.PreviousConversations != 0 || summary.PreviousMessages != 1 {
+		t.Fatalf("session boundary summary: %+v %v", summary, err)
+	}
+	job, err = s.QueueHistory(job, false)
+	if err != nil || job.SessionEpoch != summary.Epoch || job.State != "queued" {
+		t.Fatalf("history was not rebound to current session: %+v %v", job, err)
+	}
+}
+
+func TestOldSessionOutboxCannotBeConfirmedByNewSession(t *testing.T) {
+	s := openTestStore(t)
+	request := model.SendRequest{ConversationID: "c", Text: "synthetic"}
+	o, _, err := s.Enqueue("old-session-send", "transaction", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.ClaimQueued(o.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SavePairedSession([]byte("new-session")); err != nil {
+		t.Fatal(err)
+	}
+	message := model.Message{Schema: 1, ID: "m", ConversationID: "c", TransactionID: "transaction"}
+	data, err := json.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Append(Event{Type: "message", EntityID: message.ID, Data: data}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Outbox(o.ID)
+	if err != nil || got.State != "sending" || got.SessionEpoch != 0 {
+		t.Fatalf("old-session attempt crossed pairing boundary: %+v %v", got, err)
 	}
 }

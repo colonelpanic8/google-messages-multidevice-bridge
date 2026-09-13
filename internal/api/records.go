@@ -148,6 +148,12 @@ func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 				apiError(w, err)
 				return
 			}
+			if current, currentErr := b.Store.EntityCurrent("message", m.ID); currentErr != nil {
+				apiError(w, currentErr)
+				return
+			} else if !current {
+				m.ReadOnly = true
+			}
 			if m.ConversationID == r.PathValue("id") {
 				messages = append(messages, m)
 			}

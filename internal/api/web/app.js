@@ -34,6 +34,7 @@ let sending = false,
   createdConversation,
   selectedFiles = [];
 let providerState = "offline",
+  currentSessionEpoch = 0,
   typingUntil = 0,
   typingConversation = "",
   typingTimer,
@@ -114,13 +115,15 @@ function renderConversations() {
     const button = el(
       "button",
       undefined,
-      `conversation ${conversation.id === selected ? "active" : ""} ${conversation.unread ? "unread" : ""}`,
+      `conversation ${conversation.id === selected ? "active" : ""} ${conversation.unread ? "unread" : ""} ${conversation.read_only ? "previous-session" : ""}`,
     );
     button.type = "button";
     button.append(
       el("strong", name(conversation)),
       el("small", conversation.preview || "No recent preview"),
     );
+    if (conversation.read_only)
+      button.append(el("small", "Previous pairing · read only", "stale-label"));
     button.onclick = () => select(conversation.id);
     $("conversations").append(button);
   }
@@ -131,7 +134,7 @@ function reactionKey(conversationID, messageID, emoji, remove = false) {
   return [conversationID, messageID, emoji, remove].join("\u0000");
 }
 function renderReactionActions(container, message, conversation) {
-  if (message.deleted || conversation.read_only) return;
+  if (message.deleted || message.read_only || conversation.read_only) return;
   const picker = el("details", undefined, "reaction-picker");
   picker.append(el("summary", "React"));
   const choices = el("div", undefined, "reaction-choices");
@@ -213,8 +216,8 @@ function renderPreview(container, attachment) {
   if (previewObserver) previewObserver.observe(img);
   else loadPreview(img);
 }
-function renderMediaRequest(container, attachment) {
-  if (!attachment.requestable) return;
+function renderMediaRequest(container, attachment, readOnly) {
+  if (!attachment.requestable || readOnly) return;
   const button = el("button", "Request full media from phone", "attachment");
   button.type = "button";
   button.onclick = async () => {
@@ -232,7 +235,7 @@ function renderMediaRequest(container, attachment) {
   };
   container.append(button);
 }
-function renderAttachment(container, attachment) {
+function renderAttachment(container, attachment, readOnly) {
   renderPreview(container, attachment);
   const quality = attachment.preview ? " · Preview" : "";
   const label = `${attachment.name || "Attachment"} · ${formatSize(attachment.size || 0)}${quality}${attachment.available ? " · Download" : " · Unavailable"}`;
@@ -266,7 +269,7 @@ function renderAttachment(container, attachment) {
     }
   };
   container.append(button);
-  renderMediaRequest(container, attachment);
+  renderMediaRequest(container, attachment, readOnly);
 }
 function outboxDescription(item) {
   const body = item.request || {};
@@ -300,10 +303,12 @@ function renderOutbox() {
       el("p", outboxDescription(item)),
       el(
         "div",
-        item.detail ||
+        `${item.session_epoch !== currentSessionEpoch ? "Previous pairing · " : ""}${
+          item.detail ||
           (item.state === "queued"
             ? "Waiting for the phone connection. This can be canceled before sending starts."
-            : ""),
+            : "")
+        }`,
         "hint",
       ),
     );
@@ -356,7 +361,7 @@ function renderThread() {
       others(conversation)
         .map((participant) => participant.address || participant.name)
         .join(", ") || "Phone conversation"
-    }`;
+    }${conversation.read_only ? " · Previous pairing · read only" : ""}`;
   const container = $("messages");
   const bottom =
     container.scrollHeight - container.scrollTop - container.clientHeight < 70;
@@ -365,7 +370,11 @@ function renderThread() {
     (a, b) =>
       (a.time || "").localeCompare(b.time || "") || a.id.localeCompare(b.id),
   )) {
-    const node = el("article", undefined, `message ${message.direction}`);
+    const node = el(
+      "article",
+      undefined,
+      `message ${message.direction} ${message.read_only ? "previous-session" : ""}`,
+    );
     const sender = conversation.participants?.find(
       (participant) => participant.id === message.sender_id,
     );
@@ -384,7 +393,7 @@ function renderThread() {
       ),
     );
     for (const attachment of message.deleted ? [] : message.attachments || [])
-      renderAttachment(node, attachment);
+      renderAttachment(node, attachment, message.read_only);
     for (const reaction of message.reactions || [])
       node.append(
         el(
@@ -397,7 +406,7 @@ function renderThread() {
     node.append(
       el(
         "div",
-        `${new Date(message.time).toLocaleString()} · ${(message.status || "stored").replaceAll("_", " ")}`,
+        `${message.read_only ? "Previous pairing · read only · " : ""}${new Date(message.time).toLocaleString()} · ${(message.status || "stored").replaceAll("_", " ")}`,
         "meta",
       ),
     );
@@ -414,19 +423,35 @@ function renderThread() {
   $("send").textContent = hasPending ? "Retry same request" : "Send message";
   $("discard-send").hidden = !hasPending;
   $("discard-send").disabled = sending;
-  $("mark-read").disabled = !messages.length;
-  $("import-conversation").disabled = importing > 0;
+  $("mark-read").disabled =
+    conversation.read_only || !messages.some((message) => !message.read_only);
+  $("import-conversation").disabled = conversation.read_only || importing > 0;
   renderSelectedAttachments();
   renderOutbox();
 }
 function renderConnection(status) {
   providerState = status.state || "offline";
+  currentSessionEpoch = status.session_epoch || 0;
   $("status").textContent = providerState.replaceAll("_", " ");
   $("provider-detail").textContent = status.detail || "";
+  const previousCount =
+    (status.previous_session_conversations || 0) +
+    (status.previous_session_messages || 0);
+  $("session-boundary").hidden = !previousCount;
+  $("session-boundary").textContent = previousCount
+    ? `${status.previous_session_conversations || 0} conversations and ${status.previous_session_messages || 0} messages are from an earlier pairing and remain stored read-only. The paired Google account may be different.`
+    : "";
   $("connection-actions").hidden = ![
     "connection_failed",
     "authentication_required",
   ].includes(providerState);
+  $("retry-connection").hidden = providerState === "authentication_required";
+  $("connection-recovery").textContent =
+    providerState === "authentication_required"
+      ? status.reason === "session_expired"
+        ? "Your phone session expired or was revoked. Choose Pair / Re-pair above, sign in, and confirm the emoji on your phone. Retrying cannot repair expired credentials."
+        : "Choose Pair / Re-pair above, sign in, and confirm the emoji on your phone."
+      : "Retry the connection. If credentials changed, use Pair / Re-pair above.";
   $("sync-status").textContent = status.last_sync
     ? `Recent history checked ${new Date(status.last_sync).toLocaleTimeString()}. ${status.sync_state === "failed" ? "Latest check failed." : ""}`
     : "Recent history has not been reconciled yet.";
@@ -434,7 +459,7 @@ function renderConnection(status) {
     providerState === "connected"
       ? "Your phone handles delivery."
       : providerState === "authentication_required"
-        ? "Pair through the CLI before queued requests can run."
+        ? "Re-pair before new requests can run."
         : providerState === "connection_failed"
           ? "Retry the bridge connection before queued requests can run."
           : "Offline: requests queue until your phone connects.";
@@ -445,7 +470,9 @@ function pairingActive() {
   );
 }
 function renderPairing() {
-  const state = pairingState.state || "not started";
+  const state =
+    pairingState.state ||
+    (pairingState.required ? "pairing required" : "not started");
   $("bridge-url").value = pairingState.ticket ? window.location.origin : "";
   $("pairing-ticket").value = pairingState.ticket || "";
   $("pairing-fields").hidden = !pairingState.ticket;
@@ -459,9 +486,12 @@ function renderPairing() {
   }${pairingActive() && pairingState.expires ? ` · expires ${new Date(pairingState.expires).toLocaleTimeString()}` : ""}`;
   $("start-pairing").disabled = pairingActive();
   $("start-pairing").textContent =
-    providerState === "connected" || state === "paired"
-      ? "Start re-pairing"
-      : "Start pairing";
+    pairingState.required_reason === "session_expired" ||
+    pairingState.reason === "session_expired"
+      ? "Re-pair expired session"
+      : providerState === "connected" || state === "paired"
+        ? "Start re-pairing"
+        : "Start pairing";
   $("cancel-pairing").hidden = !pairingActive();
 }
 function schedulePairingPoll() {
@@ -525,12 +555,17 @@ function renderHistory() {
   for (const job of [...historyJobs].sort((a, b) =>
     (b.updated || "").localeCompare(a.updated || ""),
   )) {
-    const node = el("div", undefined, `history-job ${job.state}`);
+    const previousPairing = job.session_epoch !== currentSessionEpoch;
+    const node = el(
+      "div",
+      undefined,
+      `history-job ${job.state} ${previousPairing ? "previous-session" : ""}`,
+    );
     node.append(
       el("strong", jobLabel(job)),
       el(
         "span",
-        `${(job.state || "queued").replaceAll("_", " ")} · ${job.pages || 0} pages · ${job.records || 0} records`,
+        `${previousPairing ? "Previous pairing · " : ""}${(job.state || "queued").replaceAll("_", " ")} · ${job.pages || 0} pages · ${job.records || 0} records`,
       ),
     );
     if (job.detail) node.append(el("p", job.detail, "hint"));

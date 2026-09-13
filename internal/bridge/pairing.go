@@ -14,12 +14,18 @@ var ErrPairing = errors.New("pairing in progress")
 var ErrPairingTicket = errors.New("invalid or expired pairing ticket")
 
 type PairingState struct {
-	generation uint64
-	State      string    `json:"state"`
-	Ticket     string    `json:"ticket,omitempty"`
-	Emoji      string    `json:"emoji,omitempty"`
-	Detail     string    `json:"detail,omitempty"`
-	Expires    time.Time `json:"expires"`
+	generation            uint64
+	State                 string    `json:"state"`
+	Reason                string    `json:"reason,omitempty"`
+	Required              bool      `json:"required"`
+	RequiredReason        string    `json:"required_reason,omitempty"`
+	Ticket                string    `json:"ticket,omitempty"`
+	Emoji                 string    `json:"emoji,omitempty"`
+	Detail                string    `json:"detail,omitempty"`
+	Expires               time.Time `json:"expires"`
+	SessionEpoch          uint64    `json:"session_epoch"`
+	PreviousConversations int       `json:"previous_session_conversations"`
+	PreviousMessages      int       `json:"previous_session_messages"`
 }
 
 func activePair(state string) bool {
@@ -31,9 +37,42 @@ func (b *Bridge) PairingActive() bool {
 	return activePair(b.pairingState.State)
 }
 func (b *Bridge) PairingStatus() PairingState {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.pairingState
+	b.mu.Lock()
+	var cancel context.CancelFunc
+	var clearErr error
+	if activePair(b.pairingState.State) && !time.Now().Before(b.pairingState.Expires) {
+		cancel = b.pairCancel
+		if b.pairDone == nil {
+			b.pairingState.State = "failed"
+			b.pairingState.Reason = "ticket_expired"
+			b.pairingState.Detail = "Pairing expired; start again"
+			b.pairingState.Ticket = ""
+			b.pairingState.Emoji = ""
+			b.pairCookies = nil
+			clearErr = b.Store.ClearPairingAttempt()
+		}
+	}
+	state := b.pairingState
+	if !activePair(state.State) && b.status.State == "authentication_required" {
+		state.Required = true
+		state.RequiredReason = b.status.Reason
+		if state.Reason == "" || state.State == "paired" {
+			state.Reason = b.status.Reason
+		}
+	}
+	b.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if clearErr != nil {
+		b.storageFailure(clearErr)
+	}
+	if summary, err := b.Store.SessionSummary(); err == nil {
+		state.SessionEpoch = summary.Epoch
+		state.PreviousConversations = summary.PreviousConversations
+		state.PreviousMessages = summary.PreviousMessages
+	}
+	return state
 }
 func (b *Bridge) SetOfflineOnly(offline bool) {
 	b.mu.Lock()
@@ -58,15 +97,19 @@ func (b *Bridge) BeginPairing() (PairingState, error) {
 		return state, nil
 	}
 	ticket := make([]byte, 32)
-	_, _ = rand.Read(ticket)
-	b.pairingState = PairingState{generation: b.pairingState.generation + 1, State: "waiting_for_login", Ticket: base64.RawURLEncoding.EncodeToString(ticket), Expires: time.Now().UTC().Add(10 * time.Minute), Detail: "Sign in to Google using the pairing helper, then return here"}
-	state := b.pairingState
-	b.mu.Unlock()
-	if err := b.Store.CancelQueuedForPairing(); err != nil {
-		b.finishPairing("failed", "Storage could not prepare pairing", state.generation)
+	if _, err := rand.Read(ticket); err != nil {
+		b.mu.Unlock()
+		return PairingState{}, err
+	}
+	now := time.Now().UTC()
+	state := PairingState{generation: b.pairingState.generation + 1, State: "waiting_for_login", Ticket: base64.RawURLEncoding.EncodeToString(ticket), Expires: now.Add(10 * time.Minute), Detail: "Sign in to Google using the pairing helper, then return here"}
+	if err := b.Store.BeginPairingAttempt(now, state.Expires); err != nil {
+		b.mu.Unlock()
 		b.storageFailure(err)
 		return PairingState{}, err
 	}
+	b.pairingState = state
+	b.mu.Unlock()
 	b.Hub.Notify()
 	b.RequestReconnect()
 	wake(b.pairWake)
@@ -103,11 +146,43 @@ func (b *Bridge) SubmitPairingCookies(ticket string, cookies map[string]string) 
 	return nil
 }
 func (b *Bridge) CancelPairing() PairingState {
+	b.mutationMu.Lock()
+	defer b.mutationMu.Unlock()
+	state, _, changed := b.cancelPairing()
+	if changed {
+		b.clearPairingAttempt()
+	}
+	return state
+}
+
+func (b *Bridge) CancelPairingAndWait(ctx context.Context) (PairingState, error) {
+	b.mutationMu.Lock()
+	defer b.mutationMu.Unlock()
+	state, done, changed := b.cancelPairing()
+	if changed {
+		b.clearPairingAttempt()
+	}
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return state, ctx.Err()
+		}
+	}
+	return state, nil
+}
+
+func (b *Bridge) cancelPairing() (PairingState, <-chan struct{}, bool) {
 	b.mu.Lock()
 	var cancel context.CancelFunc
+	var done <-chan struct{}
+	changed := false
 	if activePair(b.pairingState.State) {
+		changed = true
 		cancel = b.pairCancel
+		done = b.pairDone
 		b.pairingState.State = "canceled"
+		b.pairingState.Reason = "canceled"
 		b.pairingState.Detail = "Pairing canceled"
 		b.pairingState.Ticket = ""
 		b.pairingState.Emoji = ""
@@ -119,19 +194,38 @@ func (b *Bridge) CancelPairing() PairingState {
 		cancel()
 	}
 	wake(b.pairWake)
-	return state
+	return state, done, changed
 }
 func (b *Bridge) finishPairing(state, detail string, generation uint64) {
+	b.finishPairingReason(state, "", detail, generation)
+}
+
+func (b *Bridge) finishPairingReason(state, reason, detail string, generation uint64) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.pairingState.generation != generation || b.pairingState.State == "canceled" || (b.pairingState.State == "paired" && state != "paired") {
+	if b.pairingState.generation != generation || !activePair(b.pairingState.State) {
+		b.mu.Unlock()
 		return
 	}
 	b.pairingState.State = state
+	b.pairingState.Reason = reason
+	if state == "failed" && reason == "" {
+		b.pairingState.Reason = "pairing_failed"
+	}
 	b.pairingState.Detail = detail
 	b.pairingState.Ticket = ""
 	b.pairingState.Emoji = ""
 	b.pairCookies = nil
+	clearErr := b.Store.ClearPairingAttempt()
+	b.mu.Unlock()
+	if clearErr != nil {
+		b.storageFailure(clearErr)
+	}
+}
+
+func (b *Bridge) clearPairingAttempt() {
+	if err := b.Store.ClearPairingAttempt(); err != nil {
+		b.storageFailure(err)
+	}
 }
 
 // processPairing is called only after the previous connection has fully joined.
@@ -182,6 +276,8 @@ func (b *Bridge) processPairing(ctx context.Context) error {
 		cookies := b.pairCookies
 		b.pairCookies = nil
 		b.pairCancel = cancel
+		done := make(chan struct{})
+		b.pairDone = done
 		attempt := b.pairAttempt
 		b.mu.Unlock()
 		if attempt == nil {
@@ -204,17 +300,24 @@ func (b *Bridge) processPairing(ctx context.Context) error {
 		canceled := callCtx.Err() != nil
 		cancel()
 		b.mu.Lock()
-		b.pairCancel = nil
+		if b.pairDone == done {
+			b.pairCancel = nil
+			b.pairDone = nil
+		}
 		b.mu.Unlock()
 		if errors.Is(err, ErrStorage) {
 			b.finishPairing("failed", "Could not save pairing", state.generation)
+			close(done)
 			return err
 		}
-		if err != nil || canceled {
+		if !time.Now().Before(state.Expires) {
+			b.finishPairingReason("failed", "ticket_expired", "Pairing expired; start again", state.generation)
+		} else if err != nil || canceled {
 			b.finishPairing("failed", "Pairing did not complete; check Google sign-in and try again", state.generation)
 		} else {
 			b.finishPairing("paired", "Phone paired; connecting and loading history", state.generation)
 		}
+		close(done)
 		return nil
 	}
 }
@@ -230,6 +333,7 @@ func (b *Bridge) commitPairedSession(ctx context.Context, generation uint64, dat
 	err := b.Store.SavePairedSession(data)
 	if err == nil && generation != 0 {
 		b.pairingState.State = "paired"
+		b.pairingState.Reason = ""
 		b.pairingState.Detail = "Phone paired; connecting and loading history"
 		b.pairingState.Ticket, b.pairingState.Emoji = "", ""
 		b.pairCookies = nil

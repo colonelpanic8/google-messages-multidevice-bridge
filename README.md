@@ -38,9 +38,10 @@ message composed elsewhere on the phone appeared in a running client within seco
 over the live stream, which is the same event path incoming messages use.
 Not yet live-verified: messages received from other parties, SMS/MMS sends to
 non-RCS recipients, multi-SIM selection, RCS group creation, and authentication
-expiry handling. Automated tests use fake providers, synthetic
-protocol messages, and local HTTP servers. No messages were sent to other people
-during implementation.
+expiry handling. Structured libgm authentication errors and revoked-session events
+are covered by synthetic tests, but have not been induced against the live phone.
+Automated tests use fake providers, synthetic protocol messages, and local HTTP
+servers. No messages were sent to other people during implementation.
 
 The history importer follows the pages exposed by the current private protocol. A
 job marked `complete` means that response stream ended; it is not proof of a complete
@@ -121,10 +122,14 @@ Starting a re-pair immediately cancels queued outbox operations. Canceling or fa
 that pairing attempt does not advance the entity epoch, clear provider upload
 descriptors, or reset history jobs, although the canceled outbox records stay
 canceled. Only successfully saving the new paired session advances the epoch, clears
-provider upload descriptors, and resets existing history jobs to paused with no
-checkpoint. Stored entities from the previous session remain readable but cannot be
-mutation targets until the new connection observes them. Review recipients and start
-fresh history imports after successful pairing.
+private provider upload, download, and history descriptors, and resets existing
+history jobs to paused with no checkpoint. Stored entities from the previous session
+remain readable but cannot be mutation targets until the new connection observes
+them. Messages from earlier pairings are labeled read-only, and status reports their
+conversation/message counts. Locally cached attachment bytes remain available as
+stored history. Review recipients and start fresh history imports after successful
+pairing. If the bridge restarts mid-pairing, it keeps the last saved session,
+invalidates the old ticket, and reports that the attempt was interrupted.
 
 `serve --offline` exposes stored history and permits durable operations to be queued
 without starting Google. Pairing is intentionally disabled in this mode and the API
@@ -193,8 +198,9 @@ history states, pagination, pairing, and SSE replay.
   Mutation admission is serialized so queueing, claiming, mark-read, and typing do
   not cross the start of a re-pair.
 - The supervisor retries transient connection failures with bounded exponential
-  backoff. Authentication failure waits for explicit restart or re-pair. Stored
-  history and the HTTP service remain available unless storage itself fails.
+  backoff. Authentication failure is reported as `authentication_required` with a
+  machine-readable reason and waits for explicit restart or re-pair. Stored history
+  and the HTTP service remain available unless storage itself fails.
 - Patched libgm joins client-owned poll, ACK, ping, recovery, and post-connect workers
   on disconnect. Foreground pairing and request/media calls remain caller-owned and
   must be canceled and joined by the bridge. A transport that ignores context can
@@ -221,6 +227,8 @@ BRIDGE_BROWSER_TEST=1 go test ./internal/api -run '^TestBrowserFixture$' -v -tim
 It binds all interfaces on a fresh OS-selected port and prints the port. The token
 is `synthetic-browser-test-token-only`; the fixture contains no real secrets or
 messages. Sends only enter its temporary local queue. Normal tests skip it.
+Set `BRIDGE_BROWSER_RECOVERY_TEST=1` as well to render an expired-session state
+with synthetic previous-pairing records for recovery UI review.
 
 ## License
 

@@ -423,9 +423,9 @@ func (c *Client) consumeSkip() bool {
 
 func (c *Client) checkLoggedIn() error {
 	if c.AuthData.TachyonToken() == nil {
-		return fmt.Errorf("no auth token")
+		return ErrNoAuthToken
 	} else if _, browser := c.AuthData.devices(); browser == nil {
-		return fmt.Errorf("not logged in")
+		return ErrNotLoggedIn
 	}
 	return nil
 }
@@ -483,7 +483,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	// bad credentials synchronously.
 	err = c.refreshAuthToken(lifecycle.ctx, nil)
 	if err != nil {
-		if isFatalRefreshError(err) {
+		if IsAuthFailure(err) {
 			return fmt.Errorf("failed to refresh auth token: %w", err)
 		}
 		c.Logger.Warn().Err(err).Msg("Transient error refreshing auth token on connect, will retry in long polling loop")
@@ -787,7 +787,17 @@ func (c *Client) RegisterPush(ctx context.Context, keys *PushKeys) error {
 	return nil
 }
 
-func isFatalRefreshError(err error) bool {
+var (
+	ErrNoAuthToken = errors.New("no auth token")
+	ErrNotLoggedIn = errors.New("not logged in")
+)
+
+// IsAuthFailure reports errors which mean the stored phone session cannot
+// recover by retrying. Transport failures and server errors are not included.
+func IsAuthFailure(err error) bool {
+	if errors.Is(err, ErrNoAuthToken) || errors.Is(err, ErrNotLoggedIn) {
+		return true
+	}
 	if errors.Is(err, events.ErrInvalidCredentials) || errors.Is(err, events.ErrRequestedEntityNotFound) {
 		return true
 	}
