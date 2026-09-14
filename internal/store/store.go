@@ -119,6 +119,28 @@ func (s *Store) Session() ([]byte, error) {
 	return data, err
 }
 
+// SaveContacts keeps the last address book read from the phone so the new
+// conversation view can complete recipients before, or without, a fresh read.
+func (s *Store) SaveContacts(data []byte) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("meta")).Put([]byte("contacts"), s.encrypt(data, "contacts"))
+	})
+}
+
+func (s *Store) Contacts() ([]byte, error) {
+	var data []byte
+	err := s.db.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket([]byte("meta")).Get([]byte("contacts"))
+		if v == nil {
+			return nil
+		}
+		var err error
+		data, err = s.decrypt(v, "contacts")
+		return err
+	})
+	return data, err
+}
+
 func sequence(id uint64) []byte { b := make([]byte, 8); binary.BigEndian.PutUint64(b, id); return b }
 
 // Append suppresses identical consecutive snapshots, but retains later changes.

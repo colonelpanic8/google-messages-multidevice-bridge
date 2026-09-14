@@ -1209,22 +1209,139 @@ button.reaction:hover {
 }
 .to-field {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  height: 56px;
-  padding: 0 16px;
+  gap: 8px;
+  min-height: 56px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--outline-variant);
   color: var(--on-surface-variant);
 }
 .to-field input {
   flex: 1;
+  min-width: 140px;
+  height: 40px;
   border: 0;
   background: none;
-  height: 100%;
   font-size: 16px;
 }
 .to-field input:focus {
   outline: none;
+}
+.recipient-chips {
+  display: contents;
+}
+.recipient-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 4px 0 12px;
+  border-radius: 16px;
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+.chip-remove:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.chip-remove svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+.group-name {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--on-surface-variant);
+}
+.group-name input {
+  height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--outline);
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font-size: 15px;
+}
+.contact-list {
+  display: grid;
+  max-height: 320px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+.contact-row,
+.person-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.contact-row {
+  cursor: pointer;
+}
+.contact-row:hover,
+.contact-row.active {
+  background: var(--surface-low);
+}
+.contact-row .avatar,
+.person-row .avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 500;
+}
+.contact-row .avatar svg,
+.person-row .avatar svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+.contact-text {
+  display: grid;
+  min-width: 0;
+}
+.contact-text .name,
+.contact-text .detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.contact-text .detail {
+  font-size: 12px;
+  color: var(--on-surface-variant);
+}
+.people-list {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 8px;
 }
 
 /* Dialogs */

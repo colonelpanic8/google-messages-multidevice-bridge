@@ -64,6 +64,25 @@ func TestBrowserFixture(t *testing.T) {
 		appendRecord("message", id, model.Message{Schema: 1, ID: id, ConversationID: "synthetic-long", SenderID: sender, Time: now.Add(time.Duration(i-1501) * time.Hour), Text: fmt.Sprintf("Message %d", i), Direction: direction, Status: status, Reactions: []model.Reaction{}, Attachments: []model.Attachment{}})
 	}
 	appendRecord("conversation", "synthetic-long", model.Conversation{Schema: 1, ID: "synthetic-long", Name: "Long history", Preview: "Message 1500", Protocol: "rcs", State: "active", Updated: now.Add(-2 * time.Hour), Participants: []model.Participant{{ID: "archivist", Name: "Robin (synthetic)", Address: "+1 555 0142"}, {ID: "me", Name: "You", IsMe: true}}})
+	appendRecord("conversation", "synthetic-group", model.Conversation{Schema: 1, ID: "synthetic-group", Name: "Book club", Preview: "Chapter four tonight?", Protocol: "rcs", State: "active", Updated: now.Add(-30 * time.Minute), Participants: []model.Participant{
+		{ID: "me", Name: "You", Address: "+15550000000", IsMe: true},
+		{ID: "friend", Name: "Alex (synthetic)", Address: "+14155550100"},
+		{ID: "teammate", Name: "Sam (synthetic)", Address: "+442071838750"},
+		{ID: "archivist", Address: "+15125550111"},
+	}})
+	contacts, err := json.Marshal(model.ContactBook{Schema: 1, Updated: now, Contacts: []model.Contact{
+		{ID: "friend", ContactID: "contact-1", Name: "Alex Rivera (synthetic)", Address: "+14155550100", Formatted: "(415) 555-0100", Frequent: true},
+		{ID: "teammate", ContactID: "contact-2", Name: "Sam Okafor (synthetic)", Address: "+442071838750", Formatted: "+44 20 7183 8750", Frequent: true},
+		{ID: "archivist", ContactID: "contact-3", Name: "Robin Chase (synthetic)", Address: "+15125550111", Formatted: "(512) 555-0111"},
+		{ID: "neighbor", ContactID: "contact-4", Name: "Dana Whitfield (synthetic)", Address: "+13035550142", Formatted: "(303) 555-0142"},
+		{ID: "unlisted", ContactID: "contact-5", Formatted: "(206) 555-0163"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SaveContacts(contacts); err != nil {
+		t.Fatal(err)
+	}
 	appendRecord("history", "conversations:inbox", model.HistoryJob{Schema: 1, ID: "conversations:inbox", Kind: "conversations", Folder: "inbox", State: "queued", Pages: 3, Records: 147, Updated: now})
 	// One import per state the thread reports: fetching now, still in line, and
 	// stopped. The worker takes queued jobs oldest-updated first.

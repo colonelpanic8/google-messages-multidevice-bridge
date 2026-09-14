@@ -15,6 +15,33 @@ type Participant struct {
 	Address string `json:"address,omitempty"`
 	IsMe    bool   `json:"is_me"`
 }
+
+// Contact is one addressable entry from the phone's address book, used to
+// complete recipients when starting a conversation.
+type Contact struct {
+	ID        string `json:"id"`
+	ContactID string `json:"contact_id,omitempty"`
+	Name      string `json:"name"`
+	// Address is the E.164 number a new conversation can be addressed to, and
+	// is empty for a contact the phone reported without a dialable number.
+	Address string `json:"address,omitempty"`
+	// Formatted is the phone's own rendering of Address, for display only.
+	Formatted string `json:"formatted,omitempty"`
+	// Frequent marks the handful of contacts the phone ranks as most used.
+	Frequent bool `json:"frequent,omitempty"`
+}
+
+// ContactBook is the whole address book as one record, because the phone only
+// ever hands it over in full.
+type ContactBook struct {
+	Schema   int       `json:"schema"`
+	Contacts []Contact `json:"contacts"`
+	Updated  time.Time `json:"updated"`
+	// Stale means the phone could not be reached and these are the contacts
+	// from the last successful read.
+	Stale bool `json:"stale"`
+}
+
 type Conversation struct {
 	Schema       int           `json:"schema"`
 	ID           string        `json:"id"`
@@ -79,6 +106,7 @@ type Upload struct {
 type SendRequest struct {
 	Kind           string   `json:"kind,omitempty"`
 	Recipients     []string `json:"recipients,omitempty"`
+	GroupName      string   `json:"group_name,omitempty"`
 	AttachmentIDs  []string `json:"attachment_ids,omitempty"`
 	MessageID      string   `json:"message_id,omitempty"`
 	Emoji          string   `json:"emoji,omitempty"`
@@ -113,7 +141,7 @@ func (m Message) PreviewText() string {
 }
 
 func (r SendRequest) Equal(other SendRequest) bool {
-	return r.Kind == other.Kind && r.ConversationID == other.ConversationID && r.Text == other.Text && r.MessageID == other.MessageID && r.Emoji == other.Emoji && r.Remove == other.Remove && slices.Equal(r.Recipients, other.Recipients) && slices.Equal(r.AttachmentIDs, other.AttachmentIDs)
+	return r.Kind == other.Kind && r.GroupName == other.GroupName && r.ConversationID == other.ConversationID && r.Text == other.Text && r.MessageID == other.MessageID && r.Emoji == other.Emoji && r.Remove == other.Remove && slices.Equal(r.Recipients, other.Recipients) && slices.Equal(r.AttachmentIDs, other.AttachmentIDs)
 }
 
 type Outbox struct {

@@ -50,6 +50,7 @@ type Bridge struct {
 	reconnectDelay   time.Duration
 	historyWake      chan struct{}
 	typingSent       map[string]time.Time
+	contactsMu       sync.Mutex
 	mediaRequested   map[string]time.Time
 	Store            *store.Store
 	Hub              *Hub

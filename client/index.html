@@ -276,20 +276,39 @@
             <h1>New conversation</h1>
           </header>
           <form id="new-conversation-form" class="new-chat-form">
-            <label class="to-field">
+            <div class="to-field">
               <span>To:</span>
+              <div id="recipient-chips" class="recipient-chips"></div>
+              <label class="sr-only" for="recipients">Recipients</label>
               <input
                 id="recipients"
                 type="text"
                 inputmode="tel"
                 autocomplete="off"
-                placeholder="Phone numbers, e.g. +14155550100"
+                role="combobox"
+                aria-expanded="false"
+                aria-controls="contact-suggestions"
+                placeholder="Name or number"
+              />
+            </div>
+            <div
+              id="contact-suggestions"
+              class="contact-list"
+              role="listbox"
+              aria-label="Contacts"
+              hidden
+            ></div>
+            <label id="group-name-field" class="group-name" hidden>
+              <span>Group name</span>
+              <input
+                id="group-name"
+                type="text"
+                maxlength="100"
+                autocomplete="off"
+                placeholder="Optional"
               />
             </label>
-            <p class="hint">
-              International numbers separated by spaces or commas. Your phone
-              creates the conversation.
-            </p>
+            <p id="compose-hint" class="hint"></p>
             <div class="button-row">
               <button
                 id="cancel-conversation"
@@ -337,6 +356,9 @@
                 </button>
                 <button type="button" role="menuitem" id="load-full-history">
                   <svg><use href="#i-top" /></svg>Go to start of conversation
+                </button>
+                <button type="button" role="menuitem" id="open-people">
+                  <svg><use href="#i-group" /></svg>People in this conversation
                 </button>
                 <button type="button" role="menuitem" id="import-conversation">
                   <svg><use href="#i-history" /></svg>Import history from phone
@@ -552,6 +574,52 @@
       <div id="emoji-tabs" class="emoji-tabs"></div>
       <div id="emoji-grid" class="emoji-grid" aria-label="Emoji"></div>
       <p id="emoji-status" class="hint" role="status"></p>
+    </dialog>
+
+    <dialog id="people-dialog" class="dialog">
+      <header>
+        <h2 id="people-title">People</h2>
+        <button type="button" class="icon-button" data-close aria-label="Close">
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </header>
+      <div id="people-list" class="people-list"></div>
+      <section id="add-people" hidden>
+        <h3>Add people</h3>
+        <p class="hint">
+          Google Messages cannot change who is in a conversation. Adding someone
+          addresses a conversation to everyone, which opens this thread again if
+          the group already matches and otherwise starts a new one.
+        </p>
+        <div class="to-field">
+          <span>Add:</span>
+          <div id="add-chips" class="recipient-chips"></div>
+          <label class="sr-only" for="add-recipients">People to add</label>
+          <input
+            id="add-recipients"
+            type="text"
+            inputmode="tel"
+            autocomplete="off"
+            role="combobox"
+            aria-expanded="false"
+            aria-controls="add-suggestions"
+            placeholder="Name or number"
+          />
+        </div>
+        <div
+          id="add-suggestions"
+          class="contact-list"
+          role="listbox"
+          aria-label="Contacts"
+          hidden
+        ></div>
+        <div class="button-row">
+          <button id="add-people-submit" type="button" class="filled">
+            Start group with everyone
+          </button>
+        </div>
+        <p id="add-people-status" class="hint" role="status"></p>
+      </section>
     </dialog>
 
     <dialog id="history-dialog" class="dialog">

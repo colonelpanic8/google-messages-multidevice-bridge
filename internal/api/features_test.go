@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -270,6 +271,64 @@ func TestHistoryEndpointsValidateAndExposeDurableJobs(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			status, body := featureRequest(t, server, "POST", "/v1/history", "application/json", "", bytes.NewBufferString(test.body))
+			requireStatus(t, status, body, test.want)
+		})
+	}
+}
+
+func TestAddParticipantsAddressesEveryoneAlreadyInTheConversation(t *testing.T) {
+	b, server := fixture(t)
+	appendAPIRecord(t, b, "conversation", "c1", model.Conversation{
+		Schema: model.Schema,
+		ID:     "c1",
+		Name:   "Book club",
+		Participants: []model.Participant{
+			{ID: "me", Address: "+15550000000", IsMe: true},
+			{ID: "p1", Address: "+14155550100"},
+			{ID: "p2", Address: "+442071838750"},
+		},
+		Updated: time.Now().UTC(),
+	})
+	status, body := featureRequest(t, server, "POST", "/v1/conversations/c1/participants", "application/json", "add-key-00000001", bytes.NewBufferString(`{"recipients":["+15125550111","+14155550100"],"name":"Book club"}`))
+	requireStatus(t, status, body, http.StatusAccepted)
+	var out model.Outbox
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	// Everyone already in the conversation rides along, the owner does not, and
+	// naming someone twice adds them once.
+	want := []string{"+14155550100", "+15125550111", "+442071838750"}
+	if out.Request.Kind != "conversation" || out.Request.GroupName != "Book club" || !slices.Equal(out.Request.Recipients, want) {
+		t.Fatalf("participants outbox: %+v", out.Request)
+	}
+
+	status, body = featureRequest(t, server, "POST", "/v1/conversations/unknown/participants", "application/json", "add-key-00000002", bytes.NewBufferString(`{"recipients":["+15125550111"]}`))
+	requireStatus(t, status, body, http.StatusNotFound)
+
+	// A participant the phone reported without a number cannot be addressed, so
+	// the request is refused rather than silently dropping them from the group.
+	appendAPIRecord(t, b, "conversation", "c2", model.Conversation{
+		Schema:       model.Schema,
+		ID:           "c2",
+		Participants: []model.Participant{{ID: "me", IsMe: true}, {ID: "p3", Name: "No number"}},
+		Updated:      time.Now().UTC(),
+	})
+	status, body = featureRequest(t, server, "POST", "/v1/conversations/c2/participants", "application/json", "add-key-00000003", bytes.NewBufferString(`{"recipients":["+15125550111"]}`))
+	requireStatus(t, status, body, http.StatusBadRequest)
+}
+
+func TestGroupNameOnlyRidesAlongWithAGroup(t *testing.T) {
+	_, server := fixture(t)
+	for _, test := range []struct {
+		name, key, body string
+		want            int
+	}{
+		{name: "group", key: "group-name-0000001", body: `{"recipients":["+14155550100","+442071838750"],"name":"Book club"}`, want: http.StatusAccepted},
+		{name: "two party", key: "group-name-0000002", body: `{"recipients":["+14155550100"],"name":"Book club"}`, want: http.StatusBadRequest},
+		{name: "unnamed two party", key: "group-name-0000003", body: `{"recipients":["+14155550100"],"name":"  "}`, want: http.StatusAccepted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			status, body := featureRequest(t, server, "POST", "/v1/conversations", "application/json", test.key, bytes.NewBufferString(test.body))
 			requireStatus(t, status, body, test.want)
 		})
 	}

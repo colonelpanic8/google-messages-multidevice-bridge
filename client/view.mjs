@@ -446,3 +446,103 @@ export function importStatus(job, { ahead = 0, connected = true } = {}) {
     label: `Importing older messages from your phone…${progress}`,
   };
 }
+
+// --- Contacts and participants ---------------------------------------------
+
+// The phone reports a number the way it dials or displays it, so a query typed
+// with punctuation still has to reach the contact behind it.
+const digitsOf = (value) => (value || "").replace(/\D/g, "");
+
+// A contact is identified by the number it would address, because the address
+// book repeats one person per number and per SIM.
+export function contactKey(contact) {
+  return (
+    contact?.address ||
+    `${contact?.id || ""}:${contact?.formatted || contact?.name || ""}`
+  );
+}
+
+export function contactName(contact) {
+  return contact?.name || contact?.formatted || contact?.address || "Unknown";
+}
+
+// The second line of a picker row, empty when the first line is already the
+// number.
+export function contactDetail(contact) {
+  const number = contact?.formatted || contact?.address || "";
+  return contact?.name ? number : "";
+}
+
+// A number typed in full is a recipient in its own right, so someone who is not
+// in the address book is still reachable.
+export function typedRecipient(value) {
+  const text = (value || "").trim();
+  if (!/^\+[1-9]\d{6,14}$/.test(text)) return null;
+  return { id: "", name: "", address: text, formatted: text };
+}
+
+// Contacts to offer for what has been typed so far. An empty query offers the
+// address book as the bridge ordered it, which puts frequent contacts first.
+export function matchContacts(
+  contacts,
+  query,
+  { exclude = [], limit = 8 } = {},
+) {
+  const taken = new Set(exclude.map(contactKey));
+  const available = (contacts || []).filter(
+    (contact) => contact.address && !taken.has(contactKey(contact)),
+  );
+  const needle = (query || "").trim().toLowerCase();
+  if (!needle) return available.slice(0, limit);
+  const needleDigits = digitsOf(query);
+  const ranked = [];
+  for (const contact of available) {
+    const name = (contact.name || "").toLowerCase();
+    const number = digitsOf(contact.address || contact.formatted);
+    let rank = -1;
+    if (name.startsWith(needle)) rank = 0;
+    else if (name.split(/\s+/).some((word) => word.startsWith(needle)))
+      rank = 1;
+    else if (needleDigits && number.startsWith(needleDigits)) rank = 2;
+    else if (name.includes(needle)) rank = 3;
+    else if (needleDigits && number.includes(needleDigits)) rank = 4;
+    if (rank >= 0) ranked.push({ rank, contact });
+  }
+  return ranked
+    .sort((a, b) => a.rank - b.rank)
+    .slice(0, limit)
+    .map((entry) => entry.contact);
+}
+
+// Everyone in a conversation, with the owner last and named as themselves.
+export function participantList(conversation) {
+  const people = others(conversation).map((participant) => ({
+    id: participant.id,
+    name: participant.name || participant.address || participant.id,
+    detail: participant.name ? participant.address || "" : "",
+    isMe: false,
+  }));
+  const me = (conversation?.participants || []).find(
+    (participant) => participant.is_me,
+  );
+  if (me)
+    people.push({
+      id: me.id,
+      name: "You",
+      detail: me.address || "",
+      isMe: true,
+    });
+  return people;
+}
+
+// What the compose view says under the recipient field. Naming a group is only
+// offered once there is a group to name.
+export function composeHint(recipients, contactBook) {
+  if (recipients.length > 1)
+    return "Your phone creates the group. A name is only kept if it creates an RCS group.";
+  if (contactBook?.stale)
+    return "Showing contacts from the last time the phone was reachable.";
+  if (!contactBook?.contacts?.length)
+    return "Type international numbers such as +14155550100.";
+  return "Pick contacts, or type an international number such as +14155550100.";
+}

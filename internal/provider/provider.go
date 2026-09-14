@@ -39,7 +39,12 @@ type SendTarget struct {
 type Provider interface {
 	Conversations(context.Context) ([]Snapshot, error)
 	Messages(context.Context, string) ([]Snapshot, error)
-	CreateConversation(context.Context, []string) (Snapshot, error)
+	// Contacts reads the phone's address book. It is read-only and safe to
+	// repeat.
+	Contacts(context.Context) ([]model.Contact, error)
+	// CreateConversation addresses a conversation to recipients, naming it when
+	// the phone has to create an RCS group for them.
+	CreateConversation(context.Context, []string, string) (Snapshot, error)
 	React(context.Context, SendTarget, string, string, bool) error
 	Typing(context.Context, SendTarget) error
 	Upload(context.Context, []byte, string, string) ([]byte, error)
