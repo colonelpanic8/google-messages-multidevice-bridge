@@ -92,3 +92,19 @@ export function mergeMessages(existing, page, cursor, updates) {
   }
   return [...records.values()];
 }
+
+// Pages backwards until there is nothing older, `cancelled` says to stop, or a
+// page hands back the cursor it was given, which would otherwise spin forever.
+export async function walkOlder(
+  fetchPage,
+  { before, cancelled = () => false, onPage } = {},
+) {
+  let cursor = before || "";
+  while (cursor && !cancelled()) {
+    const next = (await fetchPage(cursor)) || "";
+    if (next === cursor) break;
+    cursor = next;
+    onPage?.(cursor);
+  }
+  return cursor;
+}

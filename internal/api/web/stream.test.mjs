@@ -8,6 +8,7 @@ import {
   newRequest,
   parseRecipients,
   validateAttachments,
+  walkOlder,
 } from "./stream.mjs";
 
 test("SSE parser handles split frames, comments, and multiple events", () => {
@@ -99,4 +100,44 @@ test("captions are queued after attachments as separate requests", () => {
   assert.equal(splitRequests("c1", "   ", ["upload-1"]).length, 1);
   assert.equal(splitRequests("c1", "hi").length, 1);
   assert.equal(splitRequests("c1", "").length, 0);
+});
+
+test("paging to the start of a thread stops at the oldest page", async () => {
+  const pages = { c: "b", b: "a", a: "" };
+  const seen = [];
+  assert.equal(
+    await walkOlder(
+      async (before) => {
+        seen.push(before);
+        return pages[before];
+      },
+      { before: "c" },
+    ),
+    "",
+  );
+  assert.deepEqual(seen, ["c", "b", "a"]);
+});
+test("paging stops when cancelled or when a page repeats its cursor", async () => {
+  const seen = [];
+  await walkOlder(
+    async (before) => {
+      seen.push(before);
+      return "b";
+    },
+    { before: "c", cancelled: () => seen.length >= 3 },
+  );
+  assert.deepEqual(seen, ["c", "b"]);
+
+  const stuck = [];
+  assert.equal(
+    await walkOlder(
+      async (before) => {
+        stuck.push(before);
+        return before;
+      },
+      { before: "c" },
+    ),
+    "c",
+  );
+  assert.deepEqual(stuck, ["c"]);
 });
