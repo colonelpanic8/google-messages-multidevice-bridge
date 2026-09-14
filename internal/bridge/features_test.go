@@ -23,7 +23,7 @@ func TestCreateConversationIsDurableAndNeverRepeatedAfterAmbiguousResult(t *test
 			t.Fatal(err)
 		}
 		calls := 0
-		b.setProvider(&fakeProvider{create: func(context.Context, []string) (provider.Snapshot, error) {
+		b.setProvider(&fakeProvider{create: func(context.Context, []string, string) (provider.Snapshot, error) {
 			calls++
 			stored, err := b.Store.Outbox(o.ID)
 			if err != nil || stored.State != "sending" {

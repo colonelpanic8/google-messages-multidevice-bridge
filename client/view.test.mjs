@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  contactDetail,
+  contactKey,
+  contactName,
   displayName,
   filterConversations,
   importStatus,
@@ -8,8 +11,11 @@ import {
   layoutThread,
   linkify,
   listTime,
+  matchContacts,
+  participantList,
   previewLine,
   queuePosition,
+  typedRecipient,
   reactedByMe,
   reactionNames,
   reactionTitle,
@@ -312,4 +318,75 @@ test("import status stays silent only once the conversation is fully imported", 
     detail: "Phone history unavailable; will retry",
   });
   assert.match(retrying.label, /will retry/);
+});
+
+const addressBook = [
+  { id: "p1", name: "Ada Lovelace", address: "+14155550100", frequent: true },
+  { id: "p2", name: "Alan Turing", address: "+442071838750" },
+  { id: "p3", name: "", address: "+15125550111", formatted: "(512) 555-0111" },
+  { id: "p4", name: "No Number", address: "" },
+];
+
+test("contacts match by name, by word, and by the digits of a number", () => {
+  assert.deepEqual(
+    matchContacts(addressBook, "ada").map((c) => c.id),
+    ["p1"],
+  );
+  assert.deepEqual(
+    matchContacts(addressBook, "lovelace").map((c) => c.id),
+    ["p1"],
+  );
+  assert.deepEqual(
+    matchContacts(addressBook, "(512) 555").map((c) => c.id),
+    ["p3"],
+  );
+  // A name prefix outranks a match buried in the middle of another name.
+  assert.deepEqual(
+    matchContacts(addressBook, "a").map((c) => c.id),
+    ["p1", "p2"],
+  );
+});
+
+test("the picker offers only contacts that can be addressed", () => {
+  assert.ok(!matchContacts(addressBook, "").some((c) => c.id === "p4"));
+  assert.deepEqual(
+    matchContacts(addressBook, "", { exclude: [addressBook[0]] }).map(
+      (c) => c.id,
+    ),
+    ["p2", "p3"],
+  );
+});
+
+test("a number typed in full is a recipient of its own", () => {
+  assert.equal(typedRecipient(" +14155550100 ")?.address, "+14155550100");
+  assert.equal(typedRecipient("4155550100"), null);
+  assert.equal(typedRecipient("+1"), null);
+});
+
+test("a contact reads as its name over its number, and is keyed by number", () => {
+  assert.equal(contactName(addressBook[0]), "Ada Lovelace");
+  assert.equal(contactDetail(addressBook[0]), "+14155550100");
+  // A contact with no name already shows its number, so the second line stays
+  // empty rather than repeating it.
+  assert.equal(contactName(addressBook[2]), "(512) 555-0111");
+  assert.equal(contactDetail(addressBook[2]), "");
+  assert.equal(contactKey(addressBook[0]), "+14155550100");
+});
+
+test("a group lists everyone with the owner last", () => {
+  const conversation = {
+    participants: [
+      { id: "me", name: "Me", address: "+15550000000", is_me: true },
+      { id: "a", name: "Ada", address: "+14155550100", is_me: false },
+      { id: "b", name: "", address: "+442071838750", is_me: false },
+    ],
+  };
+  assert.deepEqual(
+    participantList(conversation).map((p) => [p.name, p.detail, p.isMe]),
+    [
+      ["Ada", "+14155550100", false],
+      ["+442071838750", "", false],
+      ["You", "+15550000000", true],
+    ],
+  );
 });

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,8 @@ var ErrInvalidFolder = errors.New("invalid conversation folder")
 
 type googleClient interface {
 	ListConversations(context.Context, *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error)
+	ListContacts(context.Context) (*gmproto.ListContactsResponse, error)
+	ListTopContacts(context.Context) (*gmproto.ListTopContactsResponse, error)
 	FetchMessages(context.Context, string, int64, *gmproto.Cursor) (*gmproto.ListMessagesResponse, error)
 	GetOrCreateConversation(context.Context, *gmproto.GetOrCreateConversationRequest) (*gmproto.GetOrCreateConversationResponse, error)
 	GetConversation(context.Context, string) (*gmproto.Conversation, error)
@@ -274,7 +277,66 @@ func (g *Google) ConversationPage(ctx context.Context, folder string, cursorData
 	return out, next, nil
 }
 
-func (g *Google) CreateConversation(ctx context.Context, recipients []string) (Snapshot, error) {
+// e164 is the address form a conversation can be created for; the phone also
+// reports numbers as it would dial or display them.
+var e164 = regexp.MustCompile(`^\+[1-9][0-9]{6,14}$`)
+
+// contactAddress picks the one form of a contact's number that a new
+// conversation can be addressed to, and its display form.
+func contactAddress(number *gmproto.ContactNumber) (address, formatted string) {
+	formatted = number.GetFormattedNumber()
+	for _, candidate := range []string{number.GetNumber(), number.GetNumber2(), formatted} {
+		if e164.MatchString(candidate) {
+			return candidate, formatted
+		}
+	}
+	if formatted == "" {
+		formatted = number.GetNumber()
+	}
+	return "", formatted
+}
+
+func (g *Google) Contacts(ctx context.Context) ([]model.Contact, error) {
+	res, err := g.Client.ListContacts(ctx)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	// Ranking is a nicety, so a phone that will not produce it still yields an
+	// address book.
+	frequent := make(map[string]bool)
+	if top, err := g.Client.ListTopContacts(ctx); err == nil {
+		for _, contact := range top.GetContacts() {
+			frequent[contact.GetParticipantID()] = true
+		}
+	}
+	contacts := make([]model.Contact, 0, len(res.GetContacts()))
+	seen := make(map[string]bool)
+	for _, contact := range res.GetContacts() {
+		address, formatted := contactAddress(contact.GetNumber())
+		name := contact.GetName()
+		if name == "" {
+			name = contact.GetNameAgain()
+		}
+		// The phone repeats a contact per number; the key keeps every distinct
+		// number without duplicating one of them.
+		key := contact.GetParticipantID() + "\x00" + address + "\x00" + formatted
+		if seen[key] || (name == "" && address == "" && formatted == "") {
+			continue
+		}
+		seen[key] = true
+		contacts = append(contacts, model.Contact{
+			ID:        contact.GetParticipantID(),
+			ContactID: contact.GetContactID(),
+			Name:      name,
+			Address:   address,
+			Formatted: formatted,
+			Frequent:  frequent[contact.GetParticipantID()],
+		})
+	}
+	return contacts, nil
+}
+
+func (g *Google) CreateConversation(ctx context.Context, recipients []string, groupName string) (Snapshot, error) {
 	if len(recipients) == 0 {
 		return Snapshot{}, ErrRejected
 	}
@@ -291,7 +353,7 @@ func (g *Google) CreateConversation(ctx context.Context, recipients []string) (S
 		return Snapshot{}, ErrAmbiguous
 	}
 	if res.GetStatus() == gmproto.GetOrCreateConversationResponse_CREATE_RCS {
-		name, create := "", true
+		name, create := groupName, true
 		req.RCSGroupName, req.CreateRCSGroup = &name, &create
 		res, err = g.Client.GetOrCreateConversation(ctx, req)
 		if err != nil {

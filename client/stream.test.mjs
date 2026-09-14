@@ -6,7 +6,6 @@ import {
   newConversationRequest,
   newReactionRequest,
   newRequest,
-  parseRecipients,
   validateAttachments,
   walkOlder,
 } from "./stream.mjs";
@@ -62,7 +61,16 @@ test("outgoing request helpers snapshot bodies for idempotent retries", () => {
 
   assert.deepEqual(newConversationRequest(["+14155550100"]).body, {
     recipients: ["+14155550100"],
+    name: "",
   });
+  assert.deepEqual(
+    newConversationRequest(["+14155550100", "+442071838750"], " Book club ")
+      .body,
+    {
+      recipients: ["+14155550100", "+442071838750"],
+      name: "Book club",
+    },
+  );
   assert.deepEqual(newReactionRequest("message-1", "👍").body, {
     message_id: "message-1",
     emoji: "👍",
@@ -70,12 +78,7 @@ test("outgoing request helpers snapshot bodies for idempotent retries", () => {
   });
 });
 
-test("recipient and attachment limits are checked before network activity", () => {
-  assert.deepEqual(
-    parseRecipients("+14155550100, +442071838750 +14155550100"),
-    ["+14155550100", "+442071838750"],
-  );
-  assert.throws(() => parseRecipients("415-555-0100"), /international/);
+test("attachment limits are checked before network activity", () => {
   assert.equal(validateAttachments([{ size: 1024 }, { size: 2048 }]), 3072);
   assert.throws(
     () => validateAttachments(Array.from({ length: 11 }, () => ({ size: 1 }))),

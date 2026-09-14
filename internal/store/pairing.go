@@ -232,6 +232,11 @@ func (s *Store) SavePairedSession(data []byte) error {
 		if err := meta.Delete([]byte(pairingAttemptKey)); err != nil {
 			return err
 		}
+		// The address book belongs to the phone that was paired, not to the one
+		// taking its place.
+		if err := meta.Delete([]byte("contacts")); err != nil {
+			return err
+		}
 		if err := s.cancelQueuedForPairing(tx); err != nil {
 			return err
 		}

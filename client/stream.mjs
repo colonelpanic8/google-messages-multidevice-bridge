@@ -45,10 +45,20 @@ export function splitRequests(conversationID, text, attachmentIDs = []) {
   return requests;
 }
 
-export function newConversationRequest(recipients) {
+export function newConversationRequest(recipients, name = "") {
   return {
     key: idempotencyKey(),
-    body: { recipients: [...recipients] },
+    body: { recipients: [...recipients], name: name.trim() },
+  };
+}
+
+// Google Messages cannot change who is in a conversation, so the bridge
+// addresses one to everyone instead and the phone decides whether that is the
+// thread already open or a new group.
+export function addParticipantsRequest(recipients, name = "") {
+  return {
+    key: idempotencyKey(),
+    body: { recipients: [...recipients], name: name.trim() },
   };
 }
 
@@ -57,19 +67,6 @@ export function newReactionRequest(messageID, emoji, remove = false) {
     key: idempotencyKey(),
     body: { message_id: messageID, emoji, remove },
   };
-}
-
-export function parseRecipients(value) {
-  const recipients = value
-    .split(/[\s,;]+/)
-    .map((recipient) => recipient.trim())
-    .filter(Boolean);
-  if (
-    !recipients.length ||
-    recipients.some((recipient) => !/^\+[1-9]\d{1,14}$/.test(recipient))
-  )
-    throw new Error("Use international phone numbers such as +14155550100.");
-  return [...new Set(recipients)];
 }
 
 export function validateAttachments(files) {

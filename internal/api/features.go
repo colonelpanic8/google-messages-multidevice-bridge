@@ -23,14 +23,54 @@ func registerFeatures(mux *http.ServeMux, b *bridge.Bridge) {
 		}
 		writeJSON(w, out)
 	}
+	mux.HandleFunc("GET /v1/contacts", func(w http.ResponseWriter, r *http.Request) {
+		book, err := b.Contacts(r.Context(), r.URL.Query().Get("refresh") == "1")
+		if err != nil {
+			apiError(w, err)
+			return
+		}
+		writeJSON(w, book)
+	})
 	mux.HandleFunc("POST /v1/conversations", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Recipients []string `json:"recipients"`
+			Name       string   `json:"name"`
 		}
 		if !decode(w, r, &req) {
 			return
 		}
-		queue(w, r, model.SendRequest{Kind: "conversation", Recipients: req.Recipients})
+		queue(w, r, model.SendRequest{Kind: "conversation", Recipients: req.Recipients, GroupName: req.Name})
+	})
+	// Google Messages has no way to change who is in an existing conversation,
+	// so adding people addresses a conversation to everyone instead: the phone
+	// hands back the existing thread when the set already matches, and forms a
+	// group when it does not.
+	mux.HandleFunc("POST /v1/conversations/{id}/participants", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Recipients []string `json:"recipients"`
+			Name       string   `json:"name"`
+		}
+		if !decode(w, r, &req) {
+			return
+		}
+		existing, err := b.ConversationRecipients(r.PathValue("id"))
+		if err != nil {
+			apiError(w, err)
+			return
+		}
+		// Naming someone already in the conversation is not an error; it just
+		// does not add anyone.
+		seen := make(map[string]bool, len(existing))
+		for _, recipient := range existing {
+			seen[recipient] = true
+		}
+		for _, recipient := range req.Recipients {
+			if !seen[recipient] {
+				seen[recipient] = true
+				existing = append(existing, recipient)
+			}
+		}
+		queue(w, r, model.SendRequest{Kind: "conversation", Recipients: existing, GroupName: req.Name})
 	})
 	mux.HandleFunc("POST /v1/conversations/{id}/reactions", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

@@ -30,6 +30,12 @@ func validateRequest(req *model.SendRequest) error {
 		if req.ConversationID != "" || req.Text != "" || len(req.AttachmentIDs) > 0 || req.MessageID != "" || req.Emoji != "" || req.Remove || len(req.Recipients) < 1 || len(req.Recipients) > 20 {
 			return ErrInvalid
 		}
+		req.GroupName = strings.TrimSpace(req.GroupName)
+		// Only a group gets a name, and only when the phone creates it; a name
+		// on a two-party conversation would be silently dropped.
+		if req.GroupName != "" && (len(req.Recipients) < 2 || len(req.GroupName) > 100 || !utf8.ValidString(req.GroupName) || strings.ContainsAny(req.GroupName, "\r\n\x00")) {
+			return ErrInvalid
+		}
 		req.Recipients = append([]string(nil), req.Recipients...)
 		sort.Strings(req.Recipients)
 		for i, number := range req.Recipients {
@@ -39,7 +45,7 @@ func validateRequest(req *model.SendRequest) error {
 		}
 		return nil
 	}
-	if req.ConversationID == "" || len(req.ConversationID) > 256 || len(req.Recipients) > 0 {
+	if req.ConversationID == "" || len(req.ConversationID) > 256 || len(req.Recipients) > 0 || req.GroupName != "" {
 		return ErrInvalid
 	}
 	if req.Kind == "reaction" {

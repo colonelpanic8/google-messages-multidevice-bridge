@@ -298,7 +298,7 @@ func (b *Bridge) sendOne(ctx context.Context) (bool, error) {
 		switch o.Request.Kind {
 		case "conversation":
 			var snap provider.Snapshot
-			snap, err = p.CreateConversation(callCtx, o.Request.Recipients)
+			snap, err = p.CreateConversation(callCtx, o.Request.Recipients, o.Request.GroupName)
 			if err == nil {
 				cancel()
 				if err = b.Store.FinishConversation(o.ID, snap.Event, snap.Private, watermark); err != nil {

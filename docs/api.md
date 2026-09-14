@@ -26,6 +26,8 @@ commit time. Unknown normalized Google status strings must remain displayable.
 | `POST /v1/pairing/cancel`                                           | Cancel the active pairing attempt and return its state                                         |
 | `GET /v1/conversations`                                             | Latest stored conversations, newest first, and snapshot `cursor`                               |
 | `POST /v1/conversations`                                            | Queue durable conversation creation from E.164 recipients                                      |
+| `POST /v1/conversations/{id}/participants`                          | Queue a conversation addressed to everyone already in `{id}` plus the named recipients         |
+| `GET /v1/contacts?refresh=1`                                        | The phone's address book, read again only when the stored copy has aged out or `refresh=1`     |
 | `GET /v1/conversations/{id}/messages?limit=100&before={message_id}` | Latest locally stored message snapshots, newest first; limit 1–500                             |
 | `POST /v1/conversations/{id}/reactions`                             | Queue a durable reaction add/remove                                                            |
 | `POST /v1/conversations/{id}/typing`                                | Send an immediate, non-durable typing update; returns 204                                      |
@@ -175,15 +177,47 @@ its own key. The web client does this automatically.
 ### Conversation creation
 
 ```json
-{ "recipients": ["+14155550100", "+442071838750"] }
+{ "recipients": ["+14155550100", "+442071838750"], "name": "Book club" }
 ```
 
 One to twenty unique E.164 phone numbers are required. Recipients are sorted before
-idempotency comparison. Conversation creation sends no message. If Google first
-responds `CREATE_RCS`, the provider performs one explicit second confirmation with
-`CreateRCSGroup=true` and an empty group name, within the same durable attempt. Any
-transport error or uncertain response is `ambiguous`; neither request is replayed
-automatically.
+idempotency comparison. Conversation creation sends no message. `name` is optional,
+at most 100 characters, and is rejected for fewer than two recipients because only a
+group can carry one. If Google first responds `CREATE_RCS`, the provider performs one
+explicit second confirmation with `CreateRCSGroup=true` and that name, within the same
+durable attempt; the name is only kept when Google creates an RCS group. Any transport
+error or uncertain response is `ambiguous`; neither request is replayed automatically.
+
+### Adding people to a conversation
+
+```json
+{ "recipients": ["+15125550111"], "name": "Book club" }
+```
+
+Google Messages exposes no way to change who is in an existing conversation:
+`ADD_PARTICIPANT_TO_RCS_GROUP` and `REMOVE_PARTICIPANT_FROM_RCS_GROUP` are action
+codes with no request schema in the protocol the bridge speaks. So
+`POST /v1/conversations/{id}/participants` queues an ordinary conversation creation
+addressed to everyone already in `{id}` plus the named recipients. Google returns the
+existing conversation when that set already matches one, and otherwise creates a new
+group. The owner is dropped from the set, recipients already present are not repeated,
+and a conversation holding a participant with no E.164 address is rejected with 400
+rather than silently leaving that person out. Everything else — validation, the outbox,
+and idempotency — is conversation creation.
+
+### Contacts
+
+`GET /v1/contacts` returns `{"schema":1,"contacts":[…],"updated":"…","stale":false}`.
+Each contact carries `id`, `name`, the `address` a conversation can be created for,
+the phone's own `formatted` rendering, and `frequent` for the handful the phone ranks
+as most used. A contact the phone reports without an E.164 number keeps its name and
+`formatted` but has no `address`, and cannot be addressed.
+
+The address book is read from the phone at most every 15 minutes unless `refresh=1`
+asks for a fresh read, and the last successful read is stored encrypted so completing
+a recipient still works across restarts. A read that cannot reach the phone returns
+the stored copy with `stale:true`; with no stored copy it returns 503. Re-pairing
+discards the address book, which belonged to the phone being replaced.
 
 ### Reaction
 

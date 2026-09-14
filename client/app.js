@@ -3,13 +3,17 @@ import {
   mergeMessages,
   walkOlder,
   newConversationRequest,
+  addParticipantsRequest,
   newReactionRequest,
   splitRequests,
-  parseRecipients,
   validateAttachments,
 } from "/stream.mjs";
 import {
   avatarColor,
+  composeHint,
+  contactDetail,
+  contactKey,
+  contactName,
   displayName,
   filterConversations,
   formatSize,
@@ -19,8 +23,10 @@ import {
   layoutThread,
   linkify,
   listTime,
+  matchContacts,
   messageStatus,
   others,
+  participantList,
   outboxAttachmentCount,
   outboxStatus,
   outboxText,
@@ -31,6 +37,7 @@ import {
   sortConversations,
   summarizeHistory,
   threadOutbox,
+  typedRecipient,
 } from "/view.mjs";
 
 const $ = (id) => document.getElementById(id);
@@ -83,6 +90,12 @@ let pairingState = {},
   pairingPoll,
   pairingPanelOpen = false;
 let pendingConversationFromLink = "";
+let contactBook = { contacts: [], stale: false };
+let contactsLoading;
+// Set while a conversation request is in flight or waiting to be retried, when
+// its idempotency key is already bound to the recipients that were submitted.
+let composeLocked = false;
+let peopleConversation = "";
 // Re-post the browser's subscription once per unlock so a bridge that lost its
 // database, or a subscription the browser rotated, heals without user action.
 let pushSynced = false;
@@ -178,6 +191,7 @@ function render() {
   if (parts.has("list")) renderList();
   if (parts.has("thread")) renderThread();
   if (parts.has("compose")) renderCompose();
+  if (parts.has("newchat")) renderNewChat();
   if (parts.has("history")) renderHistory();
 }
 
@@ -939,6 +953,7 @@ function renderThread() {
   $("new-chat").hidden = !composing;
   $("thread").hidden = !conversation || composing;
   document.body.classList.toggle("thread-open", !!conversation || composing);
+  if ($("people-dialog").open) renderPeople();
   if (!conversation) return;
   fillAvatar($("thread-avatar"), conversation);
   $("thread-title").textContent = displayName(conversation);
@@ -1112,6 +1127,220 @@ function renderImportStatus(conversation) {
     action.disabled = conversation.read_only || importing > 0;
   }
   return state;
+}
+
+// --- Contacts and recipient picking ----------------------------------------
+
+async function loadContacts({ refresh = false } = {}) {
+  if (contactsLoading) return contactsLoading;
+  const requestGeneration = generation;
+  contactsLoading = (async () => {
+    try {
+      const book = await request(`/v1/contacts${refresh ? "?refresh=1" : ""}`);
+      if (requestGeneration !== generation) return;
+      contactBook = {
+        contacts: book?.contacts || [],
+        stale: !!book?.stale,
+        updated: book?.updated || "",
+      };
+      invalidate("newchat");
+      if ($("people-dialog").open) renderPeople();
+    } catch {
+      // A phone that has never been read leaves the picker to typed numbers,
+      // which still start a conversation.
+    } finally {
+      contactsLoading = undefined;
+    }
+  })();
+  return contactsLoading;
+}
+
+// One recipient picker: chips for who is chosen and a list completing what is
+// typed from the address book. The compose view and the group's Add people
+// section are the same control over different fields.
+function createPicker({ chips, input, list, onChange, excluded }) {
+  let chosen = [];
+  let active = -1;
+  let locked = false;
+  const suggestions = () => {
+    const query = $(input).value;
+    const typed = typedRecipient(query);
+    const matches = matchContacts(contactBook.contacts, query, {
+      exclude: [...chosen, ...(excluded?.() || [])],
+    });
+    if (typed && !matches.some((match) => match.address === typed.address))
+      return [typed, ...matches];
+    return matches;
+  };
+  const choose = (contact) => {
+    if (
+      locked ||
+      chosen.some((entry) => contactKey(entry) === contactKey(contact))
+    )
+      return;
+    chosen = [...chosen, contact];
+    $(input).value = "";
+    active = -1;
+    picker.render();
+    // Choosing from the list leaves the field ready for the next recipient
+    // instead of leaving focus on a suggestion that is no longer there.
+    $(input).focus();
+    onChange?.();
+  };
+  const remove = (contact) => {
+    if (locked) return;
+    chosen = chosen.filter(
+      (entry) => contactKey(entry) !== contactKey(contact),
+    );
+    picker.render();
+    $(input).focus();
+    onChange?.();
+  };
+  const picker = {
+    get chosen() {
+      return chosen;
+    },
+    addresses: () => chosen.map((contact) => contact.address),
+    set(contacts) {
+      chosen = [...contacts];
+      active = -1;
+      picker.render();
+    },
+    lock(value) {
+      locked = value;
+      $(input).disabled = value;
+      picker.render();
+    },
+    clear() {
+      chosen = [];
+      active = -1;
+      locked = false;
+      $(input).value = "";
+      $(input).disabled = false;
+      picker.render();
+    },
+    // The typed-but-not-yet-chosen number counts as a recipient, so a number
+    // typed in full never has to be confirmed before submitting.
+    recipients() {
+      const addresses = picker.addresses();
+      const typed = typedRecipient($(input).value);
+      if (typed && !addresses.includes(typed.address))
+        addresses.push(typed.address);
+      return addresses;
+    },
+    render() {
+      const chipsNode = $(chips);
+      chipsNode.replaceChildren();
+      for (const contact of chosen) {
+        const chip = el("span", undefined, "recipient-chip");
+        chip.append(el("span", contactName(contact)));
+        const close = button("", "chip-remove", () => remove(contact));
+        close.append(icon("close"));
+        close.setAttribute("aria-label", `Remove ${contactName(contact)}`);
+        close.disabled = locked;
+        chip.append(close);
+        chipsNode.append(chip);
+      }
+      const listNode = $(list);
+      const options = locked ? [] : suggestions();
+      if (active >= options.length) active = options.length - 1;
+      listNode.replaceChildren();
+      for (const [index, contact] of options.entries()) {
+        const row = button("", "contact-row", () => choose(contact));
+        row.setAttribute("role", "option");
+        row.setAttribute("aria-selected", String(index === active));
+        if (index === active) row.classList.add("active");
+        const avatar = el("span", initials(contactName(contact)), "avatar");
+        avatar.style.background = avatarColor(contactName(contact));
+        if (!avatar.textContent) avatar.append(icon("person"));
+        row.append(avatar);
+        const text = el("span", undefined, "contact-text");
+        text.append(el("span", contactName(contact), "name"));
+        const detail = contactDetail(contact);
+        if (detail) text.append(el("span", detail, "detail"));
+        row.append(text);
+        listNode.append(row);
+      }
+      listNode.hidden = !options.length;
+      $(input).setAttribute("aria-expanded", String(!!options.length));
+    },
+    onInput() {
+      active = -1;
+      picker.render();
+      onChange?.();
+    },
+    onKeyDown(event) {
+      const options = suggestions();
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        if (!options.length) return;
+        event.preventDefault();
+        active += event.key === "ArrowDown" ? 1 : -1;
+        if (active >= options.length) active = -1;
+        if (active < -1) active = options.length - 1;
+        picker.render();
+        return;
+      }
+      if (event.key === "Enter") {
+        if (active >= 0 && options[active]) {
+          event.preventDefault();
+          choose(options[active]);
+        } else if (options.length === 1 && typedRecipient($(input).value)) {
+          event.preventDefault();
+          choose(options[0]);
+        }
+        return;
+      }
+      // A separator ends a typed number the way a comma does in a mail client.
+      if ([",", ";", " "].includes(event.key)) {
+        const typed = typedRecipient($(input).value);
+        if (typed) {
+          event.preventDefault();
+          choose(typed);
+        }
+        return;
+      }
+      if (event.key === "Escape" && options.length) {
+        event.stopPropagation();
+        active = -1;
+        $(input).value = "";
+        picker.render();
+        onChange?.();
+        return;
+      }
+      if (event.key === "Backspace" && !$(input).value && chosen.length)
+        remove(chosen[chosen.length - 1]);
+    },
+  };
+  $(input).oninput = () => picker.onInput();
+  $(input).onkeydown = (event) => picker.onKeyDown(event);
+  return picker;
+}
+
+const composePicker = createPicker({
+  chips: "recipient-chips",
+  input: "recipients",
+  list: "contact-suggestions",
+  onChange: () => invalidate("newchat"),
+});
+const addPicker = createPicker({
+  chips: "add-chips",
+  input: "add-recipients",
+  list: "add-suggestions",
+  // Someone already in the conversation is not someone to add to it.
+  excluded: () => others(conversations.get(peopleConversation) || {}),
+  onChange: () => renderAddPeople(),
+});
+
+function renderNewChat() {
+  // A number typed but not yet turned into a chip is already a recipient, so
+  // the group it would make is named from the same count the request uses.
+  const recipients = composePicker.recipients();
+  $("group-name-field").hidden = recipients.length < 2;
+  $("group-name").disabled = composeLocked;
+  $("compose-hint").textContent = composeHint(recipients, contactBook);
+  $("create-conversation").disabled =
+    creatingConversation || !recipients.length;
+  composePicker.render();
 }
 
 function renderSelectedAttachments() {
@@ -1521,14 +1750,19 @@ function maybeSelectCreatedConversation() {
     tracked &&
     ["canceled", "rejected", "ambiguous"].includes(tracked.state)
   ) {
-    const recipients = tracked.request?.recipients || [];
-    $("recipients").value = recipients.join(", ");
+    // A request that did not produce a conversation comes back as a filled-in
+    // compose view, so the recipients it was for can be reviewed and resubmitted.
+    $("people-dialog").close();
+    composeLocked = false;
+    composePicker.lock(false);
+    composePicker.set(recipientsOf(tracked.request?.recipients || []));
+    $("group-name").value = tracked.request?.group_name || "";
     composing = true;
     $("conversation-status").textContent = `${tracked.state}: ${
       tracked.detail || "Conversation was not created."
     } Review the recipients before submitting a new request.`;
     createdConversation = undefined;
-    invalidate("thread");
+    invalidate("thread", "newchat");
     return;
   }
   const conversationID =
@@ -1548,26 +1782,50 @@ function maybeSelectCreatedConversation() {
   queueMicrotask(() => {
     createdConversation = undefined;
     $("conversation-status").textContent = "";
+    resetCompose();
     void select(conversationID);
   });
 }
 const normalizeOutbox = (response) => response?.outbox || response;
+
+// Rebuilds picker entries from bare addresses, naming them from the address
+// book so a resubmitted request still reads as people rather than numbers.
+function recipientsOf(addresses) {
+  return addresses.map(
+    (address) =>
+      contactBook.contacts.find((contact) => contact.address === address) ||
+      typedRecipient(address) || { id: "", name: "", address },
+  );
+}
+function resetCompose() {
+  pendingConversation = undefined;
+  composeLocked = false;
+  composePicker.clear();
+  $("group-name").value = "";
+  $("conversation-status").textContent = "";
+  $("create-conversation").textContent = "Create";
+  invalidate("newchat");
+}
 async function createConversation() {
   if (!pendingConversation) {
-    try {
-      pendingConversation = newConversationRequest(
-        parseRecipients($("recipients").value),
-      );
-    } catch (error) {
-      $("conversation-status").textContent = error.message;
+    const recipients = composePicker.recipients();
+    if (!recipients.length) {
+      $("conversation-status").textContent =
+        "Choose a contact, or type an international number such as +14155550100.";
       return;
     }
+    pendingConversation = newConversationRequest(
+      recipients,
+      recipients.length > 1 ? $("group-name").value : "",
+    );
   }
   const pending = pendingConversation;
   creatingConversation = true;
-  $("recipients").disabled = true;
+  composeLocked = true;
+  composePicker.lock(true);
   $("create-conversation").disabled = true;
   $("conversation-status").textContent = "Requesting conversation…";
+  invalidate("newchat");
   try {
     const result = normalizeOutbox(
       await request("/v1/conversations", {
@@ -1582,7 +1840,6 @@ async function createConversation() {
       outboxID: result.id,
       conversationID: result.conversation_id || "",
     };
-    $("recipients").value = "";
     $("conversation-status").textContent =
       "Conversation request accepted. Waiting for your phone…";
     maybeSelectCreatedConversation();
@@ -1593,13 +1850,14 @@ async function createConversation() {
   } finally {
     creatingConversation = false;
     if (pending === pendingConversation) {
-      $("recipients").disabled = true;
       $("create-conversation").textContent = "Retry";
     } else {
-      $("recipients").disabled = false;
+      composeLocked = false;
+      composePicker.lock(false);
       $("create-conversation").textContent = "Create";
     }
     $("create-conversation").disabled = false;
+    invalidate("newchat");
   }
 }
 
@@ -2044,8 +2302,10 @@ function clearPrivateUI() {
     "pairing-ticket",
   ])
     $(id).value = "";
-  $("recipients").disabled = false;
-  $("create-conversation").textContent = "Create";
+  contactBook = { contacts: [], stale: false };
+  peopleConversation = "";
+  addPicker.clear();
+  resetCompose();
   $("pairing-fields").hidden = true;
   $("connection-actions").hidden = true;
   $("banner").hidden = true;
@@ -2172,15 +2432,12 @@ $("new-conversation").onclick = () => {
   }
   stashDraft();
   composing = true;
-  invalidate("thread");
+  invalidate("thread", "newchat");
+  void loadContacts();
   $("recipients").focus();
 };
 $("cancel-conversation").onclick = () => {
-  pendingConversation = undefined;
-  $("recipients").disabled = false;
-  $("recipients").value = "";
-  $("conversation-status").textContent = "";
-  $("create-conversation").textContent = "Create";
+  resetCompose();
   composing = false;
   invalidate("thread");
 };
@@ -2238,6 +2495,103 @@ $("import-all").onclick = async () => {
   );
   invalidate("history", "thread");
 };
+// --- People in a conversation ----------------------------------------------
+
+function renderAddPeople() {
+  const conversation = conversations.get(peopleConversation);
+  const chosen = addPicker.recipients();
+  $("add-people-submit").disabled = !chosen.length;
+  // Everyone already here plus everyone chosen is what the phone is asked for,
+  // so the button says which of the two outcomes that is.
+  const total = others(conversation || {}).length + chosen.length;
+  $("add-people-submit").textContent =
+    total > 1 ? "Start group with everyone" : "Start conversation";
+  addPicker.render();
+}
+function renderPeople() {
+  const conversation = conversations.get(peopleConversation);
+  if (!conversation) {
+    $("people-dialog").close();
+    return;
+  }
+  $("people-title").textContent = isGroup(conversation)
+    ? displayName(conversation)
+    : "People";
+  const list = $("people-list");
+  list.replaceChildren();
+  for (const person of participantList(conversation)) {
+    const row = el("div", undefined, "person-row");
+    const avatar = el("span", initials(person.name), "avatar");
+    avatar.style.background = avatarColor(person.name);
+    if (!avatar.textContent) avatar.append(icon("person"));
+    row.append(avatar);
+    const text = el("span", undefined, "contact-text");
+    text.append(el("span", person.name, "name"));
+    if (person.detail) text.append(el("span", person.detail, "detail"));
+    row.append(text);
+    list.append(row);
+  }
+  // A read-only conversation belongs to a previous pairing, and nothing can be
+  // addressed from it.
+  $("add-people").hidden = conversation.read_only;
+  renderAddPeople();
+}
+function openPeople() {
+  if (!selected) return;
+  peopleConversation = selected;
+  addPicker.clear();
+  $("add-people-status").textContent = "";
+  renderPeople();
+  $("people-dialog").showModal();
+  void loadContacts();
+}
+async function addPeople() {
+  const conversation = conversations.get(peopleConversation);
+  const recipients = addPicker.recipients();
+  if (!conversation || !recipients.length) return;
+  const pending = addParticipantsRequest(
+    recipients,
+    others(conversation).length + recipients.length > 1
+      ? displayName(conversation)
+      : "",
+  );
+  $("add-people-submit").disabled = true;
+  addPicker.lock(true);
+  $("add-people-status").textContent = "Requesting conversation…";
+  try {
+    const result = normalizeOutbox(
+      await request(
+        `/v1/conversations/${encodeURIComponent(peopleConversation)}/participants`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": pending.key },
+          body: JSON.stringify(pending.body),
+        },
+      ),
+    );
+    createdConversation = {
+      outboxID: result.id,
+      conversationID: result.conversation_id || "",
+    };
+    $("add-people-status").textContent =
+      "Request accepted. Waiting for your phone…";
+    maybeSelectCreatedConversation();
+    // The dialog carries the only copy of that status, so closing it hands the
+    // same news to the toast.
+    if (createdConversation) {
+      $("people-dialog").close();
+      notice("Request accepted. Your phone opens the conversation.");
+    }
+  } catch (error) {
+    $("add-people-status").textContent = error.message;
+  } finally {
+    addPicker.lock(false);
+    renderAddPeople();
+  }
+}
+$("open-people").onclick = openPeople;
+$("add-people-submit").onclick = () => void addPeople();
+
 $("import-conversation").onclick = () =>
   void queueHistory({ conversation_id: selected }, false);
 $("import-status-action").onclick = () =>

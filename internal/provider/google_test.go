@@ -7,6 +7,7 @@ import (
 	"errors"
 	"google.golang.org/protobuf/proto"
 	"io"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,10 +17,14 @@ import (
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 )
 
+func ptr[T any](value T) *T { return &value }
+
 type fakeGoogleClient struct {
 	list          func(context.Context, *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error)
 	fetch         func(context.Context, string, int64, *gmproto.Cursor) (*gmproto.ListMessagesResponse, error)
 	create        func(context.Context, *gmproto.GetOrCreateConversationRequest) (*gmproto.GetOrCreateConversationResponse, error)
+	contacts      func(context.Context) (*gmproto.ListContactsResponse, error)
+	topContacts   func(context.Context) (*gmproto.ListTopContactsResponse, error)
 	conversation  func(context.Context, string) (*gmproto.Conversation, error)
 	send          func(context.Context, *gmproto.SendMessageRequest) (*gmproto.SendMessageResponse, error)
 	react         func(context.Context, *gmproto.SendReactionRequest) (*gmproto.SendReactionResponse, error)
@@ -40,6 +45,20 @@ func (f *fakeGoogleClient) ListConversations(ctx context.Context, req *gmproto.L
 
 func (f *fakeGoogleClient) FetchMessages(ctx context.Context, id string, count int64, cursor *gmproto.Cursor) (*gmproto.ListMessagesResponse, error) {
 	return f.fetch(ctx, id, count, cursor)
+}
+
+func (f *fakeGoogleClient) ListContacts(ctx context.Context) (*gmproto.ListContactsResponse, error) {
+	if f.contacts == nil {
+		return nil, errors.New("no contacts")
+	}
+	return f.contacts(ctx)
+}
+
+func (f *fakeGoogleClient) ListTopContacts(ctx context.Context) (*gmproto.ListTopContactsResponse, error) {
+	if f.topContacts == nil {
+		return nil, errors.New("no top contacts")
+	}
+	return f.topContacts(ctx)
 }
 
 func (f *fakeGoogleClient) GetOrCreateConversation(ctx context.Context, req *gmproto.GetOrCreateConversationRequest) (*gmproto.GetOrCreateConversationResponse, error) {
@@ -341,7 +360,7 @@ func TestCreateConversationMapsRequestAndOutcomes(t *testing.T) {
 	}}
 	g := newGoogle(fake)
 
-	snapshot, err := g.CreateConversation(context.Background(), []string{"+15550001", "+15550002"})
+	snapshot, err := g.CreateConversation(context.Background(), []string{"+15550001", "+15550002"}, "")
 	if err != nil || snapshot.Event.Type != "conversation" || snapshot.Event.EntityID != "c1" {
 		t.Fatalf("success: %+v %v", snapshot.Event, err)
 	}
@@ -355,22 +374,22 @@ func TestCreateConversationMapsRequestAndOutcomes(t *testing.T) {
 	}
 
 	response = &gmproto.GetOrCreateConversationResponse{Status: gmproto.GetOrCreateConversationResponse_CREATE_RCS}
-	if _, err = g.CreateConversation(context.Background(), []string{"+15550001", "+15550002"}); !errors.Is(err, ErrAmbiguous) {
+	if _, err = g.CreateConversation(context.Background(), []string{"+15550001", "+15550002"}, ""); !errors.Is(err, ErrAmbiguous) {
 		t.Fatalf("RCS confirmation: %v", err)
 	}
 	if len(requests) != 3 || !requests[2].GetCreateRCSGroup() || requests[2].RCSGroupName == nil {
 		t.Fatal("CREATE_RCS must make exactly one explicit confirmation")
 	}
 	response = &gmproto.GetOrCreateConversationResponse{Status: gmproto.GetOrCreateConversationResponse_UNKNOWN}
-	if _, err = g.CreateConversation(context.Background(), []string{"+15550001"}); !errors.Is(err, ErrAmbiguous) {
+	if _, err = g.CreateConversation(context.Background(), []string{"+15550001"}, ""); !errors.Is(err, ErrAmbiguous) {
 		t.Fatalf("unknown response: %v", err)
 	}
 	responseErr = context.DeadlineExceeded
-	if _, err = g.CreateConversation(context.Background(), []string{"+15550001"}); !errors.Is(err, ErrAmbiguous) {
+	if _, err = g.CreateConversation(context.Background(), []string{"+15550001"}, ""); !errors.Is(err, ErrAmbiguous) {
 		t.Fatalf("transport outcome: %v", err)
 	}
 	before := len(requests)
-	if _, err = g.CreateConversation(context.Background(), nil); !errors.Is(err, ErrRejected) {
+	if _, err = g.CreateConversation(context.Background(), nil, ""); !errors.Is(err, ErrRejected) {
 		t.Fatalf("empty recipients: %v", err)
 	}
 	if len(requests) != before {
@@ -523,7 +542,7 @@ func TestCreateRCSConfirmationOutcome(t *testing.T) {
 			}
 			return &gmproto.GetOrCreateConversationResponse{Status: gmproto.GetOrCreateConversationResponse_SUCCESS, Conversation: &gmproto.Conversation{ConversationID: "group"}}, nil
 		}})
-		result, err := g.CreateConversation(context.Background(), []string{"+15550001", "+15550002"})
+		result, err := g.CreateConversation(context.Background(), []string{"+15550001", "+15550002"}, "")
 		if calls != 2 || (lost && !errors.Is(err, ErrAmbiguous)) || (!lost && (err != nil || result.Event.EntityID != "group")) {
 			t.Fatalf("lost=%v calls=%d result=%+v err=%v", lost, calls, result, err)
 		}
@@ -592,5 +611,46 @@ func TestThumbnailOnlyMediaIsPreviewAndRequestable(t *testing.T) {
 	}
 	if err = g.RequestMedia(context.Background(), []byte("{}")); !errors.Is(err, ErrRejected) {
 		t.Fatalf("empty part: %v", err)
+	}
+}
+
+func TestContactsKeepOnlyAddressableNumbersAndMarkFrequentOnes(t *testing.T) {
+	fake := &fakeGoogleClient{
+		contacts: func(context.Context) (*gmproto.ListContactsResponse, error) {
+			return &gmproto.ListContactsResponse{Contacts: []*gmproto.Contact{
+				{ParticipantID: "p1", Name: "Ada Lovelace", ContactID: "c1", Number: &gmproto.ContactNumber{Number: "+14155550100", FormattedNumber: ptr("(415) 555-0100")}},
+				// The phone dials and displays this one, but never in E.164.
+				{ParticipantID: "p2", Name: "Local Only", Number: &gmproto.ContactNumber{Number: "555-0111", FormattedNumber: ptr("(512) 555-0111")}},
+				// Only the second number is dialable internationally.
+				{ParticipantID: "p3", Name: "Alan Turing", Number: &gmproto.ContactNumber{Number: "020 7183 8750", Number2: "+442071838750"}},
+				{ParticipantID: "p1", Name: "Ada Lovelace", Number: &gmproto.ContactNumber{Number: "+14155550100", FormattedNumber: ptr("(415) 555-0100")}},
+				{ParticipantID: "p4"},
+			}}, nil
+		},
+		topContacts: func(context.Context) (*gmproto.ListTopContactsResponse, error) {
+			return &gmproto.ListTopContactsResponse{Contacts: []*gmproto.Contact{{ParticipantID: "p3"}}}, nil
+		},
+	}
+	got, err := newGoogle(fake).Contacts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []model.Contact{
+		{ID: "p1", ContactID: "c1", Name: "Ada Lovelace", Address: "+14155550100", Formatted: "(415) 555-0100"},
+		{ID: "p2", Name: "Local Only", Formatted: "(512) 555-0111"},
+		{ID: "p3", Name: "Alan Turing", Address: "+442071838750", Frequent: true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("contacts:\n got %+v\nwant %+v", got, want)
+	}
+
+	// Ranking is a nicety; an address book still arrives without it.
+	fake.topContacts = nil
+	if got, err = newGoogle(fake).Contacts(context.Background()); err != nil || len(got) != 3 || got[2].Frequent {
+		t.Fatalf("unranked contacts: %+v %v", got, err)
+	}
+	fake.contacts = nil
+	if _, err = newGoogle(fake).Contacts(context.Background()); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("unreachable phone: %v", err)
 	}
 }

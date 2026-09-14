@@ -18,7 +18,8 @@ import (
 )
 
 type fakeProvider struct {
-	create           func(context.Context, []string) (provider.Snapshot, error)
+	create           func(context.Context, []string, string) (provider.Snapshot, error)
+	contacts         func(context.Context) ([]model.Contact, error)
 	react            func(context.Context, provider.SendTarget, string, string, bool) error
 	upload           func(context.Context, []byte, string, string) ([]byte, error)
 	messagePage      func(context.Context, string, []byte) ([]provider.Snapshot, []byte, error)
@@ -510,11 +511,17 @@ func TestStorageFailureTakesPriorityOverQueuedProviderFailure(t *testing.T) {
 	}
 }
 
-func (f *fakeProvider) CreateConversation(ctx context.Context, recipients []string) (provider.Snapshot, error) {
+func (f *fakeProvider) CreateConversation(ctx context.Context, recipients []string, groupName string) (provider.Snapshot, error) {
 	if f.create != nil {
-		return f.create(ctx, recipients)
+		return f.create(ctx, recipients, groupName)
 	}
 	return provider.Snapshot{}, provider.ErrUnavailable
+}
+func (f *fakeProvider) Contacts(ctx context.Context) ([]model.Contact, error) {
+	if f.contacts != nil {
+		return f.contacts(ctx)
+	}
+	return nil, provider.ErrUnavailable
 }
 func (f *fakeProvider) React(ctx context.Context, target provider.SendTarget, id, emoji string, remove bool) error {
 	if f.react != nil {
