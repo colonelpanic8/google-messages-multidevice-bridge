@@ -275,3 +275,39 @@ func TestRequestAttachmentUsesPartRecordAndRateLimits(t *testing.T) {
 		t.Fatalf("invalid id: %v", err)
 	}
 }
+
+func TestMarkReadClearsTheBadgeBeforeGoogleResendsTheConversation(t *testing.T) {
+	b := testBridge(t)
+	var marked [2]string
+	b.setProvider(&fakeProvider{markRead: func(_ context.Context, conv, id string) error {
+		marked = [2]string{conv, id}
+		return nil
+	}})
+	b.mu.Lock()
+	b.status.State = "connected"
+	b.mu.Unlock()
+	if err := b.persist(snapshot(t, "conversation", "c1", model.Conversation{Schema: 1, ID: "c1", Unread: true})); err != nil {
+		t.Fatal(err)
+	}
+	arrived := model.Message{Schema: 1, ID: "m1", ConversationID: "c1", Time: time.Now().UTC(), Text: "synthetic", Direction: "incoming", Status: "incoming_complete"}
+	if err := b.persist(snapshot(t, "message", "m1", arrived)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.MarkRead(context.Background(), "c1", "m1"); err != nil {
+		t.Fatal(err)
+	}
+	if marked != [2]string{"c1", "m1"} {
+		t.Fatalf("receipt not sent: %v", marked)
+	}
+	raw, err := b.Store.Record("conversation", "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c model.Conversation
+	if err = json.Unmarshal(raw, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Unread || c.Preview != "synthetic" {
+		t.Fatalf("badge outlived the read receipt: %+v", c)
+	}
+}

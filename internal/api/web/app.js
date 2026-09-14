@@ -22,6 +22,7 @@ import {
   outboxAttachmentCount,
   outboxLabel,
   outboxText,
+  previewLine,
   reactedByMe,
   reactionTitle,
   sortConversations,
@@ -446,7 +447,7 @@ function fillConversationNode(node, conversation) {
   fillAvatar(avatar, conversation);
   name.textContent = displayName(conversation);
   time.textContent = listTime(conversation.updated);
-  preview.textContent = conversation.preview || "";
+  preview.textContent = previewLine(conversation);
   badge.hidden = !conversation.unread;
 }
 function renderList() {
@@ -471,6 +472,8 @@ function renderList() {
     const signature = [
       displayName(conversation),
       conversation.preview,
+      conversation.preview_direction,
+      conversation.preview_sender_id,
       conversation.updated,
       conversation.unread,
       conversation.read_only,

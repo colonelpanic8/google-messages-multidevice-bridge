@@ -7,6 +7,7 @@ import {
   layoutThread,
   linkify,
   listTime,
+  previewLine,
   reactedByMe,
   reactionNames,
   reactionTitle,
@@ -116,6 +117,54 @@ test("names, initials, and search", () => {
   assert.equal(initials("+1 555"), "");
   assert.equal(filterConversations([conversation], "0100").length, 1);
   assert.equal(filterConversations([conversation], "zzz").length, 0);
+});
+
+test("preview lines attribute the newest message", () => {
+  const group = {
+    id: "g",
+    preview: "on my way",
+    participants: [
+      { id: "1", name: "Me", is_me: true },
+      { id: "2", name: "Ada Lovelace", address: "+15550100" },
+      { id: "3", name: "Grace Hopper", address: "+15550101" },
+    ],
+  };
+  assert.equal(
+    previewLine({ ...group, preview_direction: "outgoing" }),
+    "You: on my way",
+  );
+  assert.equal(
+    previewLine({
+      ...group,
+      preview_direction: "incoming",
+      preview_sender_id: "3",
+    }),
+    "Grace: on my way",
+  );
+  assert.equal(
+    previewLine({
+      ...group,
+      preview_direction: "incoming",
+      preview_sender_id: "?",
+    }),
+    "on my way",
+  );
+  const direct = {
+    id: "d",
+    preview: "hi",
+    preview_direction: "incoming",
+    preview_sender_id: "2",
+    participants: [
+      { id: "1", name: "Me", is_me: true },
+      { id: "2", name: "Ada Lovelace", address: "+15550100" },
+    ],
+  };
+  assert.equal(previewLine(direct), "hi");
+  assert.equal(
+    previewLine({ ...direct, preview_direction: "outgoing" }),
+    "You: hi",
+  );
+  assert.equal(previewLine({ id: "e", preview_direction: "outgoing" }), "");
 });
 
 test("list time uses clock time today", () => {

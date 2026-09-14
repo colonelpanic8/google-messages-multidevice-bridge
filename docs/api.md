@@ -268,6 +268,19 @@ every event as a new object. A snapshot response and its cursor come from one da
 read transaction. Replay events strictly after that cursor. When combining snapshots,
 track each cursor or re-fetch affected views after replay.
 
+A conversation snapshot's `preview` and `updated` follow the newest message stored
+for it, because Google resends the conversation itself minutes after the message
+that changed it. That message also supplies `preview_direction` and
+`preview_sender_id`, so a list row can name the preview's author. The provider's
+own preview stands, unattributed, only while it knows of a later message the
+bridge has not stored; a message with nothing to show, such as a protocol notice,
+is not a preview source. `unread` follows the same message: an incoming message
+that is new to the store, less than five minutes old, and not already displayed
+on the phone raises it, an outgoing one clears it, and an accepted read receipt
+clears it without waiting for Google. Reconciliation re-observing a message it
+already holds never moves the flag. Deriving any of this republishes the
+conversation snapshot as an ordinary conversation event.
+
 Message pagination is over locally stored snapshots. `next_before` is the last record
 of the returned page when more local records exist and is empty at the end. Supplying
 an unknown `before` message returns 400.

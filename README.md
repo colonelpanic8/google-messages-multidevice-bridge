@@ -152,7 +152,10 @@ authentication except the ticket-only `POST /v1/pairing/credentials` handoff.
 The web app can create conversations from E.164 phone numbers, queue text or up to
 ten attachments totaling 20 MiB, react with any emoji and take a reaction back,
 send typing indicators, mark a conversation read, download available attachments,
-and manage history jobs. Hovering a reaction names everyone behind it. Local upload
+and manage history jobs. Hovering a reaction names everyone behind it. Each
+conversation row previews the newest message as soon as it arrives, rather than
+waiting for Google's own conversation update, labels it "You" or names the group
+member who sent it, and moves its unread badge with the same message. Local upload
 bytes are encrypted before they are needed by the provider; provider media
 descriptors remain private.
 
