@@ -13,6 +13,7 @@ import {
   displayName,
   filterConversations,
   formatSize,
+  importStatus,
   initials,
   isGroup,
   layoutThread,
@@ -23,6 +24,7 @@ import {
   outboxLabel,
   outboxText,
   previewLine,
+  queuePosition,
   reactedByMe,
   reactionTitle,
   sortConversations,
@@ -379,7 +381,7 @@ function applyEvent(event) {
     case "history":
       if (id > historyCursor) {
         historyJobs.set(event.entity_id, data);
-        invalidate("history");
+        invalidate("history", "thread");
       }
       break;
     case "typing":
@@ -1022,12 +1024,17 @@ function renderThread() {
     threadSwitching = false;
     animateIn(rowsNode);
   }
-  if (!rows.length && entry.fetched)
+  const importState = renderImportStatus(conversation);
+  const arriving =
+    importState?.state === "active" || importState?.state === "waiting";
+  if (!rows.length && (!entry.fetched || arriving))
+    rowsNode.append(skeletonThread());
+  else if (!rows.length)
     rowsNode.append(
       el("p", "No messages in stored history yet.", "thread-empty"),
     );
-  $("older").hidden = !entry.before && !fullHistory;
-  $("load-older").hidden = !!fullHistory;
+  $("older").hidden = !entry.before && !fullHistory && !importState;
+  $("load-older").hidden = !!fullHistory || !entry.before;
   $("older-progress").hidden = !fullHistory;
   if (entry.scrollToTop) {
     container.scrollTop = 0;
@@ -1044,6 +1051,53 @@ function renderThread() {
     conversation.read_only || !messages.some((message) => !message.read_only);
   $("import-conversation").disabled = conversation.read_only || importing > 0;
   $("load-full-history").disabled = !!fullHistory;
+}
+
+// A thread with nothing in it yet reads as an empty conversation, which is the
+// wrong thing to say while its messages are still on their way. Placeholder
+// bubbles say "loading" in the shape the messages will take.
+const SKELETON_ROWS = [
+  ["in", 62],
+  ["out", 44],
+  ["in", 78],
+  ["out", 56],
+  ["in", 38],
+];
+function skeletonThread() {
+  const node = el("div", undefined, "skeleton");
+  node.ariaHidden = "true";
+  for (const [side, width] of SKELETON_ROWS) {
+    const row = el("div", undefined, `skeleton-row ${side}`);
+    const bubble = el("div", undefined, "skeleton-bubble");
+    bubble.style.width = `${width}%`;
+    row.append(bubble);
+    node.append(row);
+  }
+  return node;
+}
+
+// A thread only holds what the bridge has imported so far, so an unfinished
+// import is reported where the stored history runs out instead of being left to
+// look like the whole conversation.
+function renderImportStatus(conversation) {
+  const id = `messages:${conversation.id}`;
+  const state = importStatus(historyJobs.get(id), {
+    ahead: Math.max(queuePosition([...historyJobs.values()], id), 0),
+    connected: providerState === "connected",
+  });
+  const node = $("import-status");
+  node.hidden = !state;
+  if (state) {
+    node.className = `import-status ${state.state}`;
+    $("import-status-text").textContent = state.label;
+  }
+  const action = $("import-status-action");
+  action.hidden = !state?.action;
+  if (state?.action) {
+    action.textContent = state.action;
+    action.disabled = conversation.read_only || importing > 0;
+  }
+  return state;
 }
 
 function renderSelectedAttachments() {
@@ -2171,6 +2225,8 @@ $("import-all").onclick = async () => {
   invalidate("history", "thread");
 };
 $("import-conversation").onclick = () =>
+  void queueHistory({ conversation_id: selected }, false);
+$("import-status-action").onclick = () =>
   void queueHistory({ conversation_id: selected }, false);
 $("compose").onsubmit = (event) => {
   event.preventDefault();

@@ -373,3 +373,52 @@ export function reactionTitle(reaction, conversation) {
   if (!names.length) return `Reacted ${emoji}`.trim();
   return `${formatNameList(names)} reacted ${emoji}`.trim();
 }
+
+// The worker takes eligible queued jobs oldest-updated first, so a job's place
+// in that order is how many other imports run before this one.
+export function queuePosition(jobs, id) {
+  return [...jobs]
+    .filter((job) => job.state === "queued")
+    .sort((a, b) => (a.updated || "").localeCompare(b.updated || ""))
+    .findIndex((job) => job.id === id);
+}
+
+// What to say above the oldest stored message. A thread whose import has not
+// finished is not a complete history, and silently looking complete is what
+// makes a half-imported thread read as a broken one. Null once the import is
+// done and the thread can be trusted to be whole.
+export function importStatus(job, { ahead = 0, connected = true } = {}) {
+  if (!job)
+    return {
+      state: "idle",
+      label: "Older messages have not been imported from this conversation.",
+      action: "Import from phone",
+    };
+  if (job.state === "complete") return null;
+  if (job.state === "failed")
+    return {
+      state: "failed",
+      label: job.detail || "Import stopped.",
+      action: "Try again",
+    };
+  if (job.state === "paused")
+    return { state: "paused", label: "Import paused.", action: "Resume" };
+  const progress = job.records ? ` · ${job.records} imported` : "";
+  if (job.detail) return { state: "waiting", label: job.detail + progress };
+  if (!connected)
+    return {
+      state: "waiting",
+      label: `Older messages import when the phone reconnects${progress}`,
+    };
+  if (ahead > 0)
+    return {
+      state: "waiting",
+      label: `Waiting to import older messages · ${ahead} ${
+        ahead === 1 ? "conversation" : "conversations"
+      } ahead${progress}`,
+    };
+  return {
+    state: "active",
+    label: `Importing older messages from your phone…${progress}`,
+  };
+}
