@@ -7,6 +7,9 @@ import {
   layoutThread,
   linkify,
   listTime,
+  reactedByMe,
+  reactionNames,
+  reactionTitle,
   statusLabel,
   threadOutbox,
 } from "./view.mjs";
@@ -127,4 +130,47 @@ test("linkify finds URLs and keeps surrounding text", () => {
     { text: ", ok" },
   ]);
   assert.deepEqual(linkify("plain"), [{ text: "plain" }]);
+});
+
+test("reaction attribution names participants and folds the owner's SIM legs", () => {
+  const conversation = {
+    id: "c",
+    participants: [
+      { id: "me", name: "Me", address: "+1300", is_me: true },
+      { id: "me-sim2", name: "Me", address: "+1300" },
+      { id: "a", name: "Ada Lovelace", address: "+15550100" },
+      { id: "b", address: "+15550199" },
+    ],
+  };
+  assert.deepEqual(
+    reactionNames(
+      { emoji: "👍", participants: ["a", "me-sim2"] },
+      conversation,
+    ),
+    ["You", "Ada Lovelace"],
+  );
+  assert.deepEqual(
+    reactionNames(
+      { emoji: "👍", participants: ["a", "b", "gone"] },
+      conversation,
+    ),
+    ["Ada Lovelace", "+15550199", "Someone"],
+  );
+  assert.equal(
+    reactionTitle({ emoji: "👍", participants: ["me"] }, conversation),
+    "You reacted 👍",
+  );
+  assert.equal(
+    reactionTitle(
+      { emoji: "❤️", participants: ["a", "b", "me"] },
+      conversation,
+    ),
+    "You, Ada Lovelace, and +15550199 reacted ❤️",
+  );
+  assert.equal(
+    reactionTitle({ emoji: "😮", participants: [] }, conversation),
+    "Reacted 😮",
+  );
+  assert.equal(reactedByMe({ participants: ["me-sim2"] }, conversation), true);
+  assert.equal(reactedByMe({ participants: ["a"] }, conversation), false);
 });

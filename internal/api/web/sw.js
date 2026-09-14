@@ -8,6 +8,8 @@ const ASSETS = [
   "/app.js",
   "/stream.mjs",
   "/view.mjs",
+  "/emoji.mjs",
+  "/emoji-data.mjs",
   "/manifest.webmanifest",
   "/favicon.svg",
   "/icons/icon-192.png",

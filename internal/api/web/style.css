@@ -735,11 +735,21 @@ svg {
 }
 .reaction {
   font-size: 12px;
+  line-height: 16px;
   padding: 2px 6px;
   border-radius: 12px;
+  color: inherit;
   background: var(--surface);
   border: 1px solid var(--outline-variant);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+button.reaction {
+  cursor: pointer;
+}
+.reaction.mine {
+  border-color: var(--primary);
+  background: var(--primary-container);
+  color: var(--on-primary-container);
 }
 .react {
   position: relative;
@@ -797,6 +807,85 @@ svg {
 .react-choices button:hover {
   background: color-mix(in srgb, var(--on-surface) 8%, transparent);
   transform: scale(1.15);
+}
+.react-more svg {
+  width: 20px;
+  height: 20px;
+  color: var(--on-surface-variant);
+}
+.emoji-dialog {
+  width: min(420px, calc(100% - 32px));
+}
+/* Scoped to [open] so it does not defeat the closed dialog's display: none. */
+.emoji-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.emoji-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-radius: 24px;
+  background: var(--surface-low);
+}
+.emoji-search svg {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  color: var(--on-surface-variant);
+}
+.emoji-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  padding: 10px 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+}
+.emoji-tabs {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  margin-top: 12px;
+  border-bottom: 1px solid var(--outline-variant);
+}
+.emoji-tab {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  font-size: 18px;
+  line-height: 1;
+  border-radius: 8px 8px 0 0;
+  border-bottom: 2px solid transparent;
+}
+.emoji-tab:hover {
+  background: color-mix(in srgb, var(--on-surface) 8%, transparent);
+}
+.emoji-tab[aria-current="true"] {
+  border-bottom-color: var(--primary);
+  background: var(--primary-container);
+}
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 2px;
+  overflow-y: auto;
+  min-height: 120px;
+  max-height: min(320px, 45vh);
+  padding: 8px 0;
+}
+.emoji-choice {
+  height: 40px;
+  font-size: 24px;
+  line-height: 1;
+  border-radius: 8px;
+}
+.emoji-choice:hover,
+.emoji-choice:focus-visible {
+  background: color-mix(in srgb, var(--on-surface) 10%, transparent);
 }
 .meta {
   font-size: 11px;

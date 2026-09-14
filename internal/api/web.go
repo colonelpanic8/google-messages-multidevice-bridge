@@ -10,7 +10,7 @@ import (
 	"sort"
 )
 
-//go:embed web/index.html web/style.css web/app.js web/stream.mjs web/view.mjs web/sw.js web/manifest.webmanifest web/favicon.svg web/icons
+//go:embed web/index.html web/style.css web/app.js web/stream.mjs web/view.mjs web/emoji.mjs web/emoji-data.mjs web/sw.js web/manifest.webmanifest web/favicon.svg web/icons
 var webFiles embed.FS
 
 // assetVersion fingerprints the embedded client so a new build always
@@ -49,6 +49,8 @@ var assets = map[string]asset{
 	"/app.js":                      {"app.js", "text/javascript; charset=utf-8", false},
 	"/stream.mjs":                  {"stream.mjs", "text/javascript; charset=utf-8", false},
 	"/view.mjs":                    {"view.mjs", "text/javascript; charset=utf-8", false},
+	"/emoji.mjs":                   {"emoji.mjs", "text/javascript; charset=utf-8", false},
+	"/emoji-data.mjs":              {"emoji-data.mjs", "text/javascript; charset=utf-8", false},
 	"/manifest.webmanifest":        {"manifest.webmanifest", "application/manifest+json; charset=utf-8", false},
 	"/favicon.svg":                 {"favicon.svg", "image/svg+xml", false},
 	"/sw.js":                       {"sw.js", "text/javascript; charset=utf-8", true},

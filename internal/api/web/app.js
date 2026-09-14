@@ -21,6 +21,8 @@ import {
   outboxAttachmentCount,
   outboxLabel,
   outboxText,
+  reactedByMe,
+  reactionTitle,
   sortConversations,
   statusLabel,
   summarizeHistory,
@@ -31,7 +33,9 @@ const $ = (id) => document.getElementById(id);
 // Present inside the Tauri desktop window, which keeps the token and shows
 // notifications on the client's behalf.
 const desktop = window.__TAURI__?.core?.invoke;
-const reactionChoices = ["👍", "❤️", "😂", "😮", "😢", "😠"];
+const DEFAULT_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "😠"];
+const RECENT_REACTIONS = "reaction-recents";
+const QUICK_REACTIONS = 6;
 const THREAD_CACHE = 16;
 
 let token = "",
@@ -50,6 +54,7 @@ let conversationCursor = 0,
 const drafts = new Map();
 const draftFiles = new Map();
 const pendingReactions = new Map();
+let emojiCatalog, emojiTarget, emojiGroup;
 let sending = false,
   creatingConversation = false,
   pendingSend,
@@ -611,13 +616,41 @@ function textBubble(text, extraClass = "") {
 function reactionKey(conversationID, messageID, emoji, remove = false) {
   return [conversationID, messageID, emoji, remove].join("|");
 }
+function recentReactions() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(RECENT_REACTIONS) || "[]");
+    return Array.isArray(stored)
+      ? stored.filter((emoji) => typeof emoji === "string" && emoji)
+      : [];
+  } catch {
+    return [];
+  }
+}
+function rememberReaction(emoji) {
+  const recents = [
+    emoji,
+    ...recentReactions().filter((recent) => recent !== emoji),
+  ].slice(0, 24);
+  try {
+    localStorage.setItem(RECENT_REACTIONS, JSON.stringify(recents));
+  } catch {
+    // A browser that refuses storage just loses the recents list.
+  }
+}
+// The quick row keeps what this browser reaches for, padded with the defaults.
+function quickReactions() {
+  return [...new Set([...recentReactions(), ...DEFAULT_REACTIONS])].slice(
+    0,
+    QUICK_REACTIONS,
+  );
+}
 function reactionPicker(message) {
   const picker = el("details", undefined, "react");
   const summary = el("summary");
   summary.setAttribute("aria-label", "Add reaction");
   summary.append(icon("emoji"));
   const choices = el("div", undefined, "react-choices");
-  for (const emoji of reactionChoices) {
+  for (const emoji of quickReactions()) {
     const choice = button(emoji, undefined, () => {
       picker.open = false;
       void startReaction(message.id, emoji);
@@ -625,6 +658,14 @@ function reactionPicker(message) {
     choice.setAttribute("aria-label", `React ${emoji}`);
     choices.append(choice);
   }
+  const more = button(undefined, "react-more", () => {
+    picker.open = false;
+    void openEmojiPicker(message.id);
+  });
+  more.append(icon("search"));
+  more.title = "Search all emoji";
+  more.setAttribute("aria-label", "Search all emoji");
+  choices.append(more);
   picker.append(summary, choices);
   return picker;
 }
@@ -638,7 +679,12 @@ function pendingReactionRows(message) {
       continue;
     const row = el("div", undefined, "pending-reaction");
     row.append(
-      el("span", `${pending.request.body.emoji} reaction not acknowledged.`),
+      el(
+        "span",
+        `${pending.request.body.emoji} ${
+          pending.request.body.remove ? "removal" : "reaction"
+        } not acknowledged.`,
+      ),
       button("Retry", undefined, () => void submitReaction(key)),
       button("Discard", undefined, () => {
         pendingReactions.delete(key);
@@ -664,6 +710,7 @@ function messageSignature(row, conversation) {
     pending,
     conversation.read_only,
     conversation.participants,
+    quickReactions(),
   ]);
 }
 function buildMessageRow(row, conversation) {
@@ -710,18 +757,26 @@ function buildMessageRow(row, conversation) {
   node.append(line);
   if (message.reactions?.length) {
     const reactions = el("div", undefined, "reactions");
-    for (const reaction of message.reactions)
-      reactions.append(
-        el(
-          "span",
-          `${reaction.emoji}${
-            reaction.participants?.length > 1
-              ? ` ${reaction.participants.length}`
-              : ""
-          }`,
-          "reaction",
-        ),
+    for (const reaction of message.reactions) {
+      const count = reaction.participants?.length || 0;
+      const label = `${reaction.emoji}${count > 1 ? ` ${count}` : ""}`;
+      const mine = reactedByMe(reaction, conversation);
+      const title = reactionTitle(reaction, conversation);
+      // Only a reaction of your own can be taken back, so everything else
+      // stays a plain chip that still names who reacted on hover.
+      const chip =
+        readOnly || !mine
+          ? el("span", label, "reaction")
+          : button(label, "reaction mine", () =>
+              startReaction(message.id, reaction.emoji, true),
+            );
+      chip.title = title;
+      chip.setAttribute(
+        "aria-label",
+        mine && !readOnly ? `Remove your reaction · ${title}` : title,
       );
+      reactions.append(chip);
+    }
     node.append(reactions);
   }
   node.append(...pendingReactionRows(message));
@@ -1015,6 +1070,24 @@ $("pairing-dialog").onclose = () => {
   pairingPanelOpen = false;
   clearTimeout(pairingPoll);
   pairingPoll = undefined;
+};
+$("emoji-dialog").onclose = () => {
+  emojiTarget = undefined;
+};
+$("emoji-search").oninput = () => {
+  if (emojiCatalog) renderEmojiGrid();
+};
+$("emoji-search").onkeydown = (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  $("emoji-grid").querySelector("button[data-emoji]")?.click();
+};
+$("emoji-grid").onclick = (event) => {
+  const choice = event.target.closest("button[data-emoji]");
+  if (!choice || !emojiTarget) return;
+  const { conversationID, messageID } = emojiTarget;
+  $("emoji-dialog").close();
+  void startReaction(messageID, choice.dataset.emoji, false, conversationID);
 };
 
 function closeMenus() {
@@ -1341,15 +1414,106 @@ async function createConversation() {
 
 // --- Reactions, uploads, sending -------------------------------------------
 
-async function startReaction(messageID, emoji) {
-  const key = reactionKey(selected, messageID, emoji);
+async function startReaction(
+  messageID,
+  emoji,
+  remove = false,
+  conversationID = selected,
+) {
+  if (!conversationID) return;
+  if (!remove) rememberReaction(emoji);
+  const key = reactionKey(conversationID, messageID, emoji, remove);
   if (!pendingReactions.has(key))
     pendingReactions.set(key, {
-      conversationID: selected,
-      request: newReactionRequest(messageID, emoji),
+      conversationID,
+      request: newReactionRequest(messageID, emoji, remove),
       sending: false,
     });
   await submitReaction(key);
+}
+
+// The catalog is a large generated module, so it is fetched the first time
+// somebody looks past the quick row.
+async function openEmojiPicker(messageID) {
+  emojiTarget = { conversationID: selected, messageID };
+  $("emoji-search").value = "";
+  emojiGroup = undefined;
+  $("emoji-grid").replaceChildren();
+  $("emoji-tabs").replaceChildren();
+  openDialog("emoji-dialog");
+  if (!emojiCatalog) {
+    $("emoji-status").textContent = "Loading emoji…";
+    try {
+      emojiCatalog = await import("/emoji.mjs");
+    } catch {
+      $("emoji-status").textContent =
+        "Emoji list unavailable. Reload and try again.";
+      return;
+    }
+    if (!$("emoji-dialog").open) return;
+  }
+  renderEmojiTabs();
+  renderEmojiGrid();
+  $("emoji-search").focus();
+}
+function emojiCategories() {
+  const recents = recentReactions().map(
+    (emoji) => emojiCatalog.lookupEmoji(emoji) || { emoji, label: emoji },
+  );
+  return recents.length
+    ? [{ name: "Recent", tab: "🕘", emoji: recents }, ...emojiCatalog.GROUPS]
+    : emojiCatalog.GROUPS;
+}
+function renderEmojiTabs() {
+  $("emoji-tabs").replaceChildren(
+    ...emojiCategories().map((category) => {
+      const tab = button(
+        category.tab || category.emoji[0]?.emoji || "?",
+        "emoji-tab",
+        () => {
+          emojiGroup = category.name;
+          $("emoji-search").value = "";
+          renderEmojiGrid();
+        },
+      );
+      tab.dataset.group = category.name;
+      tab.title = category.name;
+      tab.setAttribute("aria-label", category.name);
+      return tab;
+    }),
+  );
+}
+function renderEmojiGrid() {
+  const query = $("emoji-search").value.trim();
+  const categories = emojiCategories();
+  let entries;
+  if (query) {
+    entries = emojiCatalog.searchEmoji(query);
+    $("emoji-status").textContent = entries.length
+      ? ""
+      : `No emoji match “${query}”.`;
+  } else {
+    const category =
+      categories.find((entry) => entry.name === emojiGroup) || categories[0];
+    emojiGroup = category.name;
+    entries = category.emoji;
+    $("emoji-status").textContent = "";
+  }
+  $("emoji-grid").replaceChildren(
+    ...entries.map((entry) => {
+      const choice = button(entry.emoji, "emoji-choice");
+      choice.dataset.emoji = entry.emoji;
+      choice.title = entry.label || entry.emoji;
+      choice.setAttribute("aria-label", entry.label || entry.emoji);
+      return choice;
+    }),
+  );
+  for (const tab of $("emoji-tabs").children)
+    tab.setAttribute(
+      "aria-current",
+      String(!query && tab.dataset.group === emojiGroup),
+    );
+  $("emoji-grid").scrollTop = 0;
 }
 async function submitReaction(key) {
   const pending = pendingReactions.get(key);

@@ -462,6 +462,28 @@
       </button>
     </dialog>
 
+    <dialog id="emoji-dialog" class="dialog emoji-dialog">
+      <header>
+        <h2>Add reaction</h2>
+        <button type="button" class="icon-button" data-close aria-label="Close">
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </header>
+      <div class="emoji-search">
+        <svg aria-hidden="true"><use href="#i-search" /></svg>
+        <input
+          id="emoji-search"
+          type="search"
+          placeholder="Search emoji"
+          autocomplete="off"
+          aria-label="Search emoji"
+        />
+      </div>
+      <div id="emoji-tabs" class="emoji-tabs"></div>
+      <div id="emoji-grid" class="emoji-grid" aria-label="Emoji"></div>
+      <p id="emoji-status" class="hint" role="status"></p>
+    </dialog>
+
     <dialog id="history-dialog" class="dialog">
       <header>
         <h2>Phone history</h2>

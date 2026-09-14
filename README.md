@@ -150,10 +150,11 @@ and the pairing-helper ZIP are public. Every `/v1/` route requires bearer
 authentication except the ticket-only `POST /v1/pairing/credentials` handoff.
 
 The web app can create conversations from E.164 phone numbers, queue text or up to
-ten attachments totaling 20 MiB, add reactions, send typing indicators, mark a
-conversation read, download available attachments, and manage history jobs. The API
-also supports reaction removal. Local upload bytes are encrypted before they are
-needed by the provider; provider media descriptors remain private.
+ten attachments totaling 20 MiB, react with any emoji and take a reaction back,
+send typing indicators, mark a conversation read, download available attachments,
+and manage history jobs. Hovering a reaction names everyone behind it. Local upload
+bytes are encrypted before they are needed by the provider; provider media
+descriptors remain private.
 
 Conversation creation may receive Google's `CREATE_RCS` response. In that case the
 provider sends exactly one explicit unnamed-group confirmation as the second RPC in

@@ -291,3 +291,64 @@ export function summarizeHistory(jobs) {
   }
   return summary;
 }
+
+// Google repeats the owner across SIM legs, so every self participant id counts
+// as "you" when attributing a reaction.
+function selfParticipantIDs(conversation) {
+  const participants = conversation?.participants || [];
+  const addresses = new Set(
+    participants
+      .filter((participant) => participant.is_me && participant.address)
+      .map((participant) => participant.address),
+  );
+  return new Set(
+    participants
+      .filter(
+        (participant) =>
+          participant.is_me ||
+          (participant.address && addresses.has(participant.address)),
+      )
+      .map((participant) => participant.id),
+  );
+}
+
+export function reactedByMe(reaction, conversation) {
+  const self = selfParticipantIDs(conversation);
+  return (reaction?.participants || []).some((id) => self.has(id));
+}
+
+// Names behind a reaction chip, with the owner first and labelled "You".
+export function reactionNames(reaction, conversation) {
+  const self = selfParticipantIDs(conversation);
+  const byID = new Map(
+    (conversation?.participants || []).map((participant) => [
+      participant.id,
+      participant,
+    ]),
+  );
+  const names = [];
+  let mine = false;
+  for (const id of reaction?.participants || []) {
+    if (self.has(id)) {
+      mine = true;
+      continue;
+    }
+    const participant = byID.get(id);
+    const name = participant?.name || participant?.address || "Someone";
+    if (!names.includes(name)) names.push(name);
+  }
+  return mine ? ["You", ...names] : names;
+}
+
+export function formatNameList(names) {
+  if (names.length < 3) return names.join(" and ");
+  return `${names.slice(0, -1).join(", ")}, and ${names.at(-1)}`;
+}
+
+// Tooltip for a reaction chip: who reacted, and with what.
+export function reactionTitle(reaction, conversation) {
+  const names = reactionNames(reaction, conversation);
+  const emoji = reaction?.emoji || "";
+  if (!names.length) return `Reacted ${emoji}`.trim();
+  return `${formatNameList(names)} reacted ${emoji}`.trim();
+}
