@@ -285,3 +285,7 @@ with synthetic previous-pairing records for recovery UI review.
 
 AGPL-3.0-or-later. This project depends on mautrix-gmessages; retain its source and
 license notices with distributed builds.
+
+The application icon is derived from the Numix icon theme (GPL-3.0-only,
+https://numixproject.github.io). It is redistributed here under the GPL-3.0, which
+AGPL-3.0-or-later permits combining with.

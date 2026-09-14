@@ -44,6 +44,7 @@ rustPlatform.buildRustPackage {
   postInstall = ''
     install -Dm644 icons/icon.png $out/share/icons/hicolor/512x512/apps/google-messages-desktop.png
     install -Dm644 icons/icon-128.png $out/share/icons/hicolor/128x128/apps/google-messages-desktop.png
+    install -Dm644 ../client/favicon.svg $out/share/icons/hicolor/scalable/apps/google-messages-desktop.svg
     mkdir -p $out/share/applications
     cat > $out/share/applications/google-messages-desktop.desktop <<DESKTOP
     [Desktop Entry]
