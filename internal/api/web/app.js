@@ -596,6 +596,15 @@ function renderAttachment(attachment, readOnly) {
   }
   return node;
 }
+// The desktop window has no new-window handler, so WebKitGTK silently drops
+// target="_blank" and window.open. There the shell opens the link instead.
+function openExternal(url) {
+  if (desktop && /^https?:/i.test(url)) {
+    void desktop("open_external", { url }).catch(() => {});
+    return;
+  }
+  window.open(url, "_blank", "noopener");
+}
 function textBubble(text, extraClass = "") {
   const bubble = el("div", undefined, `bubble ${extraClass}`.trim());
   const paragraph = el("p");
@@ -1107,6 +1116,15 @@ function bindMenu(buttonID, menuID) {
 bindMenu("main-menu-button", "main-menu");
 bindMenu("thread-menu-button", "thread-menu");
 document.addEventListener("click", closeMenus);
+document.addEventListener("click", (event) => {
+  if (!desktop || event.defaultPrevented || event.button) return;
+  const link = event.target.closest?.("a[href]");
+  if (!link || link.hasAttribute("download")) return;
+  const external = link.target === "_blank" || link.origin !== location.origin;
+  if (!external || !/^https?:/i.test(link.href)) return;
+  event.preventDefault();
+  openExternal(link.href);
+});
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeMenus();
 });

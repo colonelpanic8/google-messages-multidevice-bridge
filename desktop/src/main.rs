@@ -142,6 +142,26 @@ fn bridge_capability(url: &url::Url) -> Option<String> {
     ))
 }
 
+/// WebKitGTK drops `target="_blank"` and `window.open` for a window that has no
+/// new-window handler, so links in messages go nowhere. The client hands them
+/// here instead and the desktop's own browser takes them.
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    let target = validate_bridge_url(&url).ok_or("Only http and https links open externally.")?;
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(program)
+        .arg(&target)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn open_setup(app: AppHandle) -> Result<(), String> {
     let window = app.get_webview_window("main").ok_or("main window missing")?;
@@ -289,6 +309,7 @@ fn main() {
             get_bridge_url,
             save_bridge_url,
             open_setup,
+            open_external,
             get_token,
             save_token,
             clear_token,

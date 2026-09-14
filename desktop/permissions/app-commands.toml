@@ -9,6 +9,7 @@ commands.allow = [
   "get_bridge_url",
   "save_bridge_url",
   "open_setup",
+  "open_external",
   "get_token",
   "save_token",
   "clear_token",
