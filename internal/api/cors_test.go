@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -11,10 +12,11 @@ func TestDesktopOriginIsPreflightedAndAllowed(t *testing.T) {
 	_, server := fixture(t)
 	const origin = "tauri://localhost"
 
-	req, _ := http.NewRequest("OPTIONS", server.URL+"/v1/sync", nil)
+	// The headers a send carries.
+	req, _ := http.NewRequest("OPTIONS", server.URL+"/v1/messages", nil)
 	req.Header.Set("Origin", origin)
 	req.Header.Set("Access-Control-Request-Method", "POST")
-	req.Header.Set("Access-Control-Request-Headers", "authorization")
+	req.Header.Set("Access-Control-Request-Headers", "authorization,content-type,idempotency-key")
 	resp, err := server.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -26,8 +28,14 @@ func TestDesktopOriginIsPreflightedAndAllowed(t *testing.T) {
 	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != origin {
 		t.Fatalf("allow-origin %q", got)
 	}
-	if got := resp.Header.Get("Access-Control-Allow-Headers"); got != "Authorization, Content-Type" {
-		t.Fatalf("allow-headers %q", got)
+	allowed := map[string]bool{}
+	for _, name := range strings.Split(resp.Header.Get("Access-Control-Allow-Headers"), ",") {
+		allowed[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	for _, name := range strings.Split(req.Header.Get("Access-Control-Request-Headers"), ",") {
+		if !allowed[name] {
+			t.Fatalf("allow-headers %q omits %s", resp.Header.Get("Access-Control-Allow-Headers"), name)
+		}
 	}
 
 	req, _ = http.NewRequest("POST", server.URL+"/v1/sync", nil)
