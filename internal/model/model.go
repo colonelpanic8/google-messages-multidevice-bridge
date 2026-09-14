@@ -3,6 +3,7 @@ package model
 
 import (
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,10 @@ type Conversation struct {
 	Protocol     string        `json:"protocol"`
 	State        string        `json:"state"`
 	Participants []Participant `json:"participants"`
+	// PreviewSenderID and PreviewDirection describe the message Preview was
+	// taken from so a list row can name its author.
+	PreviewSenderID  string `json:"preview_sender_id,omitempty"`
+	PreviewDirection string `json:"preview_direction,omitempty"`
 }
 type Attachment struct {
 	ID        string `json:"id"`
@@ -80,6 +85,31 @@ type SendRequest struct {
 	Remove         bool     `json:"remove,omitempty"`
 	ConversationID string   `json:"conversation_id"`
 	Text           string   `json:"text"`
+}
+
+// PreviewLimit bounds a derived conversation preview so a long message does not
+// bloat every conversation snapshot.
+const PreviewLimit = 160
+
+// PreviewText summarizes a message the way a conversation list row shows it.
+func (m Message) PreviewText() string {
+	text := strings.Join(strings.Fields(m.Text), " ")
+	if text == "" && len(m.Attachments) > 0 {
+		switch kind, _, _ := strings.Cut(m.Attachments[0].MIME, "/"); kind {
+		case "image":
+			text = "Photo"
+		case "video":
+			text = "Video"
+		case "audio":
+			text = "Audio message"
+		default:
+			text = "Attachment"
+		}
+	}
+	if runes := []rune(text); len(runes) > PreviewLimit {
+		text = strings.TrimRight(string(runes[:PreviewLimit]), " ") + "…"
+	}
+	return text
 }
 
 func (r SendRequest) Equal(other SendRequest) bool {

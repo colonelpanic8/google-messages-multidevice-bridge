@@ -60,6 +60,9 @@ func Open(path string, key []byte) (*Store, error) {
 		if err := s.ensureMessageIndex(tx); err != nil {
 			return err
 		}
+		if err := s.ensureConversationPreviews(tx); err != nil {
+			return err
+		}
 		versions := tx.Bucket([]byte("versions"))
 		if versions.Sequence() < tx.Bucket([]byte("events")).Sequence() {
 			if err := versions.SetSequence(tx.Bucket([]byte("events")).Sequence()); err != nil {
@@ -150,8 +153,15 @@ func (s *Store) Apply(event Event, private map[string][]byte, watermark *uint64)
 			if err := stampEpoch(tx, event.Type, event.EntityID); err != nil {
 				return err
 			}
+			applied := event
+			if event.Type == "conversation" {
+				var err error
+				if applied.Data, err = s.previewConversation(tx, event.Data); err != nil {
+					return err
+				}
+			}
 			var err error
-			changed, err = s.appendTx(tx, event)
+			changed, err = s.appendTx(tx, applied)
 			if err != nil {
 				return err
 			}
@@ -166,6 +176,13 @@ func (s *Store) Apply(event Event, private map[string][]byte, watermark *uint64)
 				if err = tx.Bucket([]byte("private")).Put([]byte(id), s.encrypt(data, "private:"+id)); err != nil {
 					return err
 				}
+			}
+			if event.Type == "message" {
+				refreshed, err := s.refreshConversationTx(tx, event.Data, changed)
+				if err != nil {
+					return err
+				}
+				changed = changed || refreshed
 			}
 		}
 		if event.Type == "message" {

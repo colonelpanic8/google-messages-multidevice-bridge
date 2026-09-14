@@ -457,6 +457,14 @@ func (b *Bridge) MarkRead(ctx context.Context, conv, id string) error {
 	if err = p.MarkRead(ctx, conv, id); err != nil {
 		return provider.ErrUnavailable
 	}
+	changed, err := b.Store.ReadConversation(conv)
+	if err != nil {
+		b.storageFailure(err)
+		return fmt.Errorf("%w: %v", ErrStorage, err)
+	}
+	if changed {
+		b.Hub.Notify()
+	}
 	b.RequestSync()
 	return nil
 }

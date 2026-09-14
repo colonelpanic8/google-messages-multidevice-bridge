@@ -28,6 +28,7 @@ type fakeProvider struct {
 	conversations    func(context.Context) ([]provider.Snapshot, error)
 	messages         func(context.Context, string) ([]provider.Snapshot, error)
 	requestMedia     func(context.Context, []byte) error
+	markRead         func(context.Context, string, string) error
 }
 
 func (f *fakeProvider) RequestMedia(ctx context.Context, part []byte) error {
@@ -52,7 +53,12 @@ func (f *fakeProvider) Conversations(ctx context.Context) ([]provider.Snapshot, 
 func (f *fakeProvider) Messages(ctx context.Context, id string) ([]provider.Snapshot, error) {
 	return f.messages(ctx, id)
 }
-func (f *fakeProvider) MarkRead(context.Context, string, string) error { return nil }
+func (f *fakeProvider) MarkRead(ctx context.Context, conv, id string) error {
+	if f.markRead != nil {
+		return f.markRead(ctx, conv, id)
+	}
+	return nil
+}
 func (f *fakeProvider) Attachment(context.Context, []byte) ([]byte, error) {
 	return []byte("synthetic media"), nil
 }

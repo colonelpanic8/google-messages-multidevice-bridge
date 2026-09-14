@@ -33,6 +33,27 @@ export function displayName(conversation) {
   );
 }
 
+// Conversation rows name the author of their newest message the way the phone
+// does: "You" for your own, a first name in a group, nothing in a one-to-one
+// thread where the only other author is the row's own title.
+export function previewSender(conversation) {
+  const direction = conversation.preview_direction || "";
+  if (direction === "outgoing") return "You";
+  if (direction !== "incoming" || !isGroup(conversation)) return "";
+  const sender = others(conversation).find(
+    (participant) => participant.id === (conversation.preview_sender_id || ""),
+  );
+  if (!sender) return "";
+  const name = sender.name || sender.address || "";
+  return name.trim().split(/\s+/)[0] || "";
+}
+
+export function previewLine(conversation) {
+  const text = conversation.preview || "";
+  const sender = text ? previewSender(conversation) : "";
+  return sender ? `${sender}: ${text}` : text;
+}
+
 export function isGroup(conversation) {
   return others(conversation).length > 1;
 }

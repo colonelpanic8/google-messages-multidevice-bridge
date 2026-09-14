@@ -147,6 +147,10 @@ func TestMessagePaginationAndConsistentSnapshotCursor(t *testing.T) {
 		data, _ := json.Marshal(model.Message{Schema: 1, ID: id, ConversationID: "c1", Time: time.Unix(1, 0)})
 		_, _ = b.Store.Append(store.Event{Type: "message", EntityID: id, Data: data})
 	}
+	watermark, err := b.Store.Watermark()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		query string
 		want  string
@@ -170,7 +174,7 @@ func TestMessagePaginationAndConsistentSnapshotCursor(t *testing.T) {
 		for _, m := range result.Messages {
 			ids = append(ids, m.ID)
 		}
-		if strings.Join(ids, ",") != test.want || result.Cursor != 4 {
+		if strings.Join(ids, ",") != test.want || result.Cursor != watermark {
 			t.Fatalf("%+v", result)
 		}
 	}
