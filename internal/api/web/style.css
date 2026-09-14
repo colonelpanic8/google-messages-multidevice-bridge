@@ -238,13 +238,14 @@ svg {
   height: 100%;
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
-  background: var(--surface-low);
+  background: var(--surface);
 }
 .list-pane {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 0 8px 8px;
+  padding: 0 0 8px;
+  border-right: 1px solid var(--outline-variant);
 }
 .list-header {
   height: 64px;
@@ -287,7 +288,7 @@ svg {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 0 8px 8px;
+  margin: 0 12px 8px;
   padding: 10px 8px 10px 16px;
   border-radius: 16px;
   background: var(--warning-container);
@@ -319,7 +320,7 @@ svg {
   align-items: center;
   gap: 12px;
   height: 48px;
-  margin: 0 8px 12px;
+  margin: 0 12px 12px;
   padding: 0 16px;
   border-radius: 24px;
   background: var(--surface-container);
@@ -345,9 +346,9 @@ svg {
 }
 .start-chat {
   height: 56px;
-  margin: 0 8px 8px;
+  margin: 0 12px 12px;
   padding: 0 24px 0 20px;
-  border-radius: 16px;
+  border-radius: 100px;
   display: inline-flex;
   align-items: center;
   gap: 12px;
@@ -368,7 +369,6 @@ svg {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding-right: 4px;
 }
 .conversation {
   width: 100%;
@@ -379,17 +379,20 @@ svg {
     "avatar preview badge";
   column-gap: 16px;
   align-items: center;
-  padding: 10px 16px;
-  border-radius: 28px;
+  padding: 14px 16px;
   text-align: left;
   color: var(--on-surface);
 }
 .conversation:hover {
   background: color-mix(in srgb, var(--on-surface) 6%, transparent);
 }
-.conversation.active {
-  background: var(--secondary-container);
-  color: var(--on-secondary-container);
+.conversation:active {
+  background: color-mix(in srgb, var(--on-surface) 12%, transparent);
+}
+.conversation.active,
+.conversation.active:hover {
+  background: var(--primary-container);
+  color: var(--on-primary-container);
 }
 .conversation .avatar {
   grid-area: avatar;
@@ -436,6 +439,13 @@ svg {
   font-weight: 700;
   color: var(--on-surface);
 }
+.conversation.active.unread .name,
+.conversation.active.unread .preview {
+  color: inherit;
+}
+.conversation.active .badge {
+  background: currentColor;
+}
 .conversation.previous-session .name::after {
   content: "Previous pairing";
   margin-left: 8px;
@@ -476,8 +486,6 @@ svg {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  margin: 8px 8px 8px 0;
-  border-radius: 24px;
   background: var(--surface);
   overflow: hidden;
 }
@@ -1262,9 +1270,8 @@ button.reaction {
   .thread-pane {
     grid-area: 1 / 1;
   }
-  .thread-pane {
-    margin: 0;
-    border-radius: 0;
+  .list-pane {
+    border-right: 0;
   }
   body:not(.thread-open) .thread-pane {
     display: none;
