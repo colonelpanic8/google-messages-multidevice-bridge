@@ -77,6 +77,30 @@ export function validateAttachments(files) {
   return size;
 }
 
+export function pastedImages(clipboardData) {
+  const fromItems = [...(clipboardData?.items || [])]
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+  if (fromItems.length) return fromItems;
+  return [...(clipboardData?.files || [])].filter((file) =>
+    file.type.startsWith("image/"),
+  );
+}
+
+export function pastedImageName(file, index = 0) {
+  if (file.name) return file.name;
+  const extensions = {
+    "image/gif": "gif",
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/svg+xml": "svg",
+    "image/webp": "webp",
+  };
+  const suffix = index ? `-${index + 1}` : "";
+  return `pasted-image${suffix}.${extensions[file.type] || "img"}`;
+}
+
 // Preserve fetched pages while applying live updates newer than a snapshot.
 export function mergeMessages(existing, page, cursor, updates) {
   const records = new Map(existing.map((m) => [m.id, m]));

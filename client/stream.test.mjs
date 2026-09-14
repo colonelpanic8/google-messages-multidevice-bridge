@@ -6,6 +6,8 @@ import {
   newConversationRequest,
   newReactionRequest,
   newRequest,
+  pastedImageName,
+  pastedImages,
   validateAttachments,
   walkOlder,
 } from "./stream.mjs";
@@ -87,6 +89,39 @@ test("attachment limits are checked before network activity", () => {
   assert.throws(
     () => validateAttachments([{ size: 20 * 1024 * 1024 + 1 }]),
     /20 MiB/,
+  );
+});
+
+test("clipboard image files become attachments without consuming text paste", () => {
+  const image = { name: "screenshot.png", size: 12, type: "image/png" };
+  const text = { name: "notes.txt", size: 5, type: "text/plain" };
+  assert.deepEqual(
+    pastedImages({
+      items: [
+        { kind: "string", type: "text/plain" },
+        { kind: "file", type: image.type, getAsFile: () => image },
+        { kind: "file", type: text.type, getAsFile: () => text },
+      ],
+    }),
+    [image],
+  );
+  assert.deepEqual(pastedImages({ files: [image, text] }), [image]);
+  assert.deepEqual(pastedImages({ items: [], files: [text] }), []);
+});
+
+test("unnamed pasted images receive uploadable filenames", () => {
+  assert.equal(pastedImageName({ name: "photo.jpeg" }), "photo.jpeg");
+  assert.equal(
+    pastedImageName({ name: "", type: "image/png" }),
+    "pasted-image.png",
+  );
+  assert.equal(
+    pastedImageName({ name: "", type: "image/jpeg" }, 1),
+    "pasted-image-2.jpg",
+  );
+  assert.equal(
+    pastedImageName({ name: "", type: "image/vnd.example" }),
+    "pasted-image.img",
   );
 });
 
