@@ -106,6 +106,40 @@ function fillAvatar(node, conversation) {
     letter || icon(isGroup(conversation) ? "group" : "person"),
   );
 }
+const stillMotion = matchMedia("(prefers-reduced-motion: reduce)");
+
+// Entrance classes are removed once they play so a later redraw of the same
+// node does not replay them.
+function animateIn(node) {
+  if (stillMotion.matches) return;
+  node.classList.add("entering");
+  node.addEventListener(
+    "animationend",
+    () => node.classList.remove("entering"),
+    { once: true },
+  );
+}
+
+// FLIP: measure before the reorder, then play the old position back so rows
+// that moved slide into place instead of jumping.
+function measureRows(nodes) {
+  if (stillMotion.matches) return undefined;
+  const before = new Map();
+  for (const node of nodes) before.set(node, node.getBoundingClientRect().top);
+  return before;
+}
+function slideRows(before) {
+  if (!before) return;
+  for (const [node, top] of before) {
+    const delta = top - node.getBoundingClientRect().top;
+    if (!delta || Math.abs(delta) < 2) continue;
+    node.animate(
+      [{ transform: `translateY(${delta}px)` }, { transform: "none" }],
+      { duration: 260, easing: "cubic-bezier(0.05, 0.7, 0.1, 1)" },
+    );
+  }
+}
+
 let noticeTimer;
 function notice(message) {
   clearTimeout(noticeTimer);
@@ -388,6 +422,7 @@ async function stream(currentGeneration) {
 // --- Conversation list ------------------------------------------------------
 
 const listNodes = new Map();
+let listRendered = false;
 function buildConversationNode(conversation) {
   const node = el("button", undefined, "conversation");
   node.type = "button";
@@ -424,7 +459,11 @@ function renderList() {
     seen.add(conversation.id);
     let entry = listNodes.get(conversation.id);
     if (!entry) {
-      entry = { node: buildConversationNode(conversation), signature: "" };
+      entry = {
+        node: buildConversationNode(conversation),
+        signature: "",
+        fresh: true,
+      };
       listNodes.set(conversation.id, entry);
     }
     const signature = [
@@ -448,6 +487,9 @@ function renderList() {
       listNodes.delete(id);
     }
   reportUnread();
+  const placed = measureRows(
+    order.filter((node) => node.parentNode === container),
+  );
   let child = container.firstElementChild;
   for (const node of order) {
     if (child === node) {
@@ -461,6 +503,14 @@ function renderList() {
     child.remove();
     child = next;
   }
+  slideRows(placed);
+  if (listRendered)
+    for (const conversation of items) {
+      const entry = listNodes.get(conversation.id);
+      if (entry?.fresh) animateIn(entry.node);
+    }
+  for (const entry of listNodes.values()) entry.fresh = false;
+  listRendered = true;
   if (!items.length)
     container.append(
       el(
@@ -883,10 +933,13 @@ function renderThread() {
   );
   const container = $("messages");
   const rowsNode = $("rows");
-  if (threadNodesFor !== selected) {
+  const switched = threadNodesFor !== selected;
+  if (switched) {
     threadNodes.clear();
     rowsNode.replaceChildren();
     threadNodesFor = selected;
+    animateIn(rowsNode);
+    animateIn($("thread").querySelector(".thread-header"));
   }
   const atBottom =
     container.scrollHeight - container.scrollTop - container.clientHeight < 80;
@@ -907,6 +960,7 @@ function renderThread() {
               currentSessionEpoch,
             ]);
     let cached = threadNodes.get(row.key);
+    const fresh = !cached;
     if (!cached || cached.signature !== signature) {
       const node =
         row.kind === "divider"
@@ -917,6 +971,7 @@ function renderThread() {
       if (cached) cached.node.replaceWith(node);
       cached = { node, signature };
       threadNodes.set(row.key, cached);
+      if (fresh && !switched) animateIn(node);
     }
     order.push(cached.node);
   }
@@ -1831,6 +1886,7 @@ function clearPrivateUI() {
   historyJobs.clear();
   threads.clear();
   listNodes.clear();
+  listRendered = false;
   threadNodes.clear();
   threadNodesFor = "";
   selected = "";
