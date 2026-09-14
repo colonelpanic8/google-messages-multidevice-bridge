@@ -338,12 +338,19 @@ svg {
 .banner .text-button:empty {
   display: none;
 }
+.list-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 8px;
+}
 .search {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 12px;
   height: 48px;
-  margin: 0 12px 12px;
   padding: 0 16px;
   border-radius: 24px;
   background: var(--surface-container);
@@ -371,18 +378,15 @@ svg {
   cursor: pointer;
 }
 .start-chat {
-  height: 56px;
-  margin: 0 12px 12px;
-  padding: 0 24px 0 20px;
-  border-radius: 100px;
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  border-radius: 50%;
   display: inline-flex;
   align-items: center;
-  gap: 12px;
-  align-self: flex-start;
+  justify-content: center;
   background: var(--primary-container);
   color: var(--on-primary-container);
-  font-size: 15px;
-  font-weight: 500;
   box-shadow: var(--shadow);
   transition:
     box-shadow var(--motion-medium) var(--ease-standard),
