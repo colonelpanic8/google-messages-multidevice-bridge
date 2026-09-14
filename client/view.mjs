@@ -139,26 +139,50 @@ export function dividerLabel(date, now = new Date()) {
   return `${dayLabel(date, now)} • ${clockTime(date)}`;
 }
 
-export function statusLabel(status) {
+// Anything you send walks one progression — Sending… → Sent → Delivered → Read
+// — shared by the outbox row and the stored message that takes its place, so
+// the handoff never reads as a step backwards and only a real failure is an
+// error.
+const NO_STATUS = { label: "", error: false };
+const SENDING = { label: "Sending…", error: false };
+const SENT = { label: "Sent", error: false };
+const CANCELED = { label: "Canceled", error: false };
+
+export function messageStatus(status) {
   const value = (status || "").toLowerCase();
-  if (!value.startsWith("outgoing")) return "";
-  if (/fail|not_delivered|error|cancel/.test(value)) return "Not sent";
-  if (/displayed|read/.test(value)) return "Read";
-  if (/deliver/.test(value)) return "Delivered";
-  if (/send|pending|queue|draft/.test(value)) return "Sending…";
-  return "Sent";
+  if (!value.startsWith("outgoing")) return NO_STATUS;
+  if (/cancel/.test(value)) return CANCELED;
+  if (/fail|restricted|error/.test(value))
+    return { label: "Not sent", error: true };
+  if (/displayed|read/.test(value)) return { label: "Read", error: false };
+  // Not delivered *yet* is Google still working, not a message that failed.
+  if (/not_delivered/.test(value)) return SENT;
+  if (/deliver/.test(value)) return { label: "Delivered", error: false };
+  if (/send|pending|queue|draft|validating|retry|scheduled/.test(value))
+    return SENDING;
+  return SENT;
 }
 
-export function outboxLabel(item) {
+// Delivery is the message's story to tell, so a row still in the outbox says
+// no more than that the send is under way — including once Google has accepted
+// it, which confirms nothing the recipient would notice.
+export function outboxStatus(item, connected = true) {
   switch (item.state) {
     case "queued":
-      return "Waiting for phone…";
+      return connected
+        ? SENDING
+        : { label: "Waiting for phone…", error: false };
     case "sending":
-      return "Sending…";
+    case "accepted":
     case "confirmed":
-      return "Sent";
+      return SENDING;
+    case "canceled":
+      return CANCELED;
     default:
-      return `Not sent${item.detail ? ` · ${item.detail}` : ""}`;
+      return {
+        label: `Not sent${item.detail ? ` · ${item.detail}` : ""}`,
+        error: true,
+      };
   }
 }
 
