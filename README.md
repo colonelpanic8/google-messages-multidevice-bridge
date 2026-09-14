@@ -155,9 +155,11 @@ send typing indicators, mark a conversation read, download available attachments
 and manage history jobs. Hovering a reaction names everyone behind it. Each
 conversation row previews the newest message as soon as it arrives, rather than
 waiting for Google's own conversation update, labels it "You" or names the group
-member who sent it, and moves its unread badge with the same message. Local upload
-bytes are encrypted before they are needed by the provider; provider media
-descriptors remain private.
+member who sent it, and moves its unread badge with the same message. An open
+conversation clears that badge itself: while its thread is on screen the client
+sends a read receipt for the newest message, which a settings toggle disables for
+anyone who would rather send them by hand. Local upload bytes are encrypted before
+they are needed by the provider; provider media descriptors remain private.
 
 Conversation creation may receive Google's `CREATE_RCS` response. In that case the
 provider sends exactly one explicit unnamed-group confirmation as the second RPC in
