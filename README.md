@@ -158,9 +158,10 @@ the bridge's own, and the fixed Tauri origin the desktop app runs at. Any other
 origin is refused at the preflight and again on the request itself.
 
 The web app can create conversations from E.164 phone numbers, queue text or up to
-ten attachments totaling 20 MiB, react with any emoji and take a reaction back,
-send typing indicators, mark a conversation read, download available attachments,
-and manage history jobs. Hovering a reaction names everyone behind it. Each
+ten attachments totaling 20 MiB, paste clipboard images directly into the composer,
+react with any emoji and take a reaction back, send typing indicators, mark a
+conversation read, download available attachments, and manage history jobs. Hovering
+a reaction names everyone behind it. Each
 conversation row previews the newest message as soon as it arrives, rather than
 waiting for Google's own conversation update, labels it "You" or names the group
 member who sent it, and moves its unread badge with the same message. An open

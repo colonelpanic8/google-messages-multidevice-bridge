@@ -5,6 +5,8 @@ import {
   newConversationRequest,
   addParticipantsRequest,
   newReactionRequest,
+  pastedImageName,
+  pastedImages,
   splitRequests,
   validateAttachments,
 } from "/stream.mjs";
@@ -2616,6 +2618,28 @@ $("text").oninput = () => {
   if (selected) drafts.set(selected, $("text").value);
   autogrow();
   scheduleTyping();
+};
+$("text").onpaste = (event) => {
+  const pasted = pastedImages(event.clipboardData);
+  if (!pasted.length) return;
+  event.preventDefault();
+  const files = pasted.map((file, index) =>
+    file.name
+      ? file
+      : new File([file], pastedImageName(file, index), {
+          type: file.type,
+          lastModified: file.lastModified,
+        }),
+  );
+  try {
+    validateAttachments([...selectedFiles, ...files]);
+    selectedFiles = [...selectedFiles, ...files];
+    draftFiles.set(selected, selectedFiles);
+    scheduleTyping();
+  } catch (error) {
+    notice(error.message);
+  }
+  invalidate("compose");
 };
 $("text").onkeydown = (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
