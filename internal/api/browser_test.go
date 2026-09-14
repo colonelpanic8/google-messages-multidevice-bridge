@@ -65,6 +65,11 @@ func TestBrowserFixture(t *testing.T) {
 	}
 	appendRecord("conversation", "synthetic-long", model.Conversation{Schema: 1, ID: "synthetic-long", Name: "Long history", Preview: "Message 1500", Protocol: "rcs", State: "active", Updated: now.Add(-2 * time.Hour), Participants: []model.Participant{{ID: "archivist", Name: "Robin (synthetic)", Address: "+1 555 0142"}, {ID: "me", Name: "You", IsMe: true}}})
 	appendRecord("history", "conversations:inbox", model.HistoryJob{Schema: 1, ID: "conversations:inbox", Kind: "conversations", Folder: "inbox", State: "queued", Pages: 3, Records: 147, Updated: now})
+	// One import per state the thread reports: fetching now, still in line, and
+	// stopped. The worker takes queued jobs oldest-updated first.
+	appendRecord("history", "messages:synthetic-conversation", model.HistoryJob{Schema: 1, ID: "messages:synthetic-conversation", Kind: "messages", ConversationID: "synthetic-conversation", State: "queued", Pages: 1, Records: 4, Updated: now.Add(-2 * time.Second)})
+	appendRecord("history", "messages:synthetic-long", model.HistoryJob{Schema: 1, ID: "messages:synthetic-long", Kind: "messages", ConversationID: "synthetic-long", State: "queued", Pages: 12, Records: 1500, Updated: now.Add(-time.Second)})
+	appendRecord("history", "messages:synthetic-sms", model.HistoryJob{Schema: 1, ID: "messages:synthetic-sms", Kind: "messages", ConversationID: "synthetic-sms", State: "failed", Pages: 2, Records: 30, Detail: "Provider repeated a history cursor; import stopped", Updated: now})
 	if os.Getenv("BRIDGE_BROWSER_RECOVERY_TEST") == "1" {
 		if err := s.SavePairedSession([]byte("synthetic replacement session")); err != nil {
 			t.Fatal(err)

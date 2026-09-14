@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import {
   displayName,
   filterConversations,
+  importStatus,
   initials,
   layoutThread,
   linkify,
   listTime,
   previewLine,
+  queuePosition,
   reactedByMe,
   reactionNames,
   reactionTitle,
@@ -222,4 +224,52 @@ test("reaction attribution names participants and folds the owner's SIM legs", (
   );
   assert.equal(reactedByMe({ participants: ["me-sim2"] }, conversation), true);
   assert.equal(reactedByMe({ participants: ["a"] }, conversation), false);
+});
+
+test("import status distinguishes a running import from one still in line", () => {
+  const jobs = [
+    { id: "messages:a", state: "queued", updated: at(0) },
+    { id: "messages:b", state: "queued", updated: at(1) },
+    { id: "messages:c", state: "complete", updated: at(2) },
+  ];
+  assert.equal(queuePosition(jobs, "messages:a"), 0);
+  assert.equal(queuePosition(jobs, "messages:b"), 1);
+  assert.equal(queuePosition(jobs, "messages:c"), -1);
+
+  const running = importStatus(jobs[0], { ahead: 0 });
+  assert.equal(running.state, "active");
+  assert.match(running.label, /Importing older messages/);
+
+  const waiting = importStatus(jobs[1], { ahead: 1 });
+  assert.equal(waiting.state, "waiting");
+  assert.match(waiting.label, /1 conversation ahead/);
+});
+
+test("import status stays silent only once the conversation is fully imported", () => {
+  assert.equal(importStatus({ state: "complete" }), null);
+  assert.equal(importStatus(undefined).state, "idle");
+  assert.equal(importStatus({ state: "paused" }).state, "paused");
+
+  const failed = importStatus({
+    state: "failed",
+    detail: "cursor unsupported",
+  });
+  assert.equal(failed.state, "failed");
+  assert.equal(failed.label, "cursor unsupported");
+  assert.equal(importStatus({ state: "failed" }).label, "Import stopped.");
+
+  const offline = importStatus(
+    { state: "queued", records: 12 },
+    {
+      connected: false,
+    },
+  );
+  assert.equal(offline.state, "waiting");
+  assert.match(offline.label, /reconnects · 12 imported/);
+
+  const retrying = importStatus({
+    state: "queued",
+    detail: "Phone history unavailable; will retry",
+  });
+  assert.match(retrying.label, /will retry/);
 });

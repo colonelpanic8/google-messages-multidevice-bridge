@@ -595,7 +595,10 @@ svg {
   gap: 2px;
 }
 .older {
-  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   padding: 4px 0 12px;
 }
 .older-progress {
@@ -604,6 +607,41 @@ svg {
   gap: 8px;
   font-size: 13px;
   color: var(--on-surface-variant);
+}
+.import-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 16px;
+  font-size: 13px;
+  background: var(--surface-container);
+  color: var(--on-surface-variant);
+}
+.import-status.failed {
+  background: var(--error-container);
+  color: var(--on-error-container);
+}
+.import-status.idle,
+.import-status.paused {
+  background: var(--warning-container);
+  color: var(--on-warning-container);
+}
+.import-status.active::before,
+.import-status.waiting::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--primary);
+}
+.import-status.active::before {
+  animation: import-pulse 1.4s var(--ease-standard) infinite;
+}
+@keyframes import-pulse {
+  50% {
+    opacity: 0.25;
+  }
 }
 .divider {
   text-align: center;
@@ -977,6 +1015,35 @@ button.reaction:hover {
   text-align: center;
   color: var(--on-surface-variant);
   padding: 40px 0;
+}
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 0;
+}
+.skeleton-row {
+  display: flex;
+}
+.skeleton-row.out {
+  justify-content: flex-end;
+}
+.skeleton-bubble {
+  height: 40px;
+  border-radius: 18px;
+  background: linear-gradient(
+    90deg,
+    var(--surface-container) 25%,
+    var(--surface-high) 50%,
+    var(--surface-container) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-sweep 1.6s var(--ease-standard) infinite;
+}
+@keyframes skeleton-sweep {
+  to {
+    background-position: -200% 0;
+  }
 }
 .typing {
   display: inline-flex;
