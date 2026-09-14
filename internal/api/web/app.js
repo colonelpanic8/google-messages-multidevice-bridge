@@ -1,6 +1,7 @@
 import {
   createParser,
   mergeMessages,
+  walkOlder,
   newConversationRequest,
   newReactionRequest,
   splitRequests,
@@ -106,6 +107,40 @@ function fillAvatar(node, conversation) {
     letter || icon(isGroup(conversation) ? "group" : "person"),
   );
 }
+const stillMotion = matchMedia("(prefers-reduced-motion: reduce)");
+
+// Entrance classes are removed once they play so a later redraw of the same
+// node does not replay them.
+function animateIn(node) {
+  if (stillMotion.matches) return;
+  node.classList.add("entering");
+  node.addEventListener(
+    "animationend",
+    () => node.classList.remove("entering"),
+    { once: true },
+  );
+}
+
+// FLIP: measure before the reorder, then play the old position back so rows
+// that moved slide into place instead of jumping.
+function measureRows(nodes) {
+  if (stillMotion.matches) return undefined;
+  const before = new Map();
+  for (const node of nodes) before.set(node, node.getBoundingClientRect().top);
+  return before;
+}
+function slideRows(before) {
+  if (!before) return;
+  for (const [node, top] of before) {
+    const delta = top - node.getBoundingClientRect().top;
+    if (!delta || Math.abs(delta) < 2) continue;
+    node.animate(
+      [{ transform: `translateY(${delta}px)` }, { transform: "none" }],
+      { duration: 260, easing: "cubic-bezier(0.05, 0.7, 0.1, 1)" },
+    );
+  }
+}
+
 let noticeTimer;
 function notice(message) {
   clearTimeout(noticeTimer);
@@ -190,14 +225,14 @@ function thread(id) {
   return entry;
 }
 
-function loadThread(id, before = "") {
+function loadThread(id, before = "", { limit = 100, quiet = false } = {}) {
   const entry = thread(id);
   if (entry.loading) return entry.loading;
   const requestGeneration = generation;
   entry.loading = (async () => {
     try {
       const page = await request(
-        `/v1/conversations/${encodeURIComponent(id)}/messages?limit=100${
+        `/v1/conversations/${encodeURIComponent(id)}/messages?limit=${limit}${
           before ? `&before=${encodeURIComponent(before)}` : ""
         }`,
       );
@@ -212,7 +247,7 @@ function loadThread(id, before = "") {
       entry.cursor = Math.max(entry.cursor, page.cursor || 0);
       if (before || !entry.fetched) entry.before = page.next_before || "";
       entry.fetched = true;
-      if (id === selected) invalidate("thread", "compose");
+      if (id === selected && !quiet) invalidate("thread", "compose");
     } finally {
       entry.loading = undefined;
     }
@@ -225,6 +260,7 @@ function loadAll() {
   if (loadingAll) return loadingAll;
   const requestGeneration = generation;
   loadingAll = (async () => {
+    stopFullHistory();
     const [st, cs, os, hs] = await Promise.all([
       request("/v1/status"),
       request("/v1/conversations"),
@@ -388,6 +424,7 @@ async function stream(currentGeneration) {
 // --- Conversation list ------------------------------------------------------
 
 const listNodes = new Map();
+let listRendered = false;
 function buildConversationNode(conversation) {
   const node = el("button", undefined, "conversation");
   node.type = "button";
@@ -424,7 +461,11 @@ function renderList() {
     seen.add(conversation.id);
     let entry = listNodes.get(conversation.id);
     if (!entry) {
-      entry = { node: buildConversationNode(conversation), signature: "" };
+      entry = {
+        node: buildConversationNode(conversation),
+        signature: "",
+        fresh: true,
+      };
       listNodes.set(conversation.id, entry);
     }
     const signature = [
@@ -448,6 +489,9 @@ function renderList() {
       listNodes.delete(id);
     }
   reportUnread();
+  const placed = measureRows(
+    order.filter((node) => node.parentNode === container),
+  );
   let child = container.firstElementChild;
   for (const node of order) {
     if (child === node) {
@@ -461,6 +505,14 @@ function renderList() {
     child.remove();
     child = next;
   }
+  slideRows(placed);
+  if (listRendered)
+    for (const conversation of items) {
+      const entry = listNodes.get(conversation.id);
+      if (entry?.fresh) animateIn(entry.node);
+    }
+  for (const entry of listNodes.values()) entry.fresh = false;
+  listRendered = true;
   if (!items.length)
     container.append(
       el(
@@ -857,7 +909,12 @@ function buildOutboxRow(row) {
 const threadNodes = new Map();
 let threadNodesFor = "";
 let preserveScroll = false;
+let threadSwitching = false;
+let fullHistory;
+let bulkRows = false;
 function renderThread() {
+  const bulk = bulkRows;
+  bulkRows = false;
   const conversation = conversations.get(selected);
   $("empty").hidden = !!conversation || composing;
   $("new-chat").hidden = !composing;
@@ -883,10 +940,15 @@ function renderThread() {
   );
   const container = $("messages");
   const rowsNode = $("rows");
-  if (threadNodesFor !== selected) {
+  // Messages for a newly selected conversation usually land a render after the
+  // switch, so the thread animates once as a whole instead of row by row.
+  const switched = threadNodesFor !== selected;
+  if (switched) {
     threadNodes.clear();
     rowsNode.replaceChildren();
     threadNodesFor = selected;
+    threadSwitching = true;
+    animateIn($("thread").querySelector(".thread-header"));
   }
   const atBottom =
     container.scrollHeight - container.scrollTop - container.clientHeight < 80;
@@ -907,6 +969,7 @@ function renderThread() {
               currentSessionEpoch,
             ]);
     let cached = threadNodes.get(row.key);
+    const fresh = !cached;
     if (!cached || cached.signature !== signature) {
       const node =
         row.kind === "divider"
@@ -917,6 +980,7 @@ function renderThread() {
       if (cached) cached.node.replaceWith(node);
       cached = { node, signature };
       threadNodes.set(row.key, cached);
+      if (fresh && !threadSwitching && !bulk) animateIn(node);
     }
     order.push(cached.node);
   }
@@ -938,12 +1002,22 @@ function renderThread() {
     child.remove();
     child = next;
   }
+  if (threadSwitching && rows.length) {
+    threadSwitching = false;
+    animateIn(rowsNode);
+  }
   if (!rows.length && entry.fetched)
     rowsNode.append(
       el("p", "No messages in stored history yet.", "thread-empty"),
     );
-  $("older").hidden = !entry.before;
-  if (preserveScroll) {
+  $("older").hidden = !entry.before && !fullHistory;
+  $("load-older").hidden = !!fullHistory;
+  $("older-progress").hidden = !fullHistory;
+  if (entry.scrollToTop) {
+    container.scrollTop = 0;
+    entry.scrollToTop = false;
+    preserveScroll = false;
+  } else if (preserveScroll) {
     container.scrollTop += container.scrollHeight - previousHeight;
     preserveScroll = false;
   } else if (atBottom || entry.scrollToBottom) {
@@ -953,6 +1027,7 @@ function renderThread() {
   $("mark-read").disabled =
     conversation.read_only || !messages.some((message) => !message.read_only);
   $("import-conversation").disabled = conversation.read_only || importing > 0;
+  $("load-full-history").disabled = !!fullHistory;
 }
 
 function renderSelectedAttachments() {
@@ -1328,6 +1403,7 @@ async function select(id) {
     return;
   }
   stashDraft();
+  stopFullHistory();
   selected = id;
   composing = false;
   selectedFiles = draftFiles.get(id) || [];
@@ -1345,6 +1421,7 @@ async function select(id) {
 }
 function deselect() {
   stashDraft();
+  stopFullHistory();
   selected = "";
   composing = false;
   invalidate("list", "thread");
@@ -1831,6 +1908,7 @@ function clearPrivateUI() {
   historyJobs.clear();
   threads.clear();
   listNodes.clear();
+  listRendered = false;
   threadNodes.clear();
   threadNodesFor = "";
   selected = "";
@@ -2117,8 +2195,8 @@ $("attachments").onchange = () => {
 async function loadOlder() {
   const id = selected;
   const entry = threads.get(id);
-  if (!entry || !entry.before || entry.loading) return;
-  const olderButton = $("older").querySelector("button");
+  if (!entry || !entry.before || entry.loading || fullHistory) return;
+  const olderButton = $("load-older");
   olderButton.disabled = true;
   try {
     preserveScroll = true;
@@ -2130,7 +2208,7 @@ async function loadOlder() {
     olderButton.disabled = false;
   }
 }
-$("older").querySelector("button").onclick = loadOlder;
+$("load-older").onclick = loadOlder;
 if (typeof IntersectionObserver === "function")
   new IntersectionObserver(
     (entries) => {
@@ -2138,6 +2216,72 @@ if (typeof IntersectionObserver === "function")
     },
     { root: $("messages") },
   ).observe($("older"));
+
+// Walks every remaining page of stored history in one go and lands on the
+// oldest message. Pages render only once at the end, because relaying the
+// thread after each page is what makes long conversations crawl.
+const FULL_HISTORY_PAGE = 500;
+function stopFullHistory() {
+  if (fullHistory) fullHistory.cancelled = true;
+}
+async function loadFullHistory() {
+  const id = selected;
+  const entry = id && threads.get(id);
+  if (!entry || fullHistory) return;
+  if (!entry.before) {
+    $("messages").scrollTop = 0;
+    return;
+  }
+  const run = (fullHistory = { id, cancelled: false });
+  const stale = () =>
+    run !== fullHistory || selected !== id || threads.get(id) !== entry;
+  try {
+    showFullHistoryProgress(entry.messages.size);
+    await walkOlder(
+      async (before) => {
+        await loadThread(id, before, { limit: FULL_HISTORY_PAGE, quiet: true });
+        return stale() ? before : entry.before;
+      },
+      {
+        before: entry.before,
+        cancelled: () => run.cancelled || stale(),
+        onPage: () => showFullHistoryProgress(entry.messages.size),
+      },
+    );
+    if (stale()) return;
+    // Stopping partway keeps the viewport where it was; reaching the start is
+    // the whole point of the button, so land there.
+    if (entry.before) {
+      notice(`Stopped after loading ${entry.messages.size} messages.`);
+      preserveScroll = true;
+    } else {
+      notice(
+        `Loaded ${entry.messages.size} messages, back to the start of the conversation.`,
+      );
+      entry.scrollToTop = true;
+    }
+  } catch (error) {
+    notice(error.message);
+  } finally {
+    if (run === fullHistory) fullHistory = undefined;
+    // One relayout for every page at once: no entrance animation per row.
+    bulkRows = true;
+    invalidate("thread", "compose");
+  }
+}
+// Written straight to the DOM: the batched renderer does not run during a
+// walk, because the point is to relayout the thread only once at the end.
+function showFullHistoryProgress(loaded) {
+  $("older").hidden = false;
+  $("load-older").hidden = true;
+  $("older-progress").hidden = false;
+  $("load-full-history").disabled = true;
+  $("older-progress-text").textContent = loaded
+    ? `Loading older messages… ${loaded} so far`
+    : "Loading older messages…";
+}
+$("load-full-history").onclick = () => void loadFullHistory();
+$("stop-full-history").onclick = stopFullHistory;
 $("mark-read").onclick = async () => {
   const latest = [...(threads.get(selected)?.messages.values() || [])].sort(
     (a, b) => (b.time || "").localeCompare(a.time || ""),

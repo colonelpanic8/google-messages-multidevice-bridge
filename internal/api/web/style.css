@@ -26,6 +26,11 @@
   --scrim: rgba(0, 0, 0, 0.32);
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.18), 0 4px 12px rgba(0, 0, 0, 0.08);
   --radius: 28px;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-emphasized: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --motion-short: 120ms;
+  --motion-medium: 220ms;
+  --motion-long: 320ms;
   font-family:
     "Google Sans",
     Roboto,
@@ -132,9 +137,15 @@ svg {
   align-items: center;
   justify-content: center;
   color: var(--on-surface-variant);
+  transition:
+    background-color var(--motion-short) var(--ease-standard),
+    transform var(--motion-short) var(--ease-standard);
 }
 .icon-button:hover:not(:disabled) {
   background: color-mix(in srgb, var(--on-surface) 8%, transparent);
+}
+.icon-button:active:not(:disabled) {
+  transform: scale(0.92);
 }
 .text-button,
 .filled,
@@ -147,6 +158,15 @@ svg {
   align-items: center;
   gap: 8px;
   white-space: nowrap;
+  transition:
+    background-color var(--motion-short) var(--ease-standard),
+    box-shadow var(--motion-medium) var(--ease-standard),
+    transform var(--motion-short) var(--ease-standard);
+}
+.text-button:active:not(:disabled),
+.filled:active:not(:disabled),
+.tonal:active:not(:disabled) {
+  transform: scale(0.97);
 }
 .text-button {
   color: var(--primary);
@@ -238,13 +258,14 @@ svg {
   height: 100%;
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
-  background: var(--surface-low);
+  background: var(--surface);
 }
 .list-pane {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 0 8px 8px;
+  padding: 0 0 8px;
+  border-right: 1px solid var(--outline-variant);
 }
 .list-header {
   height: 64px;
@@ -266,6 +287,8 @@ svg {
   background: var(--surface-container);
   box-shadow: var(--shadow);
   z-index: 20;
+  transform-origin: top right;
+  animation: menu-in var(--motion-medium) var(--ease-emphasized);
 }
 .menu button {
   width: 100%;
@@ -276,6 +299,7 @@ svg {
   gap: 12px;
   text-align: left;
   color: var(--on-surface);
+  transition: background-color var(--motion-short) var(--ease-standard);
 }
 .menu button svg {
   color: var(--on-surface-variant);
@@ -287,7 +311,7 @@ svg {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 0 8px 8px;
+  margin: 0 12px 8px;
   padding: 10px 8px 10px 16px;
   border-radius: 16px;
   background: var(--warning-container);
@@ -319,11 +343,14 @@ svg {
   align-items: center;
   gap: 12px;
   height: 48px;
-  margin: 0 8px 12px;
+  margin: 0 12px 12px;
   padding: 0 16px;
   border-radius: 24px;
   background: var(--surface-container);
   color: var(--on-surface-variant);
+  transition:
+    background-color var(--motion-short) var(--ease-standard),
+    box-shadow var(--motion-short) var(--ease-standard);
 }
 .search:focus-within {
   background: var(--surface);
@@ -345,9 +372,9 @@ svg {
 }
 .start-chat {
   height: 56px;
-  margin: 0 8px 8px;
+  margin: 0 12px 12px;
   padding: 0 24px 0 20px;
-  border-radius: 16px;
+  border-radius: 100px;
   display: inline-flex;
   align-items: center;
   gap: 12px;
@@ -357,6 +384,12 @@ svg {
   font-size: 15px;
   font-weight: 500;
   box-shadow: var(--shadow);
+  transition:
+    box-shadow var(--motion-medium) var(--ease-standard),
+    transform var(--motion-short) var(--ease-standard);
+}
+.start-chat:active {
+  transform: scale(0.97);
 }
 .start-chat:hover {
   box-shadow:
@@ -368,7 +401,6 @@ svg {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding-right: 4px;
 }
 .conversation {
   width: 100%;
@@ -379,17 +411,23 @@ svg {
     "avatar preview badge";
   column-gap: 16px;
   align-items: center;
-  padding: 10px 16px;
-  border-radius: 28px;
+  padding: 14px 16px;
   text-align: left;
   color: var(--on-surface);
+  transition:
+    background-color var(--motion-short) var(--ease-standard),
+    color var(--motion-short) var(--ease-standard);
 }
 .conversation:hover {
   background: color-mix(in srgb, var(--on-surface) 6%, transparent);
 }
-.conversation.active {
-  background: var(--secondary-container);
-  color: var(--on-secondary-container);
+.conversation:active {
+  background: color-mix(in srgb, var(--on-surface) 12%, transparent);
+}
+.conversation.active,
+.conversation.active:hover {
+  background: var(--primary-container);
+  color: var(--on-primary-container);
 }
 .conversation .avatar {
   grid-area: avatar;
@@ -436,6 +474,13 @@ svg {
   font-weight: 700;
   color: var(--on-surface);
 }
+.conversation.active.unread .name,
+.conversation.active.unread .preview {
+  color: inherit;
+}
+.conversation.active .badge {
+  background: currentColor;
+}
 .conversation.previous-session .name::after {
   content: "Previous pairing";
   margin-left: 8px;
@@ -476,8 +521,6 @@ svg {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  margin: 8px 8px 8px 0;
-  border-radius: 24px;
   background: var(--surface);
   overflow: hidden;
 }
@@ -554,6 +597,13 @@ svg {
 .older {
   text-align: center;
   padding: 4px 0 12px;
+}
+.older-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--on-surface-variant);
 }
 .divider {
   text-align: center;
@@ -742,9 +792,14 @@ svg {
   background: var(--surface);
   border: 1px solid var(--outline-variant);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  animation: reaction-in var(--motion-medium) var(--ease-emphasized);
+  transition: transform var(--motion-short) var(--ease-standard);
 }
 button.reaction {
   cursor: pointer;
+}
+button.reaction:hover {
+  transform: scale(1.08);
 }
 .reaction.mine {
   border-color: var(--primary);
@@ -793,16 +848,20 @@ button.reaction {
   background: var(--surface-container);
   box-shadow: var(--shadow);
   z-index: 5;
+  transform-origin: bottom left;
+  animation: menu-in var(--motion-medium) var(--ease-emphasized);
 }
 .row.outgoing .react-choices {
   left: auto;
   right: 0;
+  transform-origin: bottom right;
 }
 .react-choices button {
   width: 36px;
   height: 36px;
   border-radius: 50%;
   font-size: 20px;
+  transition: transform var(--motion-short) var(--ease-emphasized);
 }
 .react-choices button:hover {
   background: color-mix(in srgb, var(--on-surface) 8%, transparent);
@@ -927,6 +986,8 @@ button.reaction {
   border-radius: 20px;
   border-bottom-left-radius: 4px;
   background: var(--bubble-in);
+  transform-origin: bottom left;
+  animation: bubble-in var(--motion-medium) var(--ease-emphasized);
 }
 .typing span {
   width: 8px;
@@ -1024,6 +1085,7 @@ button.reaction {
   resize: none;
   line-height: 22px;
   font-size: 15px;
+  transition: background-color var(--motion-short) var(--ease-standard);
 }
 .compose-row textarea:focus {
   outline: none;
@@ -1041,11 +1103,22 @@ button.reaction {
   justify-content: center;
   background: var(--primary);
   color: var(--on-primary);
-  transition: transform 0.15s;
+  transition:
+    transform var(--motion-short) var(--ease-emphasized),
+    box-shadow var(--motion-medium) var(--ease-standard);
 }
 .send:hover:not(:disabled) {
   transform: scale(1.05);
   box-shadow: var(--shadow);
+}
+.send:active:not(:disabled) {
+  transform: scale(0.92);
+}
+.send svg {
+  transition: transform var(--motion-medium) var(--ease-emphasized);
+}
+.send:hover:not(:disabled) svg {
+  transform: translateX(2px);
 }
 .send-hint {
   margin: 6px 0 0 60px;
@@ -1094,6 +1167,9 @@ button.reaction {
   color: var(--on-surface);
   box-shadow: var(--shadow);
 }
+.dialog[open] {
+  animation: dialog-in var(--motion-long) var(--ease-emphasized);
+}
 /* The full-size view fits the window instead of the dialog's reading width;
    the desktop window cannot hand a blob: URL to an external browser. */
 .viewer {
@@ -1112,6 +1188,9 @@ button.reaction {
 }
 .dialog::backdrop {
   background: var(--scrim);
+}
+.dialog[open]::backdrop {
+  animation: fade-in var(--motion-medium) var(--ease-standard);
 }
 .dialog header {
   display: flex;
@@ -1246,11 +1325,94 @@ button.reaction {
   line-height: 1.4;
   box-shadow: var(--shadow);
   z-index: 50;
+  animation: snackbar-in var(--motion-long) var(--ease-emphasized);
 }
 @media (prefers-color-scheme: dark) {
   .snackbar {
     background: #e6e0e9;
     color: #322f35;
+  }
+}
+
+/* Motion */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+}
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.96);
+  }
+}
+@keyframes snackbar-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 24px);
+  }
+}
+@keyframes reaction-in {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+}
+@keyframes bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.9);
+  }
+}
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+@keyframes thread-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+/* Rows animate only when they are new, so redraws of existing rows stay still. */
+.conversation.entering {
+  animation: row-in var(--motion-medium) var(--ease-emphasized);
+}
+.row.entering {
+  animation: bubble-in var(--motion-long) var(--ease-emphasized);
+  transform-origin: bottom left;
+}
+.row.outgoing.entering {
+  transform-origin: bottom right;
+}
+.divider.entering {
+  animation: fade-in var(--motion-long) var(--ease-standard);
+}
+#rows.entering {
+  animation: thread-in var(--motion-long) var(--ease-emphasized);
+}
+.thread-header.entering .avatar,
+.thread-header.entering .thread-titles {
+  animation: fade-in var(--motion-medium) var(--ease-standard);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after,
+  *::backdrop {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
   }
 }
 
@@ -1262,9 +1424,8 @@ button.reaction {
   .thread-pane {
     grid-area: 1 / 1;
   }
-  .thread-pane {
-    margin: 0;
-    border-radius: 0;
+  .list-pane {
+    border-right: 0;
   }
   body:not(.thread-open) .thread-pane {
     display: none;

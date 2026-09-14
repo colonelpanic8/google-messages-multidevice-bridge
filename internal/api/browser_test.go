@@ -52,6 +52,16 @@ func TestBrowserFixture(t *testing.T) {
 	appendRecord("message", "m2", model.Message{Schema: 1, ID: "m2", ConversationID: "synthetic-conversation", SenderID: "me", Time: now.Add(-2 * time.Minute), Text: "Sounds good! Around 3 works for me.", Direction: "outgoing", Status: "outgoing_displayed", Reactions: []model.Reaction{{Emoji: "👍", Participants: []string{"friend", "me"}}, {Emoji: "🎉", Participants: []string{"friend"}}}, Attachments: []model.Attachment{}})
 	appendRecord("message", "m3", model.Message{Schema: 1, ID: "m3", ConversationID: "synthetic-conversation", SenderID: "friend", Time: now.Add(-time.Minute), Text: "See you at the park! The video is still on the phone.", Direction: "incoming", Status: "incoming_complete", Reactions: []model.Reaction{}, Attachments: []model.Attachment{{ID: unavailableMediaID, Name: "park-preview.mp4", MIME: "video/mp4", Size: 7340032, Available: false}}})
 	appendRecord("message", "m4", model.Message{Schema: 1, ID: "m4", ConversationID: "synthetic-conversation", SenderID: "me", Time: now, Direction: "outgoing", Status: "outgoing_complete", Reactions: []model.Reaction{}, Attachments: []model.Attachment{{ID: availableMediaID, Name: "park-map.svg", MIME: "image/svg+xml", Size: 171, Available: true}}})
+	// Long enough that reaching the start needs several bulk pages.
+	appendRecord("conversation", "synthetic-long", model.Conversation{Schema: 1, ID: "synthetic-long", Name: "Long history", Preview: "Message 1500", Protocol: "rcs", State: "active", Updated: now.Add(-2 * time.Hour), Participants: []model.Participant{{ID: "archivist", Name: "Robin (synthetic)", Address: "+1 555 0142"}, {ID: "me", Name: "You", IsMe: true}}})
+	for i := 1; i <= 1500; i++ {
+		sender, direction, status := "archivist", "incoming", "incoming_complete"
+		if i%2 == 0 {
+			sender, direction, status = "me", "outgoing", "outgoing_complete"
+		}
+		id := fmt.Sprintf("long-%04d", i)
+		appendRecord("message", id, model.Message{Schema: 1, ID: id, ConversationID: "synthetic-long", SenderID: sender, Time: now.Add(time.Duration(i-1501) * time.Hour), Text: fmt.Sprintf("Message %d", i), Direction: direction, Status: status, Reactions: []model.Reaction{}, Attachments: []model.Attachment{}})
+	}
 	appendRecord("history", "conversations:inbox", model.HistoryJob{Schema: 1, ID: "conversations:inbox", Kind: "conversations", Folder: "inbox", State: "queued", Pages: 3, Records: 147, Updated: now})
 	if os.Getenv("BRIDGE_BROWSER_RECOVERY_TEST") == "1" {
 		if err := s.SavePairedSession([]byte("synthetic replacement session")); err != nil {
