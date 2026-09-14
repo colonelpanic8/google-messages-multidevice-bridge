@@ -26,6 +26,10 @@ test:
 
 check: fmt-check lint test
 
+# Rasterizes the shipped PNG icons from the SVG sources. Needs rsvg-convert.
+gen-icons:
+    ./tools/gen-icons.sh
+
 # Refetches Unicode and CLDR data, so it needs network access.
 gen-emoji:
     node tools/gen-emoji.mjs
