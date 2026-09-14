@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "io.github.colonelpanic8.google-messages-bridge",
   "build": {
-    "frontendDist": "ui"
+    "frontendDist": "../client"
   },
   "app": {
     "withGlobalTauri": true,

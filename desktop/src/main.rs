@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
 
 const KEYRING_SERVICE: &str = "google-messages-multidevice-bridge";
@@ -18,9 +18,6 @@ const KEYRING_USER: &str = "api-token";
 const ENV_BRIDGE_URL: &str = "GOOGLE_MESSAGES_BRIDGE_URL";
 const ENV_TOKEN: &str = "GOOGLE_MESSAGES_BRIDGE_TOKEN";
 const ENV_TOKEN_FILE: &str = "GOOGLE_MESSAGES_BRIDGE_TOKEN_FILE";
-
-// Declared in permissions/app-commands.toml.
-const APP_COMMANDS_PERMISSION: &str = "allow-app-commands";
 
 struct Paths {
     config_dir: PathBuf,
@@ -102,44 +99,13 @@ fn get_bridge_url(paths: State<Paths>) -> Option<String> {
     read_bridge_url(&paths)
 }
 
+/// Persists the bridge address. The window is not navigated anywhere: it runs
+/// the bundled client for its whole life, and the client reaches the bridge
+/// over the API alone.
 #[tauri::command]
-fn save_bridge_url(app: AppHandle, paths: State<Paths>, url: String) -> Result<(), String> {
+fn save_bridge_url(paths: State<Paths>, url: String) -> Result<(), String> {
     let normalized = validate_bridge_url(&url).ok_or("Use an http or https URL.")?;
-    write_private(&paths.url_file(), &normalized)?;
-    navigate(&app, &normalized)
-}
-
-fn navigate(app: &AppHandle, url: &str) -> Result<(), String> {
-    let window = app.get_webview_window("main").ok_or("main window missing")?;
-    let target = url::Url::parse(url).map_err(|e| e.to_string())?;
-    allow_bridge_origin(app, &target);
-    window.navigate(target).map_err(|e| e.to_string())
-}
-
-/// Grant the bridge's origin — and nothing else — access to the app commands.
-/// The URL is only known at runtime, so the capability cannot live in
-/// capabilities/default.json without widening it to every remote origin.
-fn allow_bridge_origin(app: &AppHandle, url: &url::Url) {
-    if let Some(capability) = bridge_capability(url) {
-        let _ = app.add_capability(capability);
-    }
-}
-
-/// `None` for the bundled pages, which are local and already covered by
-/// capabilities/default.json.
-fn bridge_capability(url: &url::Url) -> Option<String> {
-    let origin = url.origin().ascii_serialization();
-    if origin == "null" {
-        return None;
-    }
-    let identifier: String = origin
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    // The origin is an ASCII serialization, so it needs no JSON escaping.
-    Some(format!(
-        r#"{{"identifier":"bridge-{identifier}","local":false,"windows":["main"],"remote":{{"urls":["{origin}/*"]}},"permissions":["{APP_COMMANDS_PERMISSION}"]}}"#
-    ))
+    write_private(&paths.url_file(), &normalized)
 }
 
 /// WebKitGTK drops `target="_blank"` and `window.open` for a window that has no
@@ -162,11 +128,10 @@ fn open_external(url: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn open_setup(app: AppHandle) -> Result<(), String> {
-    let window = app.get_webview_window("main").ok_or("main window missing")?;
-    let target = url::Url::parse("tauri://localhost/index.html").map_err(|e| e.to_string())?;
-    window.navigate(target).map_err(|e| e.to_string())
+/// The client owns every screen now, so changing the bridge is a message to it
+/// rather than a navigation.
+fn open_setup(app: &AppHandle) {
+    let _ = app.emit("show-connect", ());
 }
 
 // The OS keyring is preferred; a private file in the config directory covers
@@ -266,7 +231,6 @@ fn main() {
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
             let paths = Paths { config_dir };
-            let bridge_url = read_bridge_url(&paths);
             app.manage(paths);
 
             let open = MenuItem::with_id(app, "open", "Open Messages", true, None::<&str>)?;
@@ -282,7 +246,7 @@ fn main() {
                     "open" => show_main(app),
                     "setup" => {
                         show_main(app);
-                        let _ = open_setup(app.clone());
+                        open_setup(app);
                     }
                     "quit" => app.exit(0),
                     _ => {}
@@ -294,9 +258,6 @@ fn main() {
                 })
                 .build(app)?;
 
-            if let Some(url) = bridge_url {
-                let _ = navigate(app.handle(), &url);
-            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -308,7 +269,6 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_bridge_url,
             save_bridge_url,
-            open_setup,
             open_external,
             get_token,
             save_token,
@@ -329,6 +289,14 @@ mod tests {
         assert_eq!(nonempty("  abc\n".to_string()), Some("abc".to_string()));
         assert_eq!(nonempty("   ".to_string()), None);
         assert_eq!(nonempty(String::new()), None);
+    }
+
+    // The client appends API paths to whatever this returns, so a port must
+    // survive and the value must stay a bare origin.
+    #[test]
+    fn validate_bridge_url_keeps_the_port() {
+        let url = validate_bridge_url("https://bridge.example.ts.net:8443").unwrap();
+        assert_eq!(url, "https://bridge.example.ts.net:8443/");
     }
 
     #[test]
@@ -356,23 +324,6 @@ mod tests {
         assert_eq!(select_token(None, stored), Some("stored".to_string()));
         let none = || None;
         assert_eq!(select_token(None, none), None);
-    }
-
-    // A URL pattern without an explicit port only matches the scheme's default
-    // port, which is how the bridge on :8443 lost access to the app commands.
-    #[test]
-    fn bridge_capability_keeps_the_port() {
-        let url = url::Url::parse("https://bridge.example.ts.net:8443/").unwrap();
-        let capability = bridge_capability(&url).unwrap();
-        assert!(capability.contains(r#""urls":["https://bridge.example.ts.net:8443/*"]"#));
-        assert!(capability.contains(r#""identifier":"bridge-https---bridge-example-ts-net-8443""#));
-        assert!(capability.contains(APP_COMMANDS_PERMISSION));
-    }
-
-    #[test]
-    fn bridge_capability_skips_local_pages() {
-        let url = url::Url::parse("tauri://localhost/index.html").unwrap();
-        assert_eq!(bridge_capability(&url), None);
     }
 
     #[test]

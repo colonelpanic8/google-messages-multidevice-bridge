@@ -172,6 +172,28 @@ func New(b *bridge.Bridge, token string, push PushService) http.Handler {
 			pairingCredentials(w, r, b)
 			return
 		}
+		// The desktop app bundles the client, so its requests carry a foreign
+		// origin and are preflighted. Both happen before authentication: a
+		// preflight never carries the Authorization header it is asking about.
+		origin := r.Header.Get("Origin")
+		allowed := origin != "" && originAllowed(origin, r.Host)
+		if allowed {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+		if origin != "" {
+			w.Header().Add("Vary", "Origin")
+		}
+		if r.Method == "OPTIONS" && r.Header.Get("Access-Control-Request-Method") != "" {
+			if allowed {
+				w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+				w.Header().Set("Access-Control-Max-Age", "600")
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
 		if serveAsset(w, r) {
 			return
 		}
@@ -182,14 +204,27 @@ func New(b *bridge.Bridge, token string, push PushService) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if r.Method != "GET" && r.Method != "HEAD" {
-			if origin := r.Header.Get("Origin"); origin != "" && origin != "http://"+r.Host && origin != "https://"+r.Host {
-				http.Error(w, "cross-origin request rejected", http.StatusForbidden)
-				return
-			}
+		// A browser would have been stopped by the preflight already. This
+		// keeps a request that skipped one from reaching the bridge.
+		if origin != "" && !allowed {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// originAllowed reports whether browser code at origin may call the API. The
+// bridge's own origin covers the client it serves; the fixed Tauri origins
+// cover the desktop app, which loads the same client from its own bundle.
+func originAllowed(origin, host string) bool {
+	switch origin {
+	case "http://" + host, "https://" + host:
+		return true
+	case "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost":
+		return true
+	}
+	return false
 }
 
 func cursor(r *http.Request) (uint64, error) {

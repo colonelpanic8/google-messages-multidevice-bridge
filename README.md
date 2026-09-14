@@ -20,8 +20,9 @@ reliability patches; see its [patch notes](third_party/mautrix-gmessages/PATCHES
   explicit mark-read, queued-operation cancellation, and incoming typing/reactions.
 - Resumable history jobs for inbox, archive, spam, and each discovered conversation,
   in addition to bounded recent-history reconciliation.
-- An authenticated schema-1 API, resumable SSE, a multi-client web app, and a
-  connection supervisor that retains the local service while reconnecting.
+- An authenticated schema-1 API, resumable SSE, a multi-client web app served from
+  the bridge or bundled into the desktop shell, and a connection supervisor that
+  retains the local service while reconnecting.
 - An installable app: a web app manifest, icons, and a service worker that caches
   the static shell and delivers Web Push notifications while no window is open.
 - A Nix package and Home Manager user service with direct `pass` integration.
@@ -149,6 +150,13 @@ hidden tabs or unselected conversations; replayed history never notifies. Web as
 and the pairing-helper ZIP are public. Every `/v1/` route requires bearer
 authentication except the ticket-only `POST /v1/pairing/credentials` handoff.
 
+The client lives in `client/`, outside the Go tree. The bridge embeds it so a browser
+can install the app straight from the bridge, and the desktop app bundles the same
+files. Only the browser copy is same-origin with the API; the desktop copy is a
+foreign origin, so `/v1/` answers CORS preflights and allows exactly two origins —
+the bridge's own, and the fixed Tauri origin the desktop app runs at. Any other
+origin is refused at the preflight and again on the request itself.
+
 The web app can create conversations from E.164 phone numbers, queue text or up to
 ten attachments totaling 20 MiB, react with any emoji and take a reaction back,
 send typing indicators, mark a conversation read, download available attachments,
@@ -184,13 +192,20 @@ history states, pagination, pairing, and SSE replay.
 
 ## Desktop app
 
-`desktop/` is a small [Tauri](https://tauri.app) window around the served web client.
-It asks for the bridge URL once, keeps the bridge token in the OS keyring (or a
-private file under the app config directory when no secret service is running),
-unlocks automatically on launch, shows a tray icon with the unread count in the
-window title and badge, closes to the tray, and raises desktop notifications for new
-incoming messages while it is running. It does not bundle the client: it loads
-whatever the bridge serves, so updating the bridge updates the app.
+`desktop/` is a small [Tauri](https://tauri.app) shell that bundles the same
+`client/` tree the bridge serves. The window never loads code over the network: it
+runs the local client, which talks to the bridge over `/v1/` alone. It asks for the
+bridge URL once, keeps the bridge token in the OS keyring (or a private file under
+the app config directory when no secret service is running), unlocks automatically
+on launch, shows a tray icon with the unread count in the window title and badge,
+closes to the tray, and raises desktop notifications for new incoming messages while
+it is running.
+
+Because the client is bundled, the shell's native commands — the keyring, OS
+notifications, and opening links externally — are reachable only from local content.
+No remote origin is granted them. The tradeoff is that the desktop app carries its
+own client build, so a bridge upgrade that changes the API needs a matching app
+upgrade; the browser client, still served by the bridge, updates with it.
 
 ```sh
 nix build .#desktop

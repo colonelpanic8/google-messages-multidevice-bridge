@@ -15,7 +15,16 @@
 rustPlatform.buildRustPackage {
   pname = "google-messages-desktop";
   version = "0.1.0";
-  src = ../desktop;
+  # The desktop app bundles the client tree, so both have to be in scope even
+  # though the crate itself lives in ./desktop.
+  src = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../desktop
+      ../client
+    ];
+  };
+  sourceRoot = "source/desktop";
   cargoLock.lockFile = ../desktop/Cargo.lock;
 
   nativeBuildInputs = [

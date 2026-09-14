@@ -1,7 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The bundled setup page may use the app commands. The bridge origin is granted the same access at runtime, once it is known.",
-  "windows": ["main"],
-  "permissions": ["core:default", "allow-app-commands"]
+  "description": "The bundled client runs as local content and may use the app commands. No remote origin is ever granted them.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "allow-app-commands"
+  ]
 }

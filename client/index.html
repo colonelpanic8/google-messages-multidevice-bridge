@@ -133,6 +133,32 @@
       </symbol>
     </svg>
 
+    <section id="connect" class="lock" hidden>
+      <div class="lock-card">
+        <div class="lock-brand">
+          <svg class="logo"><use href="#i-logo" /></svg>
+          <span>Messages</span>
+        </div>
+        <h1>Connect to your bridge</h1>
+        <p>
+          Enter the address of your Google Messages Multi-Device Bridge. You
+          will unlock it with the bridge token on the next screen.
+        </p>
+        <form id="connect-form">
+          <label class="sr-only" for="connect-url">Bridge address</label>
+          <input
+            type="url"
+            id="connect-url"
+            autocomplete="off"
+            required
+            placeholder="https://bridge.example.ts.net"
+          />
+          <button type="submit" class="filled">Continue</button>
+        </form>
+        <p id="connect-error" class="hint" role="alert"></p>
+      </div>
+    </section>
+
     <section id="login" class="lock">
       <div class="lock-card">
         <div class="lock-brand">

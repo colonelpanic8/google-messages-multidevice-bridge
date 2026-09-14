@@ -3,15 +3,13 @@ package api
 import (
 	"bytes"
 	"crypto/sha256"
-	"embed"
 	"encoding/hex"
 	"io/fs"
 	"net/http"
 	"sort"
-)
 
-//go:embed web/index.html web/style.css web/app.js web/stream.mjs web/view.mjs web/emoji.mjs web/emoji-data.mjs web/sw.js web/manifest.webmanifest web/favicon.svg web/icons
-var webFiles embed.FS
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/client"
+)
 
 // assetVersion fingerprints the embedded client so a new build always
 // invalidates the service worker's cached shell.
@@ -19,7 +17,7 @@ var assetVersion = fingerprint()
 
 func fingerprint() string {
 	var names []string
-	_ = fs.WalkDir(webFiles, "web", func(path string, entry fs.DirEntry, err error) error {
+	_ = fs.WalkDir(client.Files, ".", func(path string, entry fs.DirEntry, err error) error {
 		if err == nil && !entry.IsDir() {
 			names = append(names, path)
 		}
@@ -28,7 +26,7 @@ func fingerprint() string {
 	sort.Strings(names)
 	sum := sha256.New()
 	for _, name := range names {
-		data, err := webFiles.ReadFile(name)
+		data, err := client.Files.ReadFile(name)
 		if err != nil {
 			continue
 		}
@@ -72,7 +70,7 @@ func serveAsset(w http.ResponseWriter, r *http.Request) bool {
 	if !ok {
 		return false
 	}
-	data, err := webFiles.ReadFile("web/" + entry.file)
+	data, err := client.Files.ReadFile(entry.file)
 	if err != nil {
 		http.Error(w, "client unavailable", http.StatusInternalServerError)
 		return true

@@ -35,6 +35,12 @@ const $ = (id) => document.getElementById(id);
 // Present inside the Tauri desktop window, which keeps the token and shows
 // notifications on the client's behalf.
 const desktop = window.__TAURI__?.core?.invoke;
+// Empty when the bridge serves this client, so every API path stays
+// same-origin. The desktop app bundles the client instead and supplies the
+// bridge it was pointed at, which is the only thing it loads over the network.
+let apiBase = "";
+const api = (path) => apiBase + path;
+const normalizeBase = (url) => url.trim().replace(/\/+$/, "");
 const DEFAULT_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "😠"];
 const RECENT_REACTIONS = "reaction-recents";
 const QUICK_REACTIONS = 6;
@@ -182,7 +188,7 @@ async function request(path, options = {}) {
     !Object.keys(headers).some((key) => key.toLowerCase() === "content-type")
   )
     headers["Content-Type"] = "application/json";
-  const response = await fetch(path, {
+  const response = await fetch(api(path), {
     ...options,
     signal: abort?.signal,
     headers,
@@ -392,7 +398,7 @@ async function stream(currentGeneration) {
   while (generation === currentGeneration && token) {
     let failed = false;
     try {
-      const response = await fetch(`/v1/stream?after=${cursor}`, {
+      const response = await fetch(api(`/v1/stream?after=${cursor}`), {
         signal: abort.signal,
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -563,7 +569,7 @@ async function loadPreview(img) {
   const id = img.dataset.attachmentId;
   let pending = previewCache.get(id);
   if (!pending) {
-    pending = fetch(`/v1/attachments/${encodeURIComponent(id)}`, {
+    pending = fetch(api(`/v1/attachments/${encodeURIComponent(id)}`), {
       signal: abort.signal,
       headers: { Authorization: `Bearer ${token}` },
     }).then((response) => {
@@ -585,7 +591,7 @@ async function loadPreview(img) {
 }
 async function downloadAttachment(attachment) {
   const response = await fetch(
-    `/v1/attachments/${encodeURIComponent(attachment.id)}`,
+    api(`/v1/attachments/${encodeURIComponent(attachment.id)}`),
     { signal: abort.signal, headers: { Authorization: `Bearer ${token}` } },
   );
   if (!response.ok)
@@ -1233,7 +1239,9 @@ function renderPairing() {
   const state =
     pairingState.state ||
     (pairingState.required ? "pairing required" : "not started");
-  $("bridge-url").value = pairingState.ticket ? window.location.origin : "";
+  $("bridge-url").value = pairingState.ticket
+    ? apiBase || window.location.origin
+    : "";
   $("pairing-ticket").value = pairingState.ticket || "";
   $("pairing-fields").hidden = !pairingState.ticket;
   $("pairing-emoji").hidden =
@@ -2381,8 +2389,9 @@ setInterval(() => {
 setInterval(() => void pollStatus(), 10000);
 
 // The service worker backs the installed app: an offline shell and, once a
-// subscription exists, notifications delivered while no window is open.
-if ("serviceWorker" in navigator) {
+// subscription exists, notifications delivered while no window is open. The
+// desktop app already ships the shell and notifies through the OS.
+if (!desktop && "serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {
     notice("Background updates are unavailable in this browser.");
   });
@@ -2398,11 +2407,56 @@ if ("serviceWorker" in navigator) {
     pendingConversationFromLink = requested;
   }
 }
-if (desktop)
-  desktop("get_token")
-    .then((saved) => {
-      if (!saved || token) return;
-      $("token").value = saved;
-      $("login-form").requestSubmit();
+// --- Desktop bootstrap ------------------------------------------------------
+
+// A browser loaded this client from the bridge it talks to. The desktop app
+// bundles the client and starts with no bridge at all, so it has to ask for one
+// before the token screen means anything.
+function showConnect(prefill = "") {
+  $("connect-url").value = prefill;
+  $("connect-error").textContent = "";
+  $("app").hidden = true;
+  $("login").hidden = true;
+  $("connect").hidden = false;
+  $("connect-url").focus();
+}
+
+async function unlockWithSavedToken() {
+  const saved = await desktop("get_token").catch(() => null);
+  if (!saved || token) return;
+  $("token").value = saved;
+  $("login-form").requestSubmit();
+}
+
+if (desktop) {
+  $("connect-form").onsubmit = async (event) => {
+    event.preventDefault();
+    $("connect-error").textContent = "";
+    const url = normalizeBase($("connect-url").value);
+    try {
+      await desktop("save_bridge_url", { url });
+    } catch (message) {
+      $("connect-error").textContent = String(message);
+      return;
+    }
+    apiBase = url;
+    $("connect").hidden = true;
+    $("login").hidden = false;
+    await unlockWithSavedToken();
+  };
+  // Hidden until the bridge is known, so the token screen never asks for a
+  // token against nothing.
+  $("login").hidden = true;
+  desktop("get_bridge_url")
+    .then(async (saved) => {
+      if (!saved) return showConnect();
+      apiBase = normalizeBase(saved);
+      $("login").hidden = false;
+      await unlockWithSavedToken();
     })
+    .catch(() => showConnect());
+  // The tray's "Change bridge URL…" item.
+  void window.__TAURI__?.event
+    ?.listen("show-connect", () => showConnect(apiBase))
     .catch(() => {});
+}
