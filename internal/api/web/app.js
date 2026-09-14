@@ -318,6 +318,7 @@ function applyStatus(next) {
   providerState = status.state || "offline";
   currentSessionEpoch = status.session_epoch || 0;
   invalidate("status", "compose");
+  scheduleReadReceipt();
   if (previousEpoch && currentSessionEpoch !== previousEpoch)
     void loadAll().catch((error) => notice(error.message));
 }
@@ -341,7 +342,10 @@ function applyEvent(event) {
       if (id > conversationCursor) {
         conversations.set(event.entity_id, data);
         invalidate("list");
-        if (event.entity_id === selected) invalidate("thread", "compose");
+        if (event.entity_id === selected) {
+          invalidate("thread", "compose");
+          scheduleReadReceipt();
+        }
         maybeSelectCreatedConversation();
       }
       break;
@@ -352,7 +356,10 @@ function applyEvent(event) {
         entry.updates.set(event.entity_id, event);
       else if (id > entry.cursor) {
         entry.messages.set(event.entity_id, data);
-        if (data.conversation_id === selected) invalidate("thread", "compose");
+        if (data.conversation_id === selected) {
+          invalidate("thread", "compose");
+          scheduleReadReceipt();
+        }
       }
       break;
     }
@@ -1416,11 +1423,13 @@ async function select(id) {
   const entry = thread(id);
   entry.scrollToBottom = true;
   invalidate("list", "thread", "compose");
+  receiptAttempts.delete(id);
   try {
     await loadThread(id);
   } catch (error) {
     notice(error.message);
   }
+  scheduleReadReceipt();
 }
 function deselect() {
   stashDraft();
@@ -1904,6 +1913,8 @@ function clearPrivateUI() {
     pending.then((url) => URL.revokeObjectURL(url)).catch(() => {});
   previewCache.clear();
   notified.clear();
+  receiptAttempts.clear();
+  clearTimeout(receiptTimer);
   pendingSend = pendingConversation = createdConversation = undefined;
   selectedFiles = [];
   conversations.clear();
@@ -2285,16 +2296,66 @@ function showFullHistoryProgress(loaded) {
 }
 $("load-full-history").onclick = () => void loadFullHistory();
 $("stop-full-history").onclick = stopFullHistory;
-$("mark-read").onclick = async () => {
-  const latest = [...(threads.get(selected)?.messages.values() || [])].sort(
-    (a, b) => (b.time || "").localeCompare(a.time || ""),
-  )[0];
-  if (!latest) return;
+
+// --- Read receipts ----------------------------------------------------------
+
+// Only a message from the live session can carry a read receipt: records held
+// over from a previous session are no longer current and the phone rejects
+// them.
+function newestReadable(id) {
+  return [...(threads.get(id)?.messages.values() || [])]
+    .filter((message) => !message.read_only)
+    .sort((a, b) => (b.time || "").localeCompare(a.time || ""))[0];
+}
+async function sendReadReceipt(id, messageID) {
+  await request(`/v1/conversations/${encodeURIComponent(id)}/read`, {
+    method: "POST",
+    body: JSON.stringify({ message_id: messageID }),
+  });
+}
+
+// A conversation on screen has been seen, so it clears its own badge instead of
+// waiting for an explicit mark-read. The attempted message is remembered so a
+// receipt the phone never accepts is not retried on every event; selecting the
+// conversation again asks once more.
+const receiptAttempts = new Map();
+let receiptTimer;
+function scheduleReadReceipt() {
+  clearTimeout(receiptTimer);
+  receiptTimer = setTimeout(() => void markSelectedRead(), 250);
+}
+async function markSelectedRead() {
+  const id = selected;
+  const conversation = conversations.get(id);
+  if (
+    !token ||
+    !id ||
+    document.hidden ||
+    !$("auto-mark-read").checked ||
+    providerState !== "connected" ||
+    !conversation?.unread ||
+    conversation.read_only
+  )
+    return;
+  const latest = newestReadable(id);
+  if (!latest || receiptAttempts.get(id) === latest.id) return;
+  receiptAttempts.set(id, latest.id);
   try {
-    await request(`/v1/conversations/${encodeURIComponent(selected)}/read`, {
-      method: "POST",
-      body: JSON.stringify({ message_id: latest.id }),
-    });
+    await sendReadReceipt(id, latest.id);
+  } catch {
+    // Silent: an unsolicited receipt is not worth a notice, and the next
+    // message or the next visit tries again.
+  }
+}
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) scheduleReadReceipt();
+});
+$("mark-read").onclick = async () => {
+  const latest = newestReadable(selected);
+  if (!latest) return;
+  receiptAttempts.set(selected, latest.id);
+  try {
+    await sendReadReceipt(selected, latest.id);
     notice("Read receipt requested.");
   } catch (error) {
     notice(error.message);
