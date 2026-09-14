@@ -226,6 +226,12 @@ fn show_main(app: &AppHandle) {
 
 fn main() {
     tauri::Builder::default()
+        // Closing the window only hides it, so an instance outlives its window.
+        // Without this the launcher starts a second process that the first
+        // one's tray icon cannot reach, and the copies pile up invisibly.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main(app);
+        }))
         .plugin(tauri_plugin_notification::init())
         .manage(Unread(Mutex::new(0)))
         .setup(|app| {
