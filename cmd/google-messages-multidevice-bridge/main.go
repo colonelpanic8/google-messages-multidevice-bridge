@@ -43,6 +43,8 @@ func run() error {
 	listen := flags.String("listen", "127.0.0.1:0", "API listen address (port 0 selects a free port)")
 	storagePass := flags.String("storage-key-pass-entry", "", "pass entry containing the base64 storage key")
 	tokenPass := flags.String("api-token-pass-entry", "", "pass entry containing the API token")
+	storageFile := flags.String("storage-key-file", "", "file containing the base64 storage key, for deployments without pass")
+	tokenFile := flags.String("api-token-file", "", "file containing the API token, for deployments without pass")
 	pushSubject := flags.String("push-subject", "https://github.com/colonelpanic8/google-messages-multidevice-bridge", "VAPID subject identifying this deployment to push services")
 	offline := flags.Bool("offline", false, "serve stored history without connecting to Google")
 	if err := flags.Parse(os.Args[2:]); err != nil {
@@ -51,7 +53,7 @@ func run() error {
 		}
 		return err
 	}
-	storageValue, err := secretValue("GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_STORAGE_KEY", *storagePass)
+	storageValue, err := secretValue("GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_STORAGE_KEY", *storagePass, *storageFile)
 	if err != nil {
 		return err
 	}
@@ -85,7 +87,7 @@ func run() error {
 		}
 		return err
 	}
-	token, err := secretValue("GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_API_TOKEN", *tokenPass)
+	token, err := secretValue("GOOGLE_MESSAGES_MULTIDEVICE_BRIDGE_API_TOKEN", *tokenPass, *tokenFile)
 	if err != nil {
 		return err
 	}
@@ -189,7 +191,12 @@ serveLoop:
 	return err
 }
 
-func secretValue(env, entry string) (string, error) {
+// A secret file wins over a pass entry, which wins over the environment, so an
+// agenix/sops-nix deployment never needs an unlocked GPG agent.
+func secretValue(env, entry, file string) (string, error) {
+	if file != "" {
+		return secretFileValue(file)
+	}
 	if entry == "" {
 		return os.Getenv(env), nil
 	}
@@ -203,6 +210,19 @@ func secretValue(env, entry string) (string, error) {
 	cmd.Stdout = &output
 	if err := cmd.Run(); err != nil {
 		return "", errors.New("could not read pass entry; ensure the password store is unlocked")
+	}
+	return strings.TrimSpace(output.value.String()), nil
+}
+
+func secretFileValue(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", errors.New("could not read secret file")
+	}
+	defer f.Close()
+	var output boundedSecret
+	if _, err := io.Copy(&output, io.LimitReader(f, 4097)); err != nil {
+		return "", err
 	}
 	return strings.TrimSpace(output.value.String()), nil
 }

@@ -30,12 +30,26 @@ in
       description = "Encrypted database path.";
     };
     storageKeyPassEntry = lib.mkOption {
-      type = lib.types.str;
+      type = lib.types.nullOr lib.types.str;
+      default = null;
       description = "pass entry containing the permanent base64 storage key.";
     };
     apiTokenPassEntry = lib.mkOption {
-      type = lib.types.str;
+      type = lib.types.nullOr lib.types.str;
+      default = null;
       description = "pass entry containing the API bearer token.";
+    };
+    storageKeyFile = lib.mkOption {
+      type = lib.types.nullOr (lib.types.either lib.types.str lib.types.path);
+      default = null;
+      example = "/run/secrets/bridge-storage-key";
+      description = "File containing the permanent base64 storage key (for agenix/sops-nix). Unlike the pass entry it needs no GPG agent, so the service survives a reboot unattended.";
+    };
+    apiTokenFile = lib.mkOption {
+      type = lib.types.nullOr (lib.types.either lib.types.str lib.types.path);
+      default = null;
+      example = "/run/secrets/bridge-api-token";
+      description = "File containing the API bearer token (for agenix/sops-nix). Unlike the pass entry it needs no GPG agent, so the service survives a reboot unattended.";
     };
     client.enable = lib.mkEnableOption "Google Messages desktop client (Tauri window around the served web client)";
     client.package = lib.mkOption {
@@ -66,6 +80,16 @@ in
   };
   config = lib.mkMerge [
     (lib.mkIf cfg.enable {
+      assertions = [
+        {
+          assertion = (cfg.storageKeyPassEntry == null) != (cfg.storageKeyFile == null);
+          message = "Set exactly one of services.google-messages-multidevice-bridge.storageKeyPassEntry or storageKeyFile.";
+        }
+        {
+          assertion = (cfg.apiTokenPassEntry == null) != (cfg.apiTokenFile == null);
+          message = "Set exactly one of services.google-messages-multidevice-bridge.apiTokenPassEntry or apiTokenFile.";
+        }
+      ];
       home.packages = [ cfg.package ];
       systemd.user.services.google-messages-multidevice-bridge = {
         Unit = {
@@ -74,18 +98,32 @@ in
           Wants = [ "network-online.target" ];
         };
         Service = {
-          ExecStart = lib.concatMapStringsSep " " quoteExec [
-            (lib.getExe cfg.package)
-            "serve"
-            "--db"
-            cfg.database
-            "--listen"
-            cfg.listen
-            "--storage-key-pass-entry"
-            cfg.storageKeyPassEntry
-            "--api-token-pass-entry"
-            cfg.apiTokenPassEntry
-          ];
+          ExecStart = lib.concatMapStringsSep " " quoteExec (
+            [
+              (lib.getExe cfg.package)
+              "serve"
+              "--db"
+              cfg.database
+              "--listen"
+              cfg.listen
+            ]
+            ++ lib.optionals (cfg.storageKeyPassEntry != null) [
+              "--storage-key-pass-entry"
+              cfg.storageKeyPassEntry
+            ]
+            ++ lib.optionals (cfg.storageKeyFile != null) [
+              "--storage-key-file"
+              (toString cfg.storageKeyFile)
+            ]
+            ++ lib.optionals (cfg.apiTokenPassEntry != null) [
+              "--api-token-pass-entry"
+              cfg.apiTokenPassEntry
+            ]
+            ++ lib.optionals (cfg.apiTokenFile != null) [
+              "--api-token-file"
+              (toString cfg.apiTokenFile)
+            ]
+          );
           Environment = "PATH=${
             lib.makeBinPath [
               pkgs.pass

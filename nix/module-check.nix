@@ -43,6 +43,39 @@ let
     ];
   };
   service = evaluated.config.systemd.user.services.google-messages-multidevice-bridge.Service;
+  fileSecrets = lib.evalModules {
+    specialArgs = { inherit pkgs; };
+    modules = [
+      ./home-manager.nix
+      stubOptions
+      {
+        config.services.google-messages-multidevice-bridge = {
+          enable = true;
+          package = bridgePackage;
+          storageKeyFile = "/run/agenix/storage-key";
+          apiTokenFile = "/run/agenix/api-token";
+        };
+      }
+    ];
+  };
+  fileSecretsService =
+    fileSecrets.config.systemd.user.services.google-messages-multidevice-bridge.Service;
+  bothSecretSources = lib.evalModules {
+    specialArgs = { inherit pkgs; };
+    modules = [
+      ./home-manager.nix
+      stubOptions
+      {
+        config.services.google-messages-multidevice-bridge = {
+          enable = true;
+          package = bridgePackage;
+          storageKeyPassEntry = "keys/storage";
+          storageKeyFile = "/run/agenix/storage-key";
+          apiTokenPassEntry = "tokens/bridge";
+        };
+      }
+    ];
+  };
   clientEvaluated = lib.evalModules {
     specialArgs = { inherit pkgs; };
     modules = [
@@ -100,6 +133,12 @@ in
 assert lib.hasInfix ''"keys/a'b\"c\\d%%t$$HOME"'' service.ExecStart;
 assert lib.hasInfix ''"/test/data/google-messages-multidevice-bridge/bridge.db"'' service.ExecStart;
 assert service.UMask == "0077";
+assert lib.hasInfix ''"--storage-key-file" "/run/agenix/storage-key"'' fileSecretsService.ExecStart;
+assert lib.hasInfix ''"--api-token-file" "/run/agenix/api-token"'' fileSecretsService.ExecStart;
+assert !(lib.hasInfix "pass-entry" fileSecretsService.ExecStart);
+assert builtins.all (a: a.assertion) fileSecrets.config.assertions;
+# Two sources for one secret is ambiguous, so the module refuses it.
+assert !(builtins.all (a: a.assertion) bothSecretSources.config.assertions);
 assert service.Restart == "on-failure";
 assert clientEvaluated.config.home.packages == [ bridgePackage ];
 assert builtins.all (a: a.assertion) clientEvaluated.config.assertions;

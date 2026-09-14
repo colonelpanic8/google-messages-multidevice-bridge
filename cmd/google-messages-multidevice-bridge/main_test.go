@@ -72,24 +72,47 @@ func TestSecretValueReadsPassWithoutShellOrLeakingErrors(t *testing.T) {
 	t.Setenv("PATH", dir)
 	t.Setenv("BRIDGE_TEST_PASS", "1")
 	for _, entry := range []string{"-option", "bad\nentry"} {
-		if _, err := secretValue("IGNORED", entry); err == nil {
+		if _, err := secretValue("IGNORED", entry, ""); err == nil {
 			t.Fatal("accepted unsafe entry")
 		}
 	}
-	value, err := secretValue("IGNORED", "entry with $literal and `ticks`")
+	value, err := secretValue("IGNORED", "entry with $literal and `ticks`", "")
 	if err != nil || value != "synthetic-secret" {
 		t.Fatalf("value=%q err=%v", value, err)
 	}
 	t.Setenv("BRIDGE_TEST_PASS", "fail")
-	value, err = secretValue("IGNORED", "valid-entry")
+	value, err = secretValue("IGNORED", "valid-entry", "")
 	if value != "" || err == nil || strings.Contains(err.Error(), "private-output") {
 		t.Fatal("failed secret lookup exposed output")
 	}
 	t.Setenv("BRIDGE_TEST_PASS", "oversize")
-	if value, err = secretValue("IGNORED", "valid-entry"); err == nil || value != "" {
+	if value, err = secretValue("IGNORED", "valid-entry", ""); err == nil || value != "" {
 		t.Fatal("accepted oversized output")
 	}
 }
+func TestSecretValueReadsFilesWithoutPass(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte("  file-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BRIDGE_SECRET", "from-env")
+	// The file wins over both the pass entry and the environment.
+	value, err := secretValue("BRIDGE_SECRET", "some-entry", path)
+	if err != nil || value != "file-secret" {
+		t.Fatalf("value=%q err=%v", value, err)
+	}
+	if _, err = secretValue("BRIDGE_SECRET", "", filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("accepted a missing secret file")
+	}
+	oversize := filepath.Join(t.TempDir(), "oversize")
+	if err = os.WriteFile(oversize, make([]byte, 4097), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = secretValue("BRIDGE_SECRET", "", oversize); err == nil {
+		t.Fatal("accepted an oversized secret file")
+	}
+}
+
 func TestMain(m *testing.M) {
 	if mode := os.Getenv("BRIDGE_TEST_PASS"); mode != "" {
 		if len(os.Args) != 3 || os.Args[1] != "show" {

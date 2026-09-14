@@ -40,6 +40,23 @@ whitespace, and rejects secret output over 4096 bytes. Configure the user's GPG 
 so `pass` works in the service environment. Do not compensate by copying secrets to
 an unencrypted environment file.
 
+### Secret files instead of `pass`
+
+`--storage-key-file` and `--api-token-file` read the same two secrets from files, and
+take precedence over the matching `pass` entry and environment variable. Use them
+where an unattended start cannot wait for a GPG agent — a passphrase-protected key
+makes a `pass`-backed service fail-loop after a reboot until someone unlocks it.
+Point them at decrypted-at-boot paths from agenix or sops-nix, owned by the service
+user and mode 0400. The same size limit and whitespace trimming apply.
+
+```sh
+google-messages-multidevice-bridge serve \
+  --db /absolute/path/to/bridge.db \
+  --listen 127.0.0.1:8787 \
+  --storage-key-file /run/agenix/bridge-storage-key \
+  --api-token-file /run/agenix/bridge-api-token
+```
+
 The API token can be replaced by restarting the service with a new value and updating
 clients. The storage key cannot be rotated by changing the entry: a different key
 makes the existing database unreadable.
@@ -80,6 +97,9 @@ required options:
     };
 }
 ```
+
+The `storageKeyFile` and `apiTokenFile` options are the file-backed equivalents of
+the two `pass` options above; set exactly one source per secret.
 
 After `home-manager switch`, the module installs a hardened systemd user service
 named `google-messages-multidevice-bridge`. It sets umask 0077, restarts on failure,
@@ -179,6 +199,10 @@ Token precedence inside the client is: `GOOGLE_MESSAGES_BRIDGE_TOKEN` →
 `GOOGLE_MESSAGES_BRIDGE_TOKEN_FILE` → OS keyring → private fallback file.
 Locking from the menu forgets all of them for that run; the preseed returns on
 next launch.
+
+The bridge hands the preseed to the served page, so a client that keeps asking
+for the token usually means the bridge is running an older build than the
+client. Update the server before debugging the client.
 
 Security notes: only entry names, URLs, and file paths land in `/nix/store`.
 The secret itself is read at launch time, but it does live in the client's
