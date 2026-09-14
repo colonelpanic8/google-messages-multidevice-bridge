@@ -1094,6 +1094,22 @@ button.reaction {
   color: var(--on-surface);
   box-shadow: var(--shadow);
 }
+/* The full-size view fits the window instead of the dialog's reading width;
+   the desktop window cannot hand a blob: URL to an external browser. */
+.viewer {
+  width: max-content;
+  max-width: calc(100% - 32px);
+  padding: 0;
+  background: none;
+  box-shadow: none;
+  cursor: zoom-out;
+}
+.viewer img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 48px);
+  border-radius: var(--radius);
+}
 .dialog::backdrop {
   background: var(--scrim);
 }

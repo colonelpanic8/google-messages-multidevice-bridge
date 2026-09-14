@@ -545,7 +545,7 @@ function renderAttachment(attachment, readOnly) {
     img.loading = "lazy";
     img.dataset.attachmentId = attachment.id;
     img.dataset.mime = attachment.mime;
-    img.onclick = () => img.src && window.open(img.src, "_blank", "noopener");
+    img.onclick = () => img.src && showImage(img);
     bubble.append(img);
     if (previewObserver) previewObserver.observe(img);
     else void loadPreview(img);
@@ -595,6 +595,12 @@ function renderAttachment(attachment, readOnly) {
     info.append(el("br"), requestButton);
   }
   return node;
+}
+function showImage(img) {
+  const viewer = $("image-viewer");
+  viewer.src = img.src;
+  viewer.alt = img.alt;
+  $("image-dialog").showModal();
 }
 // The desktop window has no new-window handler, so WebKitGTK silently drops
 // target="_blank" and window.open. There the shell opens the link instead.
@@ -1075,6 +1081,8 @@ for (const dialog of document.querySelectorAll("dialog")) {
     if (event.target === dialog) dialog.close();
   };
 }
+$("image-dialog").onclick = () => $("image-dialog").close();
+$("image-dialog").onclose = () => $("image-viewer").removeAttribute("src");
 $("pairing-dialog").onclose = () => {
   pairingPanelOpen = false;
   clearTimeout(pairingPoll);
