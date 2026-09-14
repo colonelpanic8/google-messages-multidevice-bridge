@@ -1,0 +1,17 @@
+# The window spends its life on the bridge's own origin, which Tauri classifies
+# as remote content. Remote content reaches app commands only through an
+# explicit permission, so without this the preseeded token never gets read.
+
+[[permission]]
+identifier = "allow-app-commands"
+description = "Lets the bundled setup page and the bridge's web client call this client's own commands."
+commands.allow = [
+  "get_bridge_url",
+  "save_bridge_url",
+  "open_setup",
+  "get_token",
+  "save_token",
+  "clear_token",
+  "set_unread",
+  "notify",
+]

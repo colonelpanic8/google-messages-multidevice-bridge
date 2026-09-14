@@ -19,6 +19,9 @@ const ENV_BRIDGE_URL: &str = "GOOGLE_MESSAGES_BRIDGE_URL";
 const ENV_TOKEN: &str = "GOOGLE_MESSAGES_BRIDGE_TOKEN";
 const ENV_TOKEN_FILE: &str = "GOOGLE_MESSAGES_BRIDGE_TOKEN_FILE";
 
+// Declared in permissions/app-commands.toml.
+const APP_COMMANDS_PERMISSION: &str = "allow-app-commands";
+
 struct Paths {
     config_dir: PathBuf,
 }
@@ -75,14 +78,10 @@ fn validate_bridge_url(raw: &str) -> Option<String> {
     Some(parsed.to_string())
 }
 
-/// First hit wins: explicit env token, token file, then whatever is stored.
-/// The stored lookup stays lazy so a preseeded token never touches the keyring.
-fn select_token(
-    direct: Option<String>,
-    from_file: Option<String>,
-    stored: impl FnOnce() -> Option<String>,
-) -> Option<String> {
-    direct.or(from_file).or_else(stored)
+/// The preseed wins over whatever is stored. The stored lookup stays lazy so a
+/// preseeded token never touches the keyring.
+fn select_token(preseed: Option<String>, stored: impl FnOnce() -> Option<String>) -> Option<String> {
+    preseed.or_else(stored)
 }
 
 fn write_private(path: &PathBuf, contents: &str) -> Result<(), String> {
@@ -113,7 +112,34 @@ fn save_bridge_url(app: AppHandle, paths: State<Paths>, url: String) -> Result<(
 fn navigate(app: &AppHandle, url: &str) -> Result<(), String> {
     let window = app.get_webview_window("main").ok_or("main window missing")?;
     let target = url::Url::parse(url).map_err(|e| e.to_string())?;
+    allow_bridge_origin(app, &target);
     window.navigate(target).map_err(|e| e.to_string())
+}
+
+/// Grant the bridge's origin — and nothing else — access to the app commands.
+/// The URL is only known at runtime, so the capability cannot live in
+/// capabilities/default.json without widening it to every remote origin.
+fn allow_bridge_origin(app: &AppHandle, url: &url::Url) {
+    if let Some(capability) = bridge_capability(url) {
+        let _ = app.add_capability(capability);
+    }
+}
+
+/// `None` for the bundled pages, which are local and already covered by
+/// capabilities/default.json.
+fn bridge_capability(url: &url::Url) -> Option<String> {
+    let origin = url.origin().ascii_serialization();
+    if origin == "null" {
+        return None;
+    }
+    let identifier: String = origin
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    // The origin is an ASCII serialization, so it needs no JSON escaping.
+    Some(format!(
+        r#"{{"identifier":"bridge-{identifier}","local":false,"windows":["main"],"remote":{{"urls":["{origin}/*"]}},"permissions":["{APP_COMMANDS_PERMISSION}"]}}"#
+    ))
 }
 
 #[tauri::command]
@@ -128,11 +154,12 @@ fn open_setup(app: AppHandle) -> Result<(), String> {
 // wins over both so managed hosts unlock without typing anything.
 #[tauri::command]
 fn get_token(paths: State<Paths>) -> Option<String> {
-    select_token(
-        env_value(ENV_TOKEN),
-        env_file_value(ENV_TOKEN_FILE),
-        || stored_token(&paths),
-    )
+    select_token(preseeded_token(), || stored_token(&paths))
+}
+
+/// The managed token for this host: an explicit value, else a secret file.
+fn preseeded_token() -> Option<String> {
+    env_value(ENV_TOKEN).or_else(|| env_file_value(ENV_TOKEN_FILE))
 }
 
 fn stored_token(paths: &Paths) -> Option<String> {
@@ -147,6 +174,12 @@ fn stored_token(paths: &Paths) -> Option<String> {
 
 #[tauri::command]
 fn save_token(paths: State<Paths>, token: String) -> Result<(), String> {
+    // The page hands the preseed straight back after unlocking with it. Storing
+    // it would copy a managed secret into the keyring, and on a session with no
+    // unlocked secret service that write raises an unlock prompt for nothing.
+    if preseeded_token().as_deref() == Some(token.as_str()) {
+        return Ok(());
+    }
     if let Ok(entry) = keyring_entry() {
         if entry.set_password(&token).is_ok() {
             let _ = fs::remove_file(paths.token_file());
@@ -293,27 +326,40 @@ mod tests {
     }
 
     #[test]
-    fn select_token_prefers_direct_env_then_file_then_stored() {
+    fn select_token_prefers_the_preseed_over_stored() {
         let stored = || Some("stored".to_string());
         assert_eq!(
-            select_token(Some("direct".into()), Some("file".into()), stored),
-            Some("direct".to_string())
+            select_token(Some("preseed".into()), stored),
+            Some("preseed".to_string())
         );
-        assert_eq!(
-            select_token(None, Some("file".into()), stored),
-            Some("file".to_string())
-        );
-        assert_eq!(select_token(None, None, stored), Some("stored".to_string()));
+        assert_eq!(select_token(None, stored), Some("stored".to_string()));
         let none = || None;
-        assert_eq!(select_token(None, None, none), None);
+        assert_eq!(select_token(None, none), None);
+    }
+
+    // A URL pattern without an explicit port only matches the scheme's default
+    // port, which is how the bridge on :8443 lost access to the app commands.
+    #[test]
+    fn bridge_capability_keeps_the_port() {
+        let url = url::Url::parse("https://bridge.example.ts.net:8443/").unwrap();
+        let capability = bridge_capability(&url).unwrap();
+        assert!(capability.contains(r#""urls":["https://bridge.example.ts.net:8443/*"]"#));
+        assert!(capability.contains(r#""identifier":"bridge-https---bridge-example-ts-net-8443""#));
+        assert!(capability.contains(APP_COMMANDS_PERMISSION));
+    }
+
+    #[test]
+    fn bridge_capability_skips_local_pages() {
+        let url = url::Url::parse("tauri://localhost/index.html").unwrap();
+        assert_eq!(bridge_capability(&url), None);
     }
 
     #[test]
     fn select_token_leaves_stored_lookup_lazy() {
-        let stored = || panic!("stored lookup must not run when env provides a token");
+        let stored = || panic!("stored lookup must not run when a preseed is present");
         assert_eq!(
-            select_token(Some("direct".into()), None, stored),
-            Some("direct".to_string())
+            select_token(Some("preseed".into()), stored),
+            Some("preseed".to_string())
         );
     }
 }

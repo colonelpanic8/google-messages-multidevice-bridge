@@ -1,10 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The bundled setup page and the remote bridge client may use the app commands",
+  "description": "The bundled setup page may use the app commands. The bridge origin is granted the same access at runtime, once it is known.",
   "windows": ["main"],
-  "remote": {
-    "urls": ["http://*/*", "https://*/*"]
-  },
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "allow-app-commands"]
 }
