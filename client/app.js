@@ -19,16 +19,16 @@ import {
   layoutThread,
   linkify,
   listTime,
+  messageStatus,
   others,
   outboxAttachmentCount,
-  outboxLabel,
+  outboxStatus,
   outboxText,
   previewLine,
   queuePosition,
   reactedByMe,
   reactionTitle,
   sortConversations,
-  statusLabel,
   summarizeHistory,
   threadOutbox,
 } from "/view.mjs";
@@ -866,25 +866,23 @@ function buildMessageRow(row, conversation) {
   }
   node.append(...pendingReactionRows(message));
   const meta = [];
+  let failed = false;
   if (message.read_only) meta.push("Previous pairing · read only");
   if (direction === "outgoing" && row.last) {
-    const label = statusLabel(message.status);
-    if (label) meta.push(label);
+    const status = messageStatus(message.status);
+    if (status.label) {
+      meta.push(status.label);
+      failed = status.error;
+    }
   }
   if (meta.length)
-    node.append(
-      el(
-        "div",
-        meta.join(" · "),
-        `meta${/Not sent/.test(meta.join()) ? " error" : ""}`,
-      ),
-    );
+    node.append(el("div", meta.join(" · "), `meta${failed ? " error" : ""}`));
   return node;
 }
 function buildOutboxRow(row) {
   const item = row.item;
   const kind = item.request?.kind;
-  const failed = !["queued", "sending", "confirmed"].includes(item.state);
+  const status = outboxStatus(item, providerState === "connected");
   const node = el(
     "div",
     undefined,
@@ -905,9 +903,12 @@ function buildOutboxRow(row) {
   node.append(line);
   const meta = el(
     "div",
-    `${item.session_epoch !== currentSessionEpoch ? "Previous pairing · " : ""}${outboxLabel(item)}`,
-    `meta${failed ? " error" : ""}`,
+    `${item.session_epoch !== currentSessionEpoch ? "Previous pairing · " : ""}${status.label}`,
+    `meta${status.error ? " error" : ""}`,
   );
+  // The bridge's own words about the send stay available without spending a
+  // line of the thread on them.
+  if (item.detail) meta.title = item.detail;
   if (item.state === "queued")
     meta.append(
       button("Cancel", undefined, async () => {
@@ -968,6 +969,12 @@ function renderThread() {
     threadSwitching = true;
     animateIn($("thread").querySelector(".thread-header"));
   }
+  // A message that takes over from its own outbox row is already on screen, so
+  // it slots into that row's place instead of animating in as something new.
+  const replacing = new Set();
+  for (const item of outbox.values())
+    if (item.message_id && threadNodes.has(`o:${item.id}`))
+      replacing.add(item.message_id);
   const atBottom =
     container.scrollHeight - container.scrollTop - container.clientHeight < 80;
   const previousHeight = container.scrollHeight;
@@ -985,6 +992,7 @@ function renderThread() {
               row.first,
               row.last,
               currentSessionEpoch,
+              providerState,
             ]);
     let cached = threadNodes.get(row.key);
     const fresh = !cached;
@@ -998,7 +1006,13 @@ function renderThread() {
       if (cached) cached.node.replaceWith(node);
       cached = { node, signature };
       threadNodes.set(row.key, cached);
-      if (fresh && !threadSwitching && !bulk) animateIn(node);
+      if (
+        fresh &&
+        !threadSwitching &&
+        !bulk &&
+        !(row.kind === "message" && replacing.has(row.message.id))
+      )
+        animateIn(node);
     }
     order.push(cached.node);
   }

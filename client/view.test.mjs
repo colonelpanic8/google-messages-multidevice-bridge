@@ -13,7 +13,8 @@ import {
   reactedByMe,
   reactionNames,
   reactionTitle,
-  statusLabel,
+  messageStatus,
+  outboxStatus,
   threadOutbox,
 } from "./view.mjs";
 
@@ -88,11 +89,50 @@ test("outbox rows hide conversation requests and confirmed stored sends", () => 
 });
 
 test("status labels collapse provider states", () => {
-  assert.equal(statusLabel("outgoing_displayed"), "Read");
-  assert.equal(statusLabel("outgoing_delivered"), "Delivered");
-  assert.equal(statusLabel("outgoing_complete"), "Sent");
-  assert.equal(statusLabel("outgoing_failed_generic"), "Not sent");
-  assert.equal(statusLabel("incoming_complete"), "");
+  assert.deepEqual(messageStatus("outgoing_displayed"), {
+    label: "Read",
+    error: false,
+  });
+  assert.deepEqual(messageStatus("outgoing_delivered"), {
+    label: "Delivered",
+    error: false,
+  });
+  assert.deepEqual(messageStatus("outgoing_complete"), {
+    label: "Sent",
+    error: false,
+  });
+  assert.deepEqual(messageStatus("outgoing_sending"), {
+    label: "Sending…",
+    error: false,
+  });
+  assert.deepEqual(messageStatus("outgoing_not_delivered_yet"), {
+    label: "Sent",
+    error: false,
+  });
+  assert.deepEqual(messageStatus("outgoing_failed_generic"), {
+    label: "Not sent",
+    error: true,
+  });
+  assert.equal(messageStatus("incoming_complete").label, "");
+});
+
+test("an outbox row reports progress until its message takes over", () => {
+  const sending = { label: "Sending…", error: false };
+  assert.deepEqual(outboxStatus({ state: "queued" }, true), sending);
+  assert.deepEqual(outboxStatus({ state: "queued" }, false), {
+    label: "Waiting for phone…",
+    error: false,
+  });
+  assert.deepEqual(outboxStatus({ state: "sending" }, true), sending);
+  assert.deepEqual(
+    outboxStatus({ state: "accepted", detail: "Google accepted" }, true),
+    sending,
+  );
+  assert.deepEqual(outboxStatus({ state: "confirmed" }, true), sending);
+  assert.deepEqual(
+    outboxStatus({ state: "ambiguous", detail: "unknown" }, true),
+    { label: "Not sent · unknown", error: true },
+  );
 });
 
 test("names, initials, and search", () => {
