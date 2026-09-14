@@ -232,19 +232,27 @@
           <svg><use href="#i-info" /></svg>
           <span id="session-boundary-text"></span>
         </div>
-        <label class="search">
-          <svg><use href="#i-search" /></svg>
-          <span class="sr-only">Search conversations</span>
-          <input
-            id="search"
-            type="search"
-            placeholder="Search conversations"
-            autocomplete="off"
-          />
-        </label>
-        <button id="new-conversation" class="start-chat" type="button">
-          <svg><use href="#i-edit" /></svg>Start chat
-        </button>
+        <div class="list-tools">
+          <label class="search">
+            <svg><use href="#i-search" /></svg>
+            <span class="sr-only">Search conversations</span>
+            <input
+              id="search"
+              type="search"
+              placeholder="Search conversations"
+              autocomplete="off"
+            />
+          </label>
+          <button
+            id="new-conversation"
+            class="start-chat"
+            type="button"
+            title="Start chat"
+            aria-label="Start chat"
+          >
+            <svg><use href="#i-edit" /></svg>
+          </button>
+        </div>
         <nav id="conversations" aria-label="Conversations"></nav>
       </aside>
 
