@@ -186,7 +186,7 @@ func New(b *bridge.Bridge, token string, push PushService) http.Handler {
 		if r.Method == "OPTIONS" && r.Header.Get("Access-Control-Request-Method") != "" {
 			if allowed {
 				w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, DELETE, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
 				w.Header().Set("Access-Control-Max-Age", "600")
 				w.WriteHeader(http.StatusNoContent)
 				return
