@@ -103,21 +103,36 @@ bin/google-messages-multidevice-bridge serve \
 The default address is `127.0.0.1:0`, so the OS chooses an unused port and the
 service prints it. Open that address, enter the API token, and choose **Pair / Re-pair**:
 
+If you have paired before, choose **Reconnect phone** and confirm the emoji in
+Google Messages on your phone. The bridge reuses the Google sign-in stored in its
+encrypted session, so you do not need the browser helper again unless that sign-in
+has also expired. If reconnecting fails, expand **Use browser sign-in**:
+
 1. Download `/pairing-helper.zip`, extract it, and load that directory from
    `chrome://extensions` using **Developer mode** and **Load unpacked**.
-2. Choose **Start pairing** in the bridge. Copy the displayed bridge origin and
+2. Choose **Start browser sign-in** in the bridge. Copy the displayed bridge origin and
    short-lived pairing ticket into the extension's setup tab.
 3. Use the helper's sign-in button, complete Google sign-in, return to the setup
    tab, and explicitly choose **Connect this Google account**.
 4. Return to the bridge and choose the displayed emoji on the phone.
 
+Leave **Enable background recovery** checked during that handoff to enroll the
+helper as a pairing agent. After enrollment, **Reconnect phone** can be initiated
+from any bridge client. The helper checks once a minute for a pending pairing ticket
+and supplies fresh Google credentials in the background. Chrome only needs to be
+running and signed into the Google account; the setup page can remain closed.
+
 The ticket is a 43-character, one-use capability scoped to credential handoff and
 expires after ten minutes. It is not the API token. The helper requests Google and
-bridge host access only on the explicit Connect click, reads only the allowlisted
-Google cookies required by libgm, sends them in one JSON handoff, and asks Chromium
-to remove the granted host permissions afterward. It persists neither inputs nor
-cookies. Bridge URLs must use HTTPS, except loopback or a literal Tailscale
-`100.64.0.0/10` address may use HTTP.
+bridge host access only on the explicit Connect click and reads only the allowlisted
+Google cookies required by libgm. Without background recovery it removes the granted
+host permissions after the handoff. With background recovery it retains those host
+permissions and stores the bridge origin plus a random pairing-only token in Chrome
+extension storage. The bridge stores only the token's encrypted SHA-256 digest. The
+token can fetch a current pairing ticket but cannot read messages, send texts, or use
+other authenticated API routes. The extension never stores Google cookies. Bridge
+URLs must use HTTPS, except loopback or a literal Tailscale `100.64.0.0/10` address
+may use HTTP.
 
 Starting a re-pair immediately cancels queued outbox operations. Canceling or failing
 that pairing attempt does not advance the entity epoch, clear provider upload
@@ -148,7 +163,8 @@ polling or re-rendering the whole list. Image attachments render as inline previ
 lock. An opt-in toggle raises browser notifications for new incoming messages in
 hidden tabs or unselected conversations; replayed history never notifies. Web assets
 and the pairing-helper ZIP are public. Every `/v1/` route requires bearer
-authentication except the ticket-only `POST /v1/pairing/credentials` handoff.
+authentication except the ticket-only `POST /v1/pairing/credentials` handoff and
+the pairing-agent-token-only `GET /v1/pairing/agent/pending` route.
 
 The client lives in `client/`, outside the Go tree. The bridge embeds it so a browser
 can install the app straight from the bridge, and the desktop app bundles the same

@@ -92,6 +92,19 @@ input {
   font: inherit;
 }
 
+.background-option {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-top: 22px;
+  font-weight: 400;
+}
+
+.background-option input {
+  width: auto;
+  margin-top: 4px;
+}
+
 input:focus-visible,
 button:focus-visible {
   outline: 3px solid rgb(53 89 199 / 30%);

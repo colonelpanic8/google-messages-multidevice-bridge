@@ -1437,7 +1437,8 @@ function renderStatus() {
       status.reason === "session_expired"
         ? "Your phone session expired. Pair again to continue."
         : "Pair your phone to continue.";
-    action.textContent = "Pair";
+    action.textContent =
+      status.reason === "session_expired" ? "Reconnect phone" : "Pair phone";
     action.onclick = () => openDialog("pairing-dialog");
   } else if (providerState === "connection_failed") {
     $("banner-text").textContent = `Can't reach your phone.${
@@ -1542,7 +1543,8 @@ function renderPairing() {
     ? apiBase || window.location.origin
     : "";
   $("pairing-ticket").value = pairingState.ticket || "";
-  $("pairing-fields").hidden = !pairingState.ticket;
+  $("pairing-fields").hidden =
+    !pairingState.ticket || pairingState.agent_enrolled;
   $("pairing-emoji").hidden =
     state !== "confirm_on_phone" || !pairingState.emoji;
   $("pairing-emoji").textContent = pairingState.emoji
@@ -1556,13 +1558,23 @@ function renderPairing() {
       : ""
   }`;
   $("start-pairing").disabled = pairingActive();
-  $("start-pairing").textContent =
-    pairingState.required_reason === "session_expired" ||
-    pairingState.reason === "session_expired"
-      ? "Re-pair expired session"
-      : providerState === "connected" || state === "paired"
-        ? "Start re-pairing"
-        : "Start pairing";
+  $("start-pairing").textContent = "Start browser sign-in";
+  $("repair-pairing").hidden =
+    !pairingState.can_repair && !pairingState.agent_enrolled;
+  $("repair-intro").hidden =
+    !pairingState.can_repair && !pairingState.agent_enrolled;
+  $("repair-pairing").disabled =
+    pairingActive() && state !== "waiting_for_login";
+  const setup = $("pairing-browser-setup");
+  const setupState = `${state}:${!!pairingState.can_repair}:${!!pairingState.agent_enrolled}`;
+  if (setup.dataset.state !== setupState) {
+    setup.open =
+      (!pairingState.can_repair && !pairingState.agent_enrolled) ||
+      (state === "waiting_for_login" && !pairingState.agent_enrolled) ||
+      state === "failed";
+    setup.dataset.state = setupState;
+  }
+  $("pairing-helper-download").href = api("/pairing-helper.zip");
   $("cancel-pairing").hidden = !pairingActive();
 }
 function schedulePairingPoll() {
@@ -2360,7 +2372,7 @@ $("settings-pairing").onclick = () => {
 };
 $("open-settings").onclick = () => openDialog("settings-dialog");
 $("open-history").onclick = () => openDialog("history-dialog");
-$("start-pairing").onclick = async () => {
+async function startPairing(reuseSignIn = false) {
   if (
     sending ||
     creatingConversation ||
@@ -2372,11 +2384,15 @@ $("start-pairing").onclick = async () => {
   }
   const actionGeneration = generation;
   $("start-pairing").disabled = true;
+  $("repair-pairing").disabled = true;
   try {
-    const state = await request("/v1/pairing/start", {
-      method: "POST",
-      body: "{}",
-    });
+    const state = await request(
+      reuseSignIn ? "/v1/pairing/repair" : "/v1/pairing/start",
+      {
+        method: "POST",
+        body: "{}",
+      },
+    );
     if (actionGeneration !== generation) return;
     pairingState = state;
     const clearedLocalRetry =
@@ -2395,10 +2411,12 @@ $("start-pairing").onclick = async () => {
     schedulePairingPoll();
   } catch (error) {
     if (actionGeneration !== generation) return;
+    renderPairing();
     $("pairing-status").textContent = error.message;
-    $("start-pairing").disabled = false;
   }
-};
+}
+$("start-pairing").onclick = () => startPairing();
+$("repair-pairing").onclick = () => startPairing(!pairingState.agent_enrolled);
 $("cancel-pairing").onclick = async () => {
   const actionGeneration = generation;
   $("cancel-pairing").disabled = true;

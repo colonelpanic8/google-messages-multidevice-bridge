@@ -90,7 +90,8 @@ func TestBrowserFixture(t *testing.T) {
 	appendRecord("history", "messages:synthetic-long", model.HistoryJob{Schema: 1, ID: "messages:synthetic-long", Kind: "messages", ConversationID: "synthetic-long", State: "queued", Pages: 12, Records: 1500, Updated: now.Add(-time.Second)})
 	appendRecord("history", "messages:synthetic-sms", model.HistoryJob{Schema: 1, ID: "messages:synthetic-sms", Kind: "messages", ConversationID: "synthetic-sms", State: "failed", Pages: 2, Records: 30, Detail: "Provider repeated a history cursor; import stopped", Updated: now})
 	if os.Getenv("BRIDGE_BROWSER_RECOVERY_TEST") == "1" {
-		if err := s.SavePairedSession([]byte("synthetic replacement session")); err != nil {
+		saved, _ := json.Marshal(map[string]any{"cookies": requiredPairingCookies()})
+		if err := s.SavePairedSession(saved); err != nil {
 			t.Fatal(err)
 		}
 		if err := b.Handle(&events.GaiaLoggedOut{}); err != nil {

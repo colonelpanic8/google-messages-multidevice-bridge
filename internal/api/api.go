@@ -172,6 +172,10 @@ func New(b *bridge.Bridge, token string, push PushService) http.Handler {
 			pairingCredentials(w, r, b)
 			return
 		}
+		if r.URL.Path == "/v1/pairing/agent/pending" {
+			pairingAgentPending(w, r, b)
+			return
+		}
 		// The desktop app bundles the client, so its requests carry a foreign
 		// origin and are preflighted. Both happen before authentication: a
 		// preflight never carries the Authorization header it is asking about.

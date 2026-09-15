@@ -530,36 +530,53 @@
 
     <dialog id="pairing-dialog" class="dialog">
       <header>
-        <h2>Pair with Google Messages</h2>
+        <h2>Connect your phone</h2>
         <button type="button" class="icon-button" data-close aria-label="Close">
           <svg><use href="#i-close" /></svg>
         </button>
       </header>
-      <ol class="steps">
-        <li>
-          <a href="/pairing-helper.zip" download>Download the pairing helper</a>
-          and install it as an unpacked Chrome extension.
-        </li>
-        <li>
-          <a
-            href="https://messages.google.com/web"
-            target="_blank"
-            rel="noreferrer"
-            >Sign in to Google Messages for web</a
-          >.
-        </li>
-        <li>
-          Start pairing below, then enter the bridge URL and ticket in the
-          helper popup and choose Connect.
-        </li>
-      </ol>
-      <p class="warning">
-        Starting a re-pair cancels queued operations before changing phones.
-        Review each recipient and submit again afterward.
+      <p id="repair-intro" class="hint" hidden>
+        Start reconnection here, then confirm the emoji in Google Messages on
+        your phone. If background recovery is enrolled, no browser setup is
+        needed.
       </p>
-      <button id="start-pairing" type="button" class="filled">
-        Start pairing
+      <p class="warning">
+        Reconnecting cancels queued sends. Your saved messages remain available.
+      </p>
+      <button id="repair-pairing" type="button" class="filled" hidden>
+        Reconnect phone
       </button>
+      <details id="pairing-browser-setup">
+        <summary>Use browser sign-in</summary>
+        <p class="hint">
+          Use this if your saved sign-in no longer works, or to connect a
+          different Google account.
+        </p>
+        <details>
+          <summary>First time? Install the Chrome helper</summary>
+          <p>
+            <a id="pairing-helper-download" href="/pairing-helper.zip" download
+              >Download the pairing helper</a
+            >, extract it, then open chrome://extensions, enable Developer mode,
+            and choose Load unpacked.
+          </p>
+        </details>
+        <ol class="steps">
+          <li>Choose Start browser sign-in below.</li>
+          <li>
+            Open the installed helper from Chrome’s extensions menu and copy the
+            bridge URL and ticket into its setup tab.
+          </li>
+          <li>
+            Choose Connect this Google account. If needed, use the helper’s
+            sign-in button first.
+          </li>
+          <li>Return here and confirm the emoji on your phone.</li>
+        </ol>
+        <button id="start-pairing" type="button" class="text-button">
+          Start browser sign-in
+        </button>
+      </details>
       <div id="pairing-fields" hidden>
         <label for="bridge-url">Bridge URL</label>
         <div class="copy-field">
