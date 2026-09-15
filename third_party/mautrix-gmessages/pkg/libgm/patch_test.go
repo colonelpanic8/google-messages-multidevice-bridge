@@ -823,3 +823,21 @@ func TestOldLoggedOutEventDoesNotCancelPairing(t *testing.T) {
 		})
 	}
 }
+
+func TestGaiaPairingDoesNotProposeKeyDerivationVersion1(t *testing.T) {
+	// Version 1 key derivation as implemented here does not match the phone, so
+	// the resulting session cannot decrypt anything. The server only confirms
+	// version 1 when it is proposed, so the proposal must stay unset.
+	c := testClient()
+	sess := NewPairingSession(primaryDeviceID{RegID: uuid.NewString()})
+	for _, action := range []gmproto.ActionType{
+		gmproto.ActionType_CREATE_GAIA_PAIRING_CLIENT_INIT,
+		gmproto.ActionType_CREATE_GAIA_PAIRING_CLIENT_FINISHED,
+	} {
+		req := c.buildGaiaPairingContainer(sess, action)
+		if req.GetProposedKeyDerivationVersion() != 0 {
+			t.Fatalf("%v proposed key derivation version %d, want 0",
+				action, req.GetProposedKeyDerivationVersion())
+		}
+	}
+}
