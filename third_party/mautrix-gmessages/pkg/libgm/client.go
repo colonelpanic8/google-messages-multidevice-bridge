@@ -265,7 +265,8 @@ func NewAuthData() *AuthData {
 
 func NewClient(authData *AuthData, pk *PushKeys, logger zerolog.Logger, httpSettings exhttp.ClientSettings) *Client {
 	sessionHandler := &SessionHandler{
-		responseWaiters: make(map[string]chan<- *IncomingRPCMessage),
+		responseWaiters:    make(map[string]chan<- *IncomingRPCMessage),
+		gaiaPairingWaiters: make(map[gmproto.ActionType]string),
 	}
 	cli := &Client{
 		AuthData:       authData,

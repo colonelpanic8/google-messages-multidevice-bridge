@@ -42,6 +42,10 @@ type SessionHandler struct {
 	responseWaiters     map[string]chan<- *IncomingRPCMessage
 	responseWaitersLock sync.Mutex
 
+	// gaiaPairingWaiters maps an in-flight Gaia pairing action to its request ID.
+	// Guarded by responseWaitersLock.
+	gaiaPairingWaiters map[gmproto.ActionType]string
+
 	ackMapLock sync.Mutex
 	ackMap     []string
 	ackRunLock sync.Mutex
@@ -96,6 +100,14 @@ func (s *SessionHandler) sendAsyncMessageWithID(ctx context.Context, params Send
 	}
 
 	ch := s.waitResponse(requestID)
+	if isGaiaPairingAction(params.Action) {
+		s.responseWaitersLock.Lock()
+		if s.gaiaPairingWaiters == nil {
+			s.gaiaPairingWaiters = make(map[gmproto.ActionType]string)
+		}
+		s.gaiaPairingWaiters[params.Action] = requestID
+		s.responseWaitersLock.Unlock()
+	}
 	url := util.SendMessageURL
 	if s.client.AuthData.HasCookies() {
 		url = util.SendMessageURLGoogle
@@ -135,9 +147,33 @@ func (s *SessionHandler) waitResponse(requestID string) chan *IncomingRPCMessage
 	return ch
 }
 
+// isGaiaPairingAction reports whether the action is part of the Gaia pairing
+// handshake. Google does not echo the request ID back in the session ID of
+// these responses, so they are correlated by action instead.
+func isGaiaPairingAction(action gmproto.ActionType) bool {
+	switch action {
+	case gmproto.ActionType_CREATE_GAIA_PAIRING_CLIENT_INIT,
+		gmproto.ActionType_CREATE_GAIA_PAIRING_CLIENT_FINISHED:
+		return true
+	default:
+		return false
+	}
+}
+
+// forgetGaiaPairingWaiter drops any pairing correlation pointing at requestID.
+// The caller must hold responseWaitersLock.
+func (s *SessionHandler) forgetGaiaPairingWaiter(requestID string) {
+	for action, pendingID := range s.gaiaPairingWaiters {
+		if pendingID == requestID {
+			delete(s.gaiaPairingWaiters, action)
+		}
+	}
+}
+
 func (s *SessionHandler) cancelResponse(requestID string, ch chan *IncomingRPCMessage) {
 	s.responseWaitersLock.Lock()
 	defer s.responseWaitersLock.Unlock()
+	s.forgetGaiaPairingWaiter(requestID)
 	// Only close the channel if the response hasn't been claimed yet: receiveResponse
 	// removes the waiter from the map (under the lock) before sending to the channel,
 	// so closing an already-claimed channel here could panic that send.
@@ -154,6 +190,7 @@ func (s *SessionHandler) cancelAllResponseWaiters() {
 		delete(s.responseWaiters, requestID)
 		close(ch)
 	}
+	clear(s.gaiaPairingWaiters)
 }
 
 func (s *SessionHandler) receiveResponse(msg *IncomingRPCMessage) bool {
@@ -174,11 +211,21 @@ func (s *SessionHandler) receiveResponse(msg *IncomingRPCMessage) bool {
 	requestID := msg.Message.SessionID
 	s.responseWaitersLock.Lock()
 	ch, ok := s.responseWaiters[requestID]
+	if !ok && isGaiaPairingAction(msg.Message.Action) {
+		// Gaia pairing responses carry a server-generated session ID rather than
+		// the request ID, so the only usable correlation is the pairing action.
+		if pendingID, found := s.gaiaPairingWaiters[msg.Message.Action]; found {
+			if ch, ok = s.responseWaiters[pendingID]; ok {
+				requestID = pendingID
+			}
+		}
+	}
 	if !ok {
 		s.responseWaitersLock.Unlock()
 		return false
 	}
 	delete(s.responseWaiters, requestID)
+	s.forgetGaiaPairingWaiter(requestID)
 	s.responseWaitersLock.Unlock()
 	// Ditto activity is handled by the pinger directly
 	if msg.Message.Action != gmproto.ActionType_NOTIFY_DITTO_ACTIVITY {

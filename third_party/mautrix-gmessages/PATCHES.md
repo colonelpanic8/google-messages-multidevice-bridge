@@ -64,6 +64,20 @@ be disabled from outside the package.
    missing or revoked registrations, and HTTP 401/403/404 responses require a
    new pairing; transport failures and 5xx responses remain retryable.
 
+8. `session_handler.go`, `client.go`, `event_handler.go`: Google account
+   (Gaia) re-pairing fixes for the protocol behavior seen since 2026-08-29.
+   Pairing responses arrive with a server-generated `sessionID` instead of the
+   request ID libgm registered its waiter under, so `CREATE_GAIA_PAIRING_*`
+   responses are correlated by pairing action (`gaiaPairingWaiters`) when the
+   session ID does not match. Without this the valid `SERVER_INIT` is dropped as
+   an unexpected response and pairing dies at the client-init timeout.
+   Separately, the replayed backlog of a dead session can contain the
+   `hackyLoggedOutBytes` marker; `handleUpdatesEvent` now ignores that marker
+   when `IsOld` is set, so a stale logout cannot cancel the pairing that is
+   replacing it. Regression tests cover both, including that non-pairing
+   responses still require an exact session ID match and that a live logout
+   still triggers `GaiaLoggedOut`.
+
 ## Accepted upstream limitations
 
 - `SetEventHandlerWithError` narrows the ACK/persistence gap, but it does not
