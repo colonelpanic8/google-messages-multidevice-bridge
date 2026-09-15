@@ -248,6 +248,12 @@ func (c *Client) handleUpdatesEvent(msg *IncomingRPCMessage) error {
 	switch msg.Message.Action {
 	case gmproto.ActionType_GET_UPDATES:
 		if msg.DecryptedData == nil && bytes.Equal(msg.Message.UnencryptedData, hackyLoggedOutBytes) {
+			// A replayed logout marker from a previous session must not cancel the
+			// session that is replacing it, such as an in-progress Gaia pairing.
+			if msg.IsOld {
+				c.Logger.Debug().Msg("Ignoring old logged out event")
+				return nil
+			}
 			return c.triggerEvent(&events.GaiaLoggedOut{})
 		}
 		if !msg.IsOld {

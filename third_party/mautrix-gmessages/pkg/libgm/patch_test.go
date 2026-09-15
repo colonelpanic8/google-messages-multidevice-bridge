@@ -737,3 +737,89 @@ func TestAuthFailureClassificationSeparatesCredentialsFromTransport(t *testing.T
 		}
 	}
 }
+
+func TestGaiaPairingResponseCorrelatesByActionWhenSessionIDDiffers(t *testing.T) {
+	c := testClient()
+	const requestID = "client-request-id"
+	ch := c.sessionHandler.waitResponse(requestID)
+	c.sessionHandler.responseWaitersLock.Lock()
+	c.sessionHandler.gaiaPairingWaiters[gmproto.ActionType_CREATE_GAIA_PAIRING_CLIENT_INIT] = requestID
+	c.sessionHandler.responseWaitersLock.Unlock()
+
+	// Google answers pairing requests with a session ID it generates itself
+	// rather than echoing the request ID back.
+	msg := &IncomingRPCMessage{
+		IncomingRPCMessage: &gmproto.IncomingRPCMessage{ResponseID: "server-response"},
+		Message: &gmproto.RPCMessageData{
+			SessionID: "server-generated-session-id",
+			Action:    gmproto.ActionType_CREATE_GAIA_PAIRING_CLIENT_INIT,
+		},
+	}
+	if !c.sessionHandler.receiveResponse(msg) {
+		t.Fatal("pairing response was not delivered to the waiting request")
+	}
+	select {
+	case got := <-ch:
+		if got != msg {
+			t.Fatal("waiter received a different message")
+		}
+	default:
+		t.Fatal("waiter channel was empty")
+	}
+
+	// The correlation is one-shot: a duplicate must not be claimed again.
+	if c.sessionHandler.receiveResponse(msg) {
+		t.Fatal("duplicate pairing response was claimed twice")
+	}
+}
+
+func TestNonPairingResponseStillRequiresMatchingSessionID(t *testing.T) {
+	c := testClient()
+	const requestID = "client-request-id"
+	c.sessionHandler.waitResponse(requestID)
+	msg := &IncomingRPCMessage{
+		IncomingRPCMessage: &gmproto.IncomingRPCMessage{ResponseID: "server-response"},
+		Message: &gmproto.RPCMessageData{
+			SessionID: "unrelated-session-id",
+			Action:    gmproto.ActionType_LIST_MESSAGES,
+		},
+	}
+	if c.sessionHandler.receiveResponse(msg) {
+		t.Fatal("unrelated response was matched to a pending request")
+	}
+}
+
+func TestOldLoggedOutEventDoesNotCancelPairing(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		isOld     bool
+		wantEvent bool
+	}{
+		{name: "replayed from previous session", isOld: true, wantEvent: false},
+		{name: "live logout", isOld: false, wantEvent: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testClient()
+			var loggedOut bool
+			c.SetEventHandler(func(evt any) {
+				if _, ok := evt.(*events.GaiaLoggedOut); ok {
+					loggedOut = true
+				}
+			})
+			msg := &IncomingRPCMessage{
+				IncomingRPCMessage: &gmproto.IncomingRPCMessage{ResponseID: "incoming-logout"},
+				IsOld:              tc.isOld,
+				Message: &gmproto.RPCMessageData{
+					Action:          gmproto.ActionType_GET_UPDATES,
+					UnencryptedData: hackyLoggedOutBytes,
+				},
+			}
+			if err := c.handleUpdatesEvent(msg); err != nil {
+				t.Fatalf("handleUpdatesEvent: %v", err)
+			}
+			if loggedOut != tc.wantEvent {
+				t.Fatalf("GaiaLoggedOut fired = %v, want %v", loggedOut, tc.wantEvent)
+			}
+		})
+	}
+}

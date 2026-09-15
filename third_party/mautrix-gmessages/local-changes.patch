@@ -1,5 +1,5 @@
 diff --git a/upstream/pkg/libgm/client.go b/local/pkg/libgm/client.go
-index d385f4b..b8adf7c 100644
+index d385f4b..0ba1eb8 100644
 --- a/upstream/pkg/libgm/client.go
 +++ b/local/pkg/libgm/client.go
 @@ -44,8 +44,87 @@ type AuthData struct {
@@ -168,7 +168,17 @@ index d385f4b..b8adf7c 100644
  
  	GaiaHackyDeviceSwitcher int
  
-@@ -176,30 +280,60 @@ func NewClient(authData *AuthData, pk *PushKeys, logger zerolog.Logger, httpSett
+@@ -161,7 +265,8 @@ func NewAuthData() *AuthData {
+ 
+ func NewClient(authData *AuthData, pk *PushKeys, logger zerolog.Logger, httpSettings exhttp.ClientSettings) *Client {
+ 	sessionHandler := &SessionHandler{
+-		responseWaiters: make(map[string]chan<- *IncomingRPCMessage),
++		responseWaiters:    make(map[string]chan<- *IncomingRPCMessage),
++		gaiaPairingWaiters: make(map[gmproto.ActionType]string),
+ 	}
+ 	cli := &Client{
+ 		AuthData:       authData,
+@@ -176,30 +281,60 @@ func NewClient(authData *AuthData, pk *PushKeys, logger zerolog.Logger, httpSett
  		pingInterval:             1 * time.Minute,
  		alertTimeoutCount:        4,
  		dataReceiveCheckInterval: DefaultBugleDefaultCheckInterval,
@@ -230,7 +240,7 @@ index d385f4b..b8adf7c 100644
  	}
  }
  
-@@ -208,83 +342,213 @@ func (c *Client) SetAlertTimeoutCount(count int) {
+@@ -208,83 +343,213 @@ func (c *Client) SetAlertTimeoutCount(count int) {
  // Intervals shorter than 5 minutes are ignored to avoid draining the phone's battery.
  func (c *Client) SetDataReceiveCheckInterval(interval time.Duration) {
  	if interval >= 5*time.Minute {
@@ -476,7 +486,7 @@ index d385f4b..b8adf7c 100644
  			Error: fmt.Errorf("failed to set active session: %w", err),
  		})
  		return
-@@ -296,7 +560,7 @@ func (c *Client) postConnect() {
+@@ -296,7 +561,7 @@ func (c *Client) postConnect() {
  		return
  	}
  	doneChan := make(chan struct{})
@@ -485,7 +495,7 @@ index d385f4b..b8adf7c 100644
  		select {
  		case <-time.After(5 * time.Second):
  			c.Logger.Warn().Msg("Checking bugle default on connect is taking long")
-@@ -305,8 +569,9 @@ func (c *Client) postConnect() {
+@@ -305,8 +570,9 @@ func (c *Client) postConnect() {
  			default:
  			}
  		case <-doneChan:
@@ -496,7 +506,7 @@ index d385f4b..b8adf7c 100644
  	bugleRes, err := c.IsBugleDefault(ctx)
  	close(doneChan)
  	if err != nil {
-@@ -327,40 +592,99 @@ func (c *Client) shouldCheckBugleDefault() bool {
+@@ -327,40 +593,99 @@ func (c *Client) shouldCheckBugleDefault() bool {
  }
  
  func (c *Client) Disconnect() {
@@ -604,7 +614,7 @@ index d385f4b..b8adf7c 100644
  }
  
  func (c *Client) FetchConfig(ctx context.Context) error {
-@@ -369,9 +693,12 @@ func (c *Client) FetchConfig(ctx context.Context) error {
+@@ -369,9 +694,12 @@ func (c *Client) FetchConfig(ctx context.Context) error {
  		return fmt.Errorf("failed to fetch config: %w", err)
  	}
  	if deviceID := config.GetDeviceInfo().GetDeviceID(); deviceID != "" && c.AuthData != nil {
@@ -618,7 +628,7 @@ index d385f4b..b8adf7c 100644
  		}
  	}
  	c.Config = config
-@@ -419,15 +746,18 @@ func (c *Client) diffVersionFormat(curr *gmproto.ConfigVersion, latest *gmproto.
+@@ -419,15 +747,18 @@ func (c *Client) diffVersionFormat(curr *gmproto.ConfigVersion, latest *gmproto.
  }
  
  func (c *Client) updateTachyonAuthToken(data *gmproto.TokenData) {
@@ -640,7 +650,7 @@ index d385f4b..b8adf7c 100644
  		Int64("valid_for", data.GetTTL()).
  		Msg("Updated tachyon token")
  }
-@@ -440,7 +770,7 @@ type PushKeys struct {
+@@ -440,7 +771,7 @@ type PushKeys struct {
  
  func (c *Client) RegisterPush(ctx context.Context, keys *PushKeys) error {
  	if c.PushKeys == nil || c.PushKeys.URL != keys.URL {
@@ -649,7 +659,7 @@ index d385f4b..b8adf7c 100644
  		if err != nil {
  			return fmt.Errorf("failed to refresh auth token: %w", err)
  		}
-@@ -457,7 +787,17 @@ func (c *Client) RegisterPush(ctx context.Context, keys *PushKeys) error {
+@@ -457,7 +788,17 @@ func (c *Client) RegisterPush(ctx context.Context, keys *PushKeys) error {
  	return nil
  }
  
@@ -668,7 +678,7 @@ index d385f4b..b8adf7c 100644
  	if errors.Is(err, events.ErrInvalidCredentials) || errors.Is(err, events.ErrRequestedEntityNotFound) {
  		return true
  	}
-@@ -471,8 +811,9 @@ func isFatalRefreshError(err error) bool {
+@@ -471,8 +812,9 @@ func isFatalRefreshError(err error) bool {
  	return false
  }
  
@@ -680,7 +690,7 @@ index d385f4b..b8adf7c 100644
  		return nil
  	}
  	jwk := c.AuthData.RefreshKey
-@@ -506,7 +847,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
+@@ -506,7 +848,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
  		}
  	}
  	c.Logger.Debug().
@@ -689,7 +699,7 @@ index d385f4b..b8adf7c 100644
  		Bool("force_refresh", pushKeyOverride != nil).
  		Bool("include_push_keys", moreParams.GetPushReg() != nil).
  		Msg("Refreshing auth token")
-@@ -514,11 +855,11 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
+@@ -514,11 +856,11 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
  	payload := &gmproto.RegisterRefreshRequest{
  		MessageAuth: &gmproto.AuthMessage{
  			RequestID:        requestID,
@@ -703,7 +713,7 @@ index d385f4b..b8adf7c 100644
  		UnixTimestamp:     timestamp,
  		Signature:         sig,
  		Parameters: &gmproto.RegisterRefreshRequest_Parameters{
-@@ -529,7 +870,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
+@@ -529,7 +871,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
  	}
  
  	resp, err := typedHTTPResponse[*gmproto.RegisterRefreshResponse](
@@ -774,7 +784,7 @@ index 77a7107..f784d85 100644
  		return nil, errors.New("input data is too short")
  	}
 diff --git a/upstream/pkg/libgm/event_handler.go b/local/pkg/libgm/event_handler.go
-index 44d04c0..82ba2ef 100644
+index 44d04c0..488186a 100644
 --- a/upstream/pkg/libgm/event_handler.go
 +++ b/local/pkg/libgm/event_handler.go
 @@ -90,7 +90,7 @@ func (c *Client) decryptInternalMessage(data *gmproto.IncomingRPCMessage) (*Inco
@@ -913,7 +923,7 @@ index 44d04c0..82ba2ef 100644
  }
  
  type WrappedMessage struct {
-@@ -225,15 +244,14 @@ type WrappedMessage struct {
+@@ -225,15 +244,20 @@ type WrappedMessage struct {
  
  var hackyLoggedOutBytes = []byte{0x72, 0x00}
  
@@ -924,6 +934,12 @@ index 44d04c0..82ba2ef 100644
  		if msg.DecryptedData == nil && bytes.Equal(msg.Message.UnencryptedData, hackyLoggedOutBytes) {
 -			c.triggerEvent(&events.GaiaLoggedOut{})
 -			return
++			// A replayed logout marker from a previous session must not cancel the
++			// session that is replacing it, such as an in-progress Gaia pairing.
++			if msg.IsOld {
++				c.Logger.Debug().Msg("Ignoring old logged out event")
++				return nil
++			}
 +			return c.triggerEvent(&events.GaiaLoggedOut{})
  		}
  		if !msg.IsOld {
@@ -932,7 +948,7 @@ index 44d04c0..82ba2ef 100644
  		}
  		data, ok := msg.DecryptedMessage.(*gmproto.UpdateEvents)
  		if !ok {
-@@ -241,61 +259,75 @@ func (c *Client) handleUpdatesEvent(msg *IncomingRPCMessage) {
+@@ -241,61 +265,75 @@ func (c *Client) handleUpdatesEvent(msg *IncomingRPCMessage) {
  				Type("data_type", msg.DecryptedMessage).
  				Bool("is_old", msg.IsOld).
  				Msg("Unexpected data type in GET_UPDATES event")
@@ -1023,7 +1039,7 @@ index 44d04c0..82ba2ef 100644
  				AccountChangeOrSomethingEvent: evt.AccountChange,
  			})
  
-@@ -316,4 +348,5 @@ func (c *Client) handleUpdatesEvent(msg *IncomingRPCMessage) {
+@@ -316,4 +354,5 @@ func (c *Client) handleUpdatesEvent(msg *IncomingRPCMessage) {
  			Str("evt_data", base64.StdEncoding.EncodeToString(msg.GetMessageData())).
  			Msg("Unexpected response data")
  	}
@@ -2078,7 +2094,7 @@ index a1d2147..fff3938 100644
  	})
  }
 diff --git a/upstream/pkg/libgm/session_handler.go b/local/pkg/libgm/session_handler.go
-index ba2e484..71ca44c 100644
+index ba2e484..c4ab9c2 100644
 --- a/upstream/pkg/libgm/session_handler.go
 +++ b/local/pkg/libgm/session_handler.go
 @@ -34,6 +34,7 @@ const responseHardTimeout = 60 * time.Second
@@ -2089,8 +2105,14 @@ index ba2e484..71ca44c 100644
  
  type SessionHandler struct {
  	client *Client
-@@ -43,13 +44,24 @@ type SessionHandler struct {
+@@ -41,15 +42,30 @@ type SessionHandler struct {
+ 	responseWaiters     map[string]chan<- *IncomingRPCMessage
+ 	responseWaitersLock sync.Mutex
  
++	// gaiaPairingWaiters maps an in-flight Gaia pairing action to its request ID.
++	// Guarded by responseWaitersLock.
++	gaiaPairingWaiters map[gmproto.ActionType]string
++
  	ackMapLock sync.Mutex
  	ackMap     []string
 -	ackTicker  *time.Ticker
@@ -2116,7 +2138,7 @@ index ba2e484..71ca44c 100644
  }
  
  func (s *SessionHandler) sendMessageNoResponse(ctx context.Context, params SendMessageParams) error {
-@@ -67,7 +79,7 @@ func (s *SessionHandler) sendMessageNoResponse(ctx context.Context, params SendM
+@@ -67,7 +83,7 @@ func (s *SessionHandler) sendMessageNoResponse(ctx context.Context, params SendM
  		Str("message_id", requestID).
  		Msg("Sending request to phone (not expecting response)")
  	_, err = typedHTTPResponse[*gmproto.OutgoingRPCResponse](
@@ -2125,7 +2147,22 @@ index ba2e484..71ca44c 100644
  	)
  	return err
  }
-@@ -93,7 +105,7 @@ func (s *SessionHandler) sendAsyncMessageWithID(ctx context.Context, params Send
+@@ -84,6 +100,14 @@ func (s *SessionHandler) sendAsyncMessageWithID(ctx context.Context, params Send
+ 	}
+ 
+ 	ch := s.waitResponse(requestID)
++	if isGaiaPairingAction(params.Action) {
++		s.responseWaitersLock.Lock()
++		if s.gaiaPairingWaiters == nil {
++			s.gaiaPairingWaiters = make(map[gmproto.ActionType]string)
++		}
++		s.gaiaPairingWaiters[params.Action] = requestID
++		s.responseWaitersLock.Unlock()
++	}
+ 	url := util.SendMessageURL
+ 	if s.client.AuthData.HasCookies() {
+ 		url = util.SendMessageURLGoogle
+@@ -93,7 +117,7 @@ func (s *SessionHandler) sendAsyncMessageWithID(ctx context.Context, params Send
  		Str("message_id", requestID).
  		Msg("Sending request to phone")
  	_, err = typedHTTPResponse[*gmproto.OutgoingRPCResponse](
@@ -2134,7 +2171,71 @@ index ba2e484..71ca44c 100644
  	)
  	if err != nil {
  		s.cancelResponse(requestID, ch)
-@@ -245,6 +257,7 @@ func (s *SessionHandler) sendUserMessage(ctx context.Context, actionType gmproto
+@@ -123,9 +147,33 @@ func (s *SessionHandler) waitResponse(requestID string) chan *IncomingRPCMessage
+ 	return ch
+ }
+ 
++// isGaiaPairingAction reports whether the action is part of the Gaia pairing
++// handshake. Google does not echo the request ID back in the session ID of
++// these responses, so they are correlated by action instead.
++func isGaiaPairingAction(action gmproto.ActionType) bool {
++	switch action {
++	case gmproto.ActionType_CREATE_GAIA_PAIRING_CLIENT_INIT,
++		gmproto.ActionType_CREATE_GAIA_PAIRING_CLIENT_FINISHED:
++		return true
++	default:
++		return false
++	}
++}
++
++// forgetGaiaPairingWaiter drops any pairing correlation pointing at requestID.
++// The caller must hold responseWaitersLock.
++func (s *SessionHandler) forgetGaiaPairingWaiter(requestID string) {
++	for action, pendingID := range s.gaiaPairingWaiters {
++		if pendingID == requestID {
++			delete(s.gaiaPairingWaiters, action)
++		}
++	}
++}
++
+ func (s *SessionHandler) cancelResponse(requestID string, ch chan *IncomingRPCMessage) {
+ 	s.responseWaitersLock.Lock()
+ 	defer s.responseWaitersLock.Unlock()
++	s.forgetGaiaPairingWaiter(requestID)
+ 	// Only close the channel if the response hasn't been claimed yet: receiveResponse
+ 	// removes the waiter from the map (under the lock) before sending to the channel,
+ 	// so closing an already-claimed channel here could panic that send.
+@@ -142,6 +190,7 @@ func (s *SessionHandler) cancelAllResponseWaiters() {
+ 		delete(s.responseWaiters, requestID)
+ 		close(ch)
+ 	}
++	clear(s.gaiaPairingWaiters)
+ }
+ 
+ func (s *SessionHandler) receiveResponse(msg *IncomingRPCMessage) bool {
+@@ -162,11 +211,21 @@ func (s *SessionHandler) receiveResponse(msg *IncomingRPCMessage) bool {
+ 	requestID := msg.Message.SessionID
+ 	s.responseWaitersLock.Lock()
+ 	ch, ok := s.responseWaiters[requestID]
++	if !ok && isGaiaPairingAction(msg.Message.Action) {
++		// Gaia pairing responses carry a server-generated session ID rather than
++		// the request ID, so the only usable correlation is the pairing action.
++		if pendingID, found := s.gaiaPairingWaiters[msg.Message.Action]; found {
++			if ch, ok = s.responseWaiters[pendingID]; ok {
++				requestID = pendingID
++			}
++		}
++	}
+ 	if !ok {
+ 		s.responseWaitersLock.Unlock()
+ 		return false
+ 	}
+ 	delete(s.responseWaiters, requestID)
++	s.forgetGaiaPairingWaiter(requestID)
+ 	s.responseWaitersLock.Unlock()
+ 	// Ditto activity is handled by the pinger directly
+ 	if msg.Message.Action != gmproto.ActionType_NOTIFY_DITTO_ACTIVITY {
+@@ -245,6 +304,7 @@ func (s *SessionHandler) sendUserMessage(ctx context.Context, actionType gmproto
  		Action:        actionType,
  		Data:          encryptedData,
  		UserInitiated: true,
@@ -2142,7 +2243,7 @@ index ba2e484..71ca44c 100644
  	})
  }
  
-@@ -259,11 +272,15 @@ type SendMessageParams struct {
+@@ -259,11 +319,15 @@ type SendMessageParams struct {
  	MessageType gmproto.MessageType
  
  	UserInitiated bool
@@ -2159,7 +2260,7 @@ index ba2e484..71ca44c 100644
  
  	requestID := params.RequestID
  	if requestID == "" {
-@@ -275,7 +292,7 @@ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.M
+@@ -275,7 +339,7 @@ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.M
  	}
  
  	message := &gmproto.OutgoingRPCMessage{
@@ -2168,7 +2269,7 @@ index ba2e484..71ca44c 100644
  		Data: &gmproto.OutgoingRPCMessage_Data{
  			RequestID:  requestID,
  			BugleRoute: gmproto.BugleRoute_DataEvent,
-@@ -286,18 +303,18 @@ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.M
+@@ -286,18 +350,18 @@ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.M
  		},
  		Auth: &gmproto.OutgoingRPCMessage_Auth{
  			RequestID:        requestID,
@@ -2191,7 +2292,7 @@ index ba2e484..71ca44c 100644
  	}
  	var encryptedData, unencryptedData []byte
  	if params.Data != nil {
-@@ -309,7 +326,7 @@ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.M
+@@ -309,7 +373,7 @@ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.M
  		if params.DontEncrypt {
  			unencryptedData = serializedData
  		} else {
@@ -2200,7 +2301,7 @@ index ba2e484..71ca44c 100644
  			if err != nil {
  				return "", nil, err
  			}
-@@ -340,20 +357,42 @@ func (s *SessionHandler) queueMessageAck(messageID string) {
+@@ -340,20 +404,42 @@ func (s *SessionHandler) queueMessageAck(messageID string) {
  	}
  }
  
@@ -2252,7 +2353,7 @@ index ba2e484..71ca44c 100644
  	s.ackMapLock.Lock()
  	dataToAck := s.ackMap
  	s.ackMap = nil
-@@ -362,16 +401,17 @@ func (s *SessionHandler) sendAckRequest() {
+@@ -362,16 +448,17 @@ func (s *SessionHandler) sendAckRequest() {
  		return
  	}
  	ackMessages := make([]*gmproto.AckMessageRequest_Message, len(dataToAck))
@@ -2272,7 +2373,7 @@ index ba2e484..71ca44c 100644
  			Network:          s.client.AuthData.AuthNetwork(),
  			ConfigVersion:    util.ConfigMessage,
  		},
-@@ -382,8 +422,10 @@ func (s *SessionHandler) sendAckRequest() {
+@@ -382,8 +469,10 @@ func (s *SessionHandler) sendAckRequest() {
  	if s.client.AuthData.HasCookies() {
  		url = util.AckMessagesURLGoogle
  	}
