@@ -152,7 +152,7 @@ func TestPairingChangesRoutingEpochAndCancelsOldWork(t *testing.T) {
 	if err = s.CheckpointHistory(job.ID, job.Generation, nil, []byte("older"), 50, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.SavePairedSession([]byte("synthetic-auth")); err != nil {
+	if err = s.SavePairedSession([]byte("synthetic-auth"), true); err != nil {
 		t.Fatal(err)
 	}
 	if current, err := s.EntityCurrent("conversation", "c"); err != nil || current {
@@ -189,6 +189,44 @@ func TestPairingChangesRoutingEpochAndCancelsOldWork(t *testing.T) {
 	}
 }
 
+func TestRepairingSamePhoneKeepsRecordsWritable(t *testing.T) {
+	s := openTestStore(t)
+	if _, err := s.Append(Event{Type: "conversation", EntityID: "c", Data: json.RawMessage(`{"schema":1,"id":"c"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Enqueue("queued-key", "tx", model.SendRequest{ConversationID: "c", Text: "synthetic"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutPrivate("upload:u", []byte("google-upload")); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.QueueHistory(model.HistoryJob{ID: "messages:c", Kind: "messages", ConversationID: "c"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.CheckpointHistory(job.ID, job.Generation, nil, []byte("older"), 50, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SavePairedSession([]byte("same-phone"), false); err != nil {
+		t.Fatal(err)
+	}
+	if current, err := s.EntityCurrent("conversation", "c"); err != nil || !current {
+		t.Fatalf("same-phone re-pair demoted routing: %v %v", current, err)
+	}
+	if o, _ := s.Outbox("queued-key"); o.State != "canceled" {
+		t.Fatal(o)
+	}
+	if _, err = s.Private("upload:u"); err != nil {
+		t.Fatal("upload credential dropped", err)
+	}
+	if cursor, err := s.HistoryCursor(job.ID); err != nil || string(cursor) != "older" {
+		t.Fatalf("history cursor reset: %q %v", cursor, err)
+	}
+	if summary, err := s.SessionSummary(); err != nil || summary.Epoch != 0 || summary.PreviousConversations != 0 {
+		t.Fatalf("session boundary reported for the same phone: %+v %v", summary, err)
+	}
+}
+
 func TestOldSessionOutboxCannotBeConfirmedByNewSession(t *testing.T) {
 	s := openTestStore(t)
 	request := model.SendRequest{ConversationID: "c", Text: "synthetic"}
@@ -199,7 +237,7 @@ func TestOldSessionOutboxCannotBeConfirmedByNewSession(t *testing.T) {
 	if _, err = s.ClaimQueued(o.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.SavePairedSession([]byte("new-session")); err != nil {
+	if err = s.SavePairedSession([]byte("new-session"), true); err != nil {
 		t.Fatal(err)
 	}
 	message := model.Message{Schema: 1, ID: "m", ConversationID: "c", TransactionID: "transaction"}

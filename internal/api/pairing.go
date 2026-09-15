@@ -2,6 +2,7 @@ package api
 
 import (
 	"archive/zip"
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -23,7 +24,11 @@ var pairingHelper embed.FS
 func registerPairing(mux *http.ServeMux, b *bridge.Bridge) {
 	mux.HandleFunc("GET /v1/pairing", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, b.PairingStatus()) })
 	mux.HandleFunc("POST /v1/pairing/start", func(w http.ResponseWriter, r *http.Request) {
-		state, err := b.BeginPairing()
+		newPhone, ok := pairingOptions(w, r)
+		if !ok {
+			return
+		}
+		state, err := b.BeginPairing(newPhone)
 		if err != nil {
 			apiError(w, err)
 			return
@@ -33,7 +38,11 @@ func registerPairing(mux *http.ServeMux, b *bridge.Bridge) {
 		writeJSON(w, state)
 	})
 	mux.HandleFunc("POST /v1/pairing/repair", func(w http.ResponseWriter, r *http.Request) {
-		state, err := b.BeginRepairing()
+		newPhone, ok := pairingOptions(w, r)
+		if !ok {
+			return
+		}
+		state, err := b.BeginRepairing(newPhone)
 		if err != nil {
 			apiError(w, err)
 			return
@@ -51,6 +60,28 @@ func registerPairing(mux *http.ServeMux, b *bridge.Bridge) {
 		writeJSON(w, state)
 	})
 }
+
+// pairingOptions reads the optional start body. An empty body means the same
+// phone is being paired again.
+func pairingOptions(w http.ResponseWriter, r *http.Request) (bool, bool) {
+	var req struct {
+		NewPhone bool `json:"new_phone"`
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<10))
+	if err != nil {
+		http.Error(w, "invalid pairing options", 400)
+		return false, false
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return false, true
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "invalid pairing options", 400)
+		return false, false
+	}
+	return req.NewPhone, true
+}
+
 func pairingCredentials(w http.ResponseWriter, r *http.Request, b *bridge.Bridge) {
 	if r.Method != "POST" {
 		w.WriteHeader(http.StatusMethodNotAllowed)

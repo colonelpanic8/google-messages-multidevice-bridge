@@ -16,6 +16,7 @@ var ErrPairingTicket = errors.New("invalid or expired pairing ticket")
 
 type PairingState struct {
 	generation            uint64
+	newPhone              bool
 	State                 string    `json:"state"`
 	Reason                string    `json:"reason,omitempty"`
 	CanRepair             bool      `json:"can_repair"`
@@ -110,15 +111,15 @@ func (b *Bridge) savedPairingCookies() (map[string]string, error) {
 	return clean, nil
 }
 
-func (b *Bridge) BeginPairing() (PairingState, error) {
-	return b.beginPairing(false)
+func (b *Bridge) BeginPairing(newPhone bool) (PairingState, error) {
+	return b.beginPairing(false, newPhone)
 }
 
-func (b *Bridge) BeginRepairing() (PairingState, error) {
-	return b.beginPairing(true)
+func (b *Bridge) BeginRepairing(newPhone bool) (PairingState, error) {
+	return b.beginPairing(true, newPhone)
 }
 
-func (b *Bridge) beginPairing(reuseSignIn bool) (PairingState, error) {
+func (b *Bridge) beginPairing(reuseSignIn, newPhone bool) (PairingState, error) {
 	b.mutationMu.Lock()
 	defer b.mutationMu.Unlock()
 	b.mu.Lock()
@@ -150,7 +151,7 @@ func (b *Bridge) beginPairing(reuseSignIn bool) (PairingState, error) {
 		return PairingState{}, err
 	}
 	now := time.Now().UTC()
-	state := PairingState{generation: b.pairingState.generation + 1, State: "waiting_for_login", Ticket: base64.RawURLEncoding.EncodeToString(ticket), Expires: now.Add(10 * time.Minute), Detail: "Sign in to Google using the pairing helper, then return here"}
+	state := PairingState{generation: b.pairingState.generation + 1, newPhone: newPhone, State: "waiting_for_login", Ticket: base64.RawURLEncoding.EncodeToString(ticket), Expires: now.Add(10 * time.Minute), Detail: "Sign in to Google using the pairing helper, then return here"}
 	if err := b.Store.BeginPairingAttempt(now, state.Expires); err != nil {
 		b.mu.Unlock()
 		b.storageFailure(err)
@@ -387,7 +388,7 @@ func (b *Bridge) commitPairedSession(ctx context.Context, generation uint64, dat
 		b.mu.Unlock()
 		return context.Canceled
 	}
-	err := b.Store.SavePairedSession(data)
+	err := b.Store.SavePairedSession(data, generation != 0 && b.pairingState.newPhone)
 	if err == nil && generation != 0 {
 		b.pairingState.State = "paired"
 		b.pairingState.Reason = ""

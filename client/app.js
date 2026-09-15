@@ -2390,7 +2390,7 @@ async function startPairing(reuseSignIn = false) {
       reuseSignIn ? "/v1/pairing/repair" : "/v1/pairing/start",
       {
         method: "POST",
-        body: "{}",
+        body: JSON.stringify({ new_phone: $("pairing-new-phone").checked }),
       },
     );
     if (actionGeneration !== generation) return;

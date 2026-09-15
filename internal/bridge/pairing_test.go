@@ -25,7 +25,7 @@ func TestPairingTicketsAreSingleUseAndNeverPersisted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err := b.BeginPairing()
+	state, err := b.BeginPairing(false)
 	if err != nil || len(state.Ticket) != 43 {
 		t.Fatalf("%+v %v", state, err)
 	}
@@ -49,7 +49,7 @@ func TestPairingTicketsAreSingleUseAndNeverPersisted(t *testing.T) {
 		if b.PairingStatus().State != "confirm_on_phone" {
 			t.Fatal(b.PairingStatus())
 		}
-		return b.Store.SavePairedSession([]byte("synthetic-session"))
+		return b.Store.SavePairedSession([]byte("synthetic-session"), false)
 	}
 	if err = b.processPairing(context.Background()); err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestPairingTicketsAreSingleUseAndNeverPersisted(t *testing.T) {
 }
 func TestPairingCancellationJoinsAttempt(t *testing.T) {
 	b := testBridge(t)
-	state, err := b.BeginPairing()
+	state, err := b.BeginPairing(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,12 +120,12 @@ func TestOldProviderReplayCannotRegressKnownMessage(t *testing.T) {
 
 func TestPairingCompletionCannotReplaceNewTicket(t *testing.T) {
 	b := testBridge(t)
-	first, err := b.BeginPairing()
+	first, err := b.BeginPairing(false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b.CancelPairing()
-	next, err := b.BeginPairing()
+	next, err := b.BeginPairing(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,18 +135,18 @@ func TestPairingCompletionCannotReplaceNewTicket(t *testing.T) {
 	}
 	b.CancelPairing()
 	b.SetOfflineOnly(true)
-	if _, err = b.BeginPairing(); err == nil {
+	if _, err = b.BeginPairing(false); err == nil {
 		t.Fatal("offline mode allowed pairing")
 	}
 }
 
 func TestSecondPairingStartReusesActiveAttempt(t *testing.T) {
 	b := testBridge(t)
-	first, err := b.BeginPairing()
+	first, err := b.BeginPairing(false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := b.BeginPairing()
+	second, err := b.BeginPairing(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestSecondPairingStartReusesActiveAttempt(t *testing.T) {
 
 func TestExpiredPairingRejectsTicketAndAllowsFreshAttempt(t *testing.T) {
 	b := testBridge(t)
-	first, err := b.BeginPairing()
+	first, err := b.BeginPairing(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestExpiredPairingRejectsTicketAndAllowsFreshAttempt(t *testing.T) {
 	if state := b.PairingStatus(); state.State != "failed" || state.Reason != "ticket_expired" || state.Ticket != "" {
 		t.Fatalf("expired state: %+v", state)
 	}
-	second, err := b.BeginPairing()
+	second, err := b.BeginPairing(false)
 	if err != nil || second.Ticket == first.Ticket || second.State != "waiting_for_login" {
 		t.Fatalf("fresh attempt: %+v %v", second, err)
 	}
@@ -178,7 +178,7 @@ func TestExpiredPairingRejectsTicketAndAllowsFreshAttempt(t *testing.T) {
 
 func TestCancelWaitsForPairingAttemptToJoin(t *testing.T) {
 	b := testBridge(t)
-	state, err := b.BeginPairing()
+	state, err := b.BeginPairing(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestCancelWaitsForPairingAttemptToJoin(t *testing.T) {
 	if err = <-done; err != nil {
 		t.Fatal(err)
 	}
-	if _, err = b.BeginPairing(); err != nil {
+	if _, err = b.BeginPairing(false); err != nil {
 		t.Fatalf("new attempt remained blocked after cancel joined: %v", err)
 	}
 }
@@ -229,7 +229,7 @@ func TestRestartDuringPairingKeepsSavedSessionAndReportsInterruption(t *testing.
 		t.Fatal(err)
 	}
 	b := New(s)
-	state, err := b.BeginPairing()
+	state, err := b.BeginPairing(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestSupervisorPairsOnlyAfterPreviousConnectionJoins(t *testing.T) {
 		})
 	}()
 	<-firstStarted
-	state, err := b.BeginPairing()
+	state, err := b.BeginPairing(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +321,7 @@ func TestPairingCancelAndCommitHaveOneOutcome(t *testing.T) {
 	b := testBridge(t)
 	previous := []byte(nil)
 	for i := 0; i < 32; i++ {
-		state, err := b.BeginPairing()
+		state, err := b.BeginPairing(false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -380,18 +380,18 @@ func TestRepairUsesSavedSignInAndInvalidatesWaitingTicket(t *testing.T) {
 	if !b.PairingStatus().CanRepair {
 		t.Fatal("saved sign-in not offered")
 	}
-	waiting, err := b.BeginPairing()
+	waiting, err := b.BeginPairing(false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err := b.BeginRepairing()
+	state, err := b.BeginRepairing(false)
 	if err != nil || state.State != "connecting" || state.Ticket != "" {
 		t.Fatalf("%+v %v", state, err)
 	}
 	if err := b.SubmitPairingCookies(waiting.Ticket, syntheticCookies()); !errors.Is(err, ErrPairingTicket) {
 		t.Fatal(err)
 	}
-	again, err := b.BeginRepairing()
+	again, err := b.BeginRepairing(false)
 	if err != nil || again.generation != state.generation {
 		t.Fatal("repeated repair replaced active attempt")
 	}
@@ -415,7 +415,7 @@ func TestRepairUsesSavedSignInAndInvalidatesWaitingTicket(t *testing.T) {
 	if !bytes.Equal(saved, after) {
 		t.Fatal("failed repair changed stored session")
 	}
-	browser, err := b.BeginPairing()
+	browser, err := b.BeginPairing(false)
 	if err != nil || browser.State != "waiting_for_login" || browser.Ticket == "" {
 		t.Fatalf("browser fallback: %+v %v", browser, err)
 	}
@@ -436,7 +436,7 @@ func TestRepairWithoutUsableSignInDoesNotCancelQueuedOperations(t *testing.T) {
 			if b.PairingStatus().CanRepair {
 				t.Fatal("offered unusable sign-in")
 			}
-			if _, err := b.BeginRepairing(); !errors.Is(err, ErrInvalid) {
+			if _, err := b.BeginRepairing(false); !errors.Is(err, ErrInvalid) {
 				t.Fatal(err)
 			}
 			item, _ := b.Store.Outbox("repair-queued-key-001")
@@ -454,11 +454,11 @@ func TestRepairCancellationAndOfflineMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.SetOfflineOnly(true)
-	if _, err := b.BeginRepairing(); !errors.Is(err, ErrInvalid) {
+	if _, err := b.BeginRepairing(false); !errors.Is(err, ErrInvalid) {
 		t.Fatal(err)
 	}
 	b.SetOfflineOnly(false)
-	if _, err := b.BeginRepairing(); err != nil {
+	if _, err := b.BeginRepairing(false); err != nil {
 		t.Fatal(err)
 	}
 	b.CancelPairing()
@@ -477,7 +477,7 @@ func TestRepairCommitsOnlyAfterPhoneConfirmation(t *testing.T) {
 	if _, _, err := b.Store.Enqueue("repair-success-key-001", "tx", model.SendRequest{ConversationID: "old", Text: "synthetic"}); err != nil {
 		t.Fatal(err)
 	}
-	state, err := b.BeginRepairing()
+	state, err := b.BeginRepairing(true)
 	if err != nil {
 		t.Fatal(err)
 	}

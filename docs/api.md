@@ -101,6 +101,9 @@ An authenticated client can then use `POST /v1/pairing/start`; the helper polls 
 scoped pending route and completes the credential handoff without its setup page.
 
 `POST /v1/pairing/start` returns the existing state if pairing is already active.
+Both `start` and `repair` accept an optional JSON body `{"new_phone": true}`. Without
+it, the bridge assumes the same phone is being paired again and keeps every stored
+conversation and message writable.
 Otherwise it creates a random 32-byte base64url ticket: exactly 43 characters,
 one-use, credential-handoff-only, and expiring after ten minutes.
 `POST /v1/pairing/cancel` cancels and joins an in-flight provider attempt before
@@ -170,9 +173,10 @@ Starting re-pairing serializes mutation admission with the session change and
 immediately cancels all still-queued outbox operations; attempted records retain
 their existing terminal/ambiguous state. Cancel or failure does not roll those
 cancellations back, but it also does not change the entity epoch, provider upload
-descriptors, or history jobs. Only successfully saving the new paired session clears
-provider upload descriptors, pauses and resets existing history jobs, and advances
-the entity epoch. Previously stored entities remain readable, but conversations and
+descriptors, or history jobs. Saving a same-phone re-pair changes none of those either.
+Only successfully saving a session started with `new_phone` clears provider upload
+descriptors, pauses and resets existing history jobs, and advances the entity epoch.
+Previously stored entities then remain readable, but conversations and
 messages cannot be mutation targets until the new session observes them again. Their
 snapshot records carry `read_only:true` while stale. Outbox and history records carry
 the `session_epoch` that owns them; an old attempted outbox record cannot be confirmed
