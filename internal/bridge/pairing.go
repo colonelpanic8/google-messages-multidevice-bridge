@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -17,6 +18,8 @@ type PairingState struct {
 	generation            uint64
 	State                 string    `json:"state"`
 	Reason                string    `json:"reason,omitempty"`
+	CanRepair             bool      `json:"can_repair"`
+	AgentEnrolled         bool      `json:"agent_enrolled"`
 	Required              bool      `json:"required"`
 	RequiredReason        string    `json:"required_reason,omitempty"`
 	Ticket                string    `json:"ticket,omitempty"`
@@ -72,6 +75,10 @@ func (b *Bridge) PairingStatus() PairingState {
 		state.PreviousConversations = summary.PreviousConversations
 		state.PreviousMessages = summary.PreviousMessages
 	}
+	cookies, err := b.savedPairingCookies()
+	state.CanRepair = err == nil && len(cookies) > 0
+	digest, err := b.Store.PairingAgentDigest()
+	state.AgentEnrolled = err == nil && len(digest) == 32
 	return state
 }
 func (b *Bridge) SetOfflineOnly(offline bool) {
@@ -79,7 +86,39 @@ func (b *Bridge) SetOfflineOnly(offline bool) {
 	b.offlineOnly = offline
 	b.mu.Unlock()
 }
+func (b *Bridge) savedPairingCookies() (map[string]string, error) {
+	data, err := b.Store.Session()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrStorage, err)
+	}
+	var auth struct {
+		Cookies map[string]string `json:"cookies"`
+	}
+	if len(data) == 0 || json.Unmarshal(data, &auth) != nil {
+		return nil, ErrInvalid
+	}
+	clean := make(map[string]string)
+	for name, required := range cookieNames {
+		value := auth.Cookies[name]
+		if (required && value == "") || len(value) > 8192 {
+			return nil, ErrInvalid
+		}
+		if value != "" {
+			clean[name] = value
+		}
+	}
+	return clean, nil
+}
+
 func (b *Bridge) BeginPairing() (PairingState, error) {
+	return b.beginPairing(false)
+}
+
+func (b *Bridge) BeginRepairing() (PairingState, error) {
+	return b.beginPairing(true)
+}
+
+func (b *Bridge) beginPairing(reuseSignIn bool) (PairingState, error) {
 	b.mutationMu.Lock()
 	defer b.mutationMu.Unlock()
 	b.mu.Lock()
@@ -91,10 +130,19 @@ func (b *Bridge) BeginPairing() (PairingState, error) {
 		b.mu.Unlock()
 		return PairingState{}, ErrPairing
 	}
-	if activePair(b.pairingState.State) {
+	if activePair(b.pairingState.State) && (!reuseSignIn || b.pairingState.State != "waiting_for_login") {
 		state := b.pairingState
 		b.mu.Unlock()
 		return state, nil
+	}
+	var cookies map[string]string
+	if reuseSignIn {
+		var err error
+		cookies, err = b.savedPairingCookies()
+		if err != nil {
+			b.mu.Unlock()
+			return PairingState{}, err
+		}
 	}
 	ticket := make([]byte, 32)
 	if _, err := rand.Read(ticket); err != nil {
@@ -107,6 +155,13 @@ func (b *Bridge) BeginPairing() (PairingState, error) {
 		b.mu.Unlock()
 		b.storageFailure(err)
 		return PairingState{}, err
+	}
+	if reuseSignIn {
+		state.State = "connecting"
+		state.Ticket = ""
+		state.Detail = "Reconnecting with your saved Google sign-in; keep your phone nearby"
+		state.CanRepair = true
+		b.pairCookies = cookies
 	}
 	b.pairingState = state
 	b.mu.Unlock()
@@ -313,7 +368,7 @@ func (b *Bridge) processPairing(ctx context.Context) error {
 		if !time.Now().Before(state.Expires) {
 			b.finishPairingReason("failed", "ticket_expired", "Pairing expired; start again", state.generation)
 		} else if err != nil || canceled {
-			b.finishPairing("failed", "Pairing did not complete; check Google sign-in and try again", state.generation)
+			b.finishPairing("failed", "Pairing did not complete. If you confirmed on your phone, try again; otherwise use browser sign-in to refresh your Google account", state.generation)
 		} else {
 			b.finishPairing("paired", "Phone paired; connecting and loading history", state.generation)
 		}

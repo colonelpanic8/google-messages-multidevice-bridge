@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Google Messages Bridge Pairing Helper",
-  "version": "1.0.0",
-  "description": "Securely hands Google Messages pairing cookies to a bridge using a one-time ticket.",
+  "version": "1.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAony0mHV6u9AZOy3M5yiKEww3mrPjnfxub1L6xNUoS1jfMyTVSfx4ie5xadsVUV5uCG5s+YMguAMgtS3ZI4Xm+u1b2mgXWVcha8Do9zGdN1FPmI9//HnCzjIsZdwLY7xCo2CtlRUe+NCviUghHYNNHH4iXyK/F75lW62OE7wusN4HRB9WroF/VjX+RhVkDFqRUfu10Q5Ts4YPfStX8dFRR2Fb+OFbtdpQV5F2stkOkIWws8wch3NrSugVtSUru+fh33gNmBDBkKb6lMLpLA9ieZhnh5rpTPch39mMLpovKS7iqeCdrcEoRNgcUF0jf8Sn19t9qbF3hxZzmWbJTmJEtQIDAQAB",
+  "description": "Securely hands Google Messages pairing cookies to a bridge and can recover pairing in the background.",
   "incognito": "not_allowed",
-  "permissions": ["cookies"],
+  "permissions": ["alarms", "cookies", "storage"],
   "optional_host_permissions": ["https://*/*", "http://*/*"],
   "background": {
-    "service_worker": "service-worker.js"
+    "service_worker": "service-worker.js",
+    "type": "module"
   },
   "action": {
     "default_title": "Open bridge pairing setup"

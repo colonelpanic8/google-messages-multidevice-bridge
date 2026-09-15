@@ -3,6 +3,7 @@ package bridge
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -365,5 +366,138 @@ func TestLatchedStorageFailureWithholdsLaterAcknowledgements(t *testing.T) {
 	b.storageFailure(errors.New("synthetic disk failure"))
 	if err := b.Handle(&gmproto.Message{MessageID: "later"}); !errors.Is(err, ErrStorage) {
 		t.Fatalf("latched storage failure lost: %v", err)
+	}
+}
+
+func TestRepairUsesSavedSignInAndInvalidatesWaitingTicket(t *testing.T) {
+	b := testBridge(t)
+	cookies := syntheticCookies()
+	cookies["unrelated"] = "must-not-forward"
+	saved, _ := json.Marshal(map[string]any{"cookies": cookies})
+	if err := b.Store.SaveSession(saved); err != nil {
+		t.Fatal(err)
+	}
+	if !b.PairingStatus().CanRepair {
+		t.Fatal("saved sign-in not offered")
+	}
+	waiting, err := b.BeginPairing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := b.BeginRepairing()
+	if err != nil || state.State != "connecting" || state.Ticket != "" {
+		t.Fatalf("%+v %v", state, err)
+	}
+	if err := b.SubmitPairingCookies(waiting.Ticket, syntheticCookies()); !errors.Is(err, ErrPairingTicket) {
+		t.Fatal(err)
+	}
+	again, err := b.BeginRepairing()
+	if err != nil || again.generation != state.generation {
+		t.Fatal("repeated repair replaced active attempt")
+	}
+	b.pairAttempt = func(ctx context.Context, got map[string]string, emoji func(string)) error {
+		if len(got) != 6 || got["SID"] != "synthetic" {
+			t.Fatal("saved cookies not filtered and forwarded")
+		}
+		emoji("🍕")
+		if b.PairingStatus().State != "confirm_on_phone" {
+			t.Fatal("missing phone confirmation")
+		}
+		return errors.New("synthetic rejected sign-in")
+	}
+	if err := b.processPairing(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.PairingStatus(); got.State != "failed" || !got.CanRepair {
+		t.Fatalf("%+v", got)
+	}
+	after, _ := b.Store.Session()
+	if !bytes.Equal(saved, after) {
+		t.Fatal("failed repair changed stored session")
+	}
+	browser, err := b.BeginPairing()
+	if err != nil || browser.State != "waiting_for_login" || browser.Ticket == "" {
+		t.Fatalf("browser fallback: %+v %v", browser, err)
+	}
+}
+
+func TestRepairWithoutUsableSignInDoesNotCancelQueuedOperations(t *testing.T) {
+	for _, data := range []string{"", "invalid", `{"cookies":{"SID":"incomplete"}}`} {
+		t.Run(data, func(t *testing.T) {
+			b := testBridge(t)
+			if data != "" {
+				if err := b.Store.SaveSession([]byte(data)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, _, err := b.Store.Enqueue("repair-queued-key-001", "tx", model.SendRequest{ConversationID: "old", Text: "synthetic"}); err != nil {
+				t.Fatal(err)
+			}
+			if b.PairingStatus().CanRepair {
+				t.Fatal("offered unusable sign-in")
+			}
+			if _, err := b.BeginRepairing(); !errors.Is(err, ErrInvalid) {
+				t.Fatal(err)
+			}
+			item, _ := b.Store.Outbox("repair-queued-key-001")
+			if item.State != "queued" {
+				t.Fatal(item.State)
+			}
+		})
+	}
+}
+
+func TestRepairCancellationAndOfflineMode(t *testing.T) {
+	b := testBridge(t)
+	saved, _ := json.Marshal(map[string]any{"cookies": syntheticCookies()})
+	if err := b.Store.SaveSession(saved); err != nil {
+		t.Fatal(err)
+	}
+	b.SetOfflineOnly(true)
+	if _, err := b.BeginRepairing(); !errors.Is(err, ErrInvalid) {
+		t.Fatal(err)
+	}
+	b.SetOfflineOnly(false)
+	if _, err := b.BeginRepairing(); err != nil {
+		t.Fatal(err)
+	}
+	b.CancelPairing()
+	if b.pairCookies != nil || b.PairingActive() {
+		t.Fatal("canceled repair retained cookies or remained active")
+	}
+}
+
+func TestRepairCommitsOnlyAfterPhoneConfirmation(t *testing.T) {
+	b := testBridge(t)
+	saved, _ := json.Marshal(map[string]any{"cookies": syntheticCookies()})
+	if err := b.Store.SaveSession(saved); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := b.Store.SessionSummary()
+	if _, _, err := b.Store.Enqueue("repair-success-key-001", "tx", model.SendRequest{ConversationID: "old", Text: "synthetic"}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := b.BeginRepairing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	during, _ := b.Store.SessionSummary()
+	if during.Epoch != before.Epoch {
+		t.Fatal("repair advanced epoch before confirmation")
+	}
+	item, _ := b.Store.Outbox("repair-success-key-001")
+	if item.State != "canceled" {
+		t.Fatal("repair left queued operation active")
+	}
+	b.pairAttempt = func(ctx context.Context, cookies map[string]string, emoji func(string)) error {
+		emoji("🍕")
+		return b.commitPairedSession(ctx, state.generation, saved)
+	}
+	if err := b.processPairing(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := b.Store.SessionSummary()
+	if after.Epoch != before.Epoch+1 || b.PairingStatus().State != "paired" {
+		t.Fatal("confirmed repair did not commit")
 	}
 }

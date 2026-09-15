@@ -51,6 +51,15 @@
             100.64.0.0/10 addresses.
           </p>
 
+          <label class="background-option">
+            <input id="background-recovery" type="checkbox" checked />
+            <span>
+              <strong>Enable background recovery</strong><br />
+              Keep narrowly scoped site access so any bridge client can start
+              reconnection without reopening this setup page.
+            </span>
+          </label>
+
           <label for="pairing-ticket">One-time pairing ticket</label>
           <input
             id="pairing-ticket"
@@ -82,7 +91,8 @@
       <aside>
         <strong>Cookie access is narrowly scoped.</strong>
         Required: SID, HSID, OSID, SSID, APISID, SAPISID. Optional:
-        __Secure-1PSIDTS. Nothing is saved by this extension.
+        __Secure-1PSIDTS. Background recovery saves only the bridge address and
+        a pairing-only token in Chrome extension storage.
       </aside>
     </main>
     <script type="module" src="setup.mjs"></script>

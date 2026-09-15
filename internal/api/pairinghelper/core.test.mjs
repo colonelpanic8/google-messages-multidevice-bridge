@@ -6,6 +6,7 @@ import {
   PairingHelperError,
   collectAllowedCookies,
   handoffCredentials,
+  pollPairingAgent,
   requestedOrigins,
   validateBridgeURL,
 } from "./core.mjs";
@@ -267,4 +268,57 @@ test("handoff rejects malformed tickets before requesting permissions", async ()
     (error) => error.code === "invalid-ticket",
   );
   assert.equal(permissionRequests, 0);
+});
+
+test("background enrollment retains permissions and returns a scoped token", async () => {
+  let removals = 0;
+  let posted;
+  const result = await handoffCredentials({
+    bridgeURL: "https://bridge.example/",
+    ticket: TEST_TICKET,
+    requestPermissions: async () => true,
+    removePermissions: async () => {
+      removals++;
+    },
+    getCookie: async () => ({ value: "present" }),
+    fetchImpl: async (_url, options) => {
+      posted = JSON.parse(options.body);
+      return {
+        status: 202,
+        json: async () => ({ agent_token: "B".repeat(43) }),
+      };
+    },
+    enrollAgent: true,
+    retainPermissions: true,
+  });
+  assert.deepEqual(result, {
+    origin: "https://bridge.example",
+    agentToken: "B".repeat(43),
+  });
+  assert.equal(posted.enroll_agent, true);
+  assert.equal(removals, 0);
+});
+
+test("pairing agent hands off only when the bridge has a pending ticket", async () => {
+  const requests = [];
+  const connected = await pollPairingAgent({
+    bridgeURL: "https://bridge.example",
+    agentToken: "B".repeat(43),
+    hasPermissions: async () => true,
+    removePermissions: async () => true,
+    getCookie: async () => ({ value: "present" }),
+    fetchImpl: async (url, options) => {
+      requests.push([url, options]);
+      if (url.endsWith("/agent/pending")) {
+        return { status: 200, json: async () => ({ ticket: TEST_TICKET }) };
+      }
+      return { status: 202 };
+    },
+  });
+  assert.equal(connected, true);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[0][1].headers, {
+    Authorization: `Pairing-Agent ${"B".repeat(43)}`,
+  });
+  assert.equal(JSON.parse(requests[1][1].body).enroll_agent, undefined);
 });

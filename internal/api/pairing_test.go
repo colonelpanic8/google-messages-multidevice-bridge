@@ -69,6 +69,7 @@ func TestPairingControlRoutesRequireBearerAuthentication(t *testing.T) {
 		{name: "status wrong bearer", method: "GET", path: "/v1/pairing", token: "wrong", want: 401},
 		{name: "status authorized", method: "GET", path: "/v1/pairing", token: "test-token", want: 200},
 		{name: "start missing bearer", method: "POST", path: "/v1/pairing/start", want: 401},
+		{name: "repair missing bearer", method: "POST", path: "/v1/pairing/repair", want: 401},
 		{name: "cancel missing bearer", method: "POST", path: "/v1/pairing/cancel", want: 401},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -207,5 +208,84 @@ func TestPairingHelperZIPIsInstallableAndExcludesTests(t *testing.T) {
 	}
 	if !foundCookies {
 		t.Fatal("manifest lacks cookies permission")
+	}
+}
+
+func TestRepairRouteUsesSavedSignInWithoutExposingCookies(t *testing.T) {
+	b, server := fixture(t)
+	status, body := pairingRequest(t, server, "POST", "/v1/pairing/repair", "test-token", "", nil)
+	requireStatus(t, status, body, http.StatusBadRequest)
+	saved, _ := json.Marshal(map[string]any{"cookies": requiredPairingCookies()})
+	if err := b.Store.SaveSession(saved); err != nil {
+		t.Fatal(err)
+	}
+	status, body = pairingRequest(t, server, "GET", "/v1/pairing", "test-token", "", nil)
+	requireStatus(t, status, body, http.StatusOK)
+	var available bridge.PairingState
+	if err := json.Unmarshal(body, &available); err != nil || !available.CanRepair {
+		t.Fatalf("%s %v", body, err)
+	}
+	status, body = pairingRequest(t, server, "POST", "/v1/pairing/repair", "test-token", "", nil)
+	requireStatus(t, status, body, http.StatusAccepted)
+	var state bridge.PairingState
+	if err := json.Unmarshal(body, &state); err != nil || state.State != "connecting" || state.Ticket != "" {
+		t.Fatalf("%s %v", body, err)
+	}
+	if bytes.Contains(body, []byte("synthetic-sid")) || bytes.Contains(body, []byte("cookies")) {
+		t.Fatal("credentials exposed")
+	}
+}
+
+func TestPairingAgentCanOnlyReadPendingTicket(t *testing.T) {
+	_, server := fixture(t)
+	status, body := pairingRequest(t, server, "POST", "/v1/pairing/start", "test-token", "application/json", bytes.NewBufferString(`{}`))
+	requireStatus(t, status, body, http.StatusAccepted)
+	var started bridge.PairingState
+	if err := json.Unmarshal(body, &started); err != nil {
+		t.Fatal(err)
+	}
+	handoff, _ := json.Marshal(map[string]any{
+		"ticket": started.Ticket, "cookies": requiredPairingCookies(), "enroll_agent": true,
+	})
+	status, body = pairingRequest(t, server, "POST", "/v1/pairing/credentials", "", "application/json", bytes.NewReader(handoff))
+	requireStatus(t, status, body, http.StatusAccepted)
+	var enrollment struct {
+		AgentToken string `json:"agent_token"`
+	}
+	if err := json.Unmarshal(body, &enrollment); err != nil || len(enrollment.AgentToken) != 43 {
+		t.Fatalf("enrollment: %s %v", body, err)
+	}
+
+	status, body = pairingRequest(t, server, "POST", "/v1/pairing/cancel", "test-token", "", nil)
+	requireStatus(t, status, body, http.StatusOK)
+	status, body = pairingRequest(t, server, "POST", "/v1/pairing/start", "test-token", "", nil)
+	requireStatus(t, status, body, http.StatusAccepted)
+	if err := json.Unmarshal(body, &started); err != nil {
+		t.Fatal(err)
+	}
+
+	request, _ := http.NewRequest("GET", server.URL+"/v1/pairing/agent/pending", nil)
+	request.Header.Set("Authorization", "Pairing-Agent "+enrollment.AgentToken)
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, _ = io.ReadAll(response.Body)
+	requireStatus(t, response.StatusCode, body, http.StatusOK)
+	var pending struct {
+		Ticket string `json:"ticket"`
+	}
+	if err := json.Unmarshal(body, &pending); err != nil || pending.Ticket != started.Ticket {
+		t.Fatalf("pending: %s %v", body, err)
+	}
+
+	status, body = pairingRequest(t, server, "GET", "/v1/pairing/agent/pending", "test-token", "", nil)
+	requireStatus(t, status, body, http.StatusUnauthorized)
+	status, body = pairingRequest(t, server, "GET", "/v1/pairing", "test-token", "", nil)
+	requireStatus(t, status, body, http.StatusOK)
+	var state bridge.PairingState
+	if err := json.Unmarshal(body, &state); err != nil || !state.AgentEnrolled {
+		t.Fatalf("agent enrollment missing from state: %s %v", body, err)
 	}
 }

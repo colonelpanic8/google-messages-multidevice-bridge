@@ -107,6 +107,8 @@ export async function handoffCredentials({
   removePermissions,
   getCookie,
   fetchImpl,
+  enrollAgent = false,
+  retainPermissions = false,
 }) {
   const origin = validateBridgeURL(bridgeURL);
   if (typeof ticket !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(ticket)) {
@@ -122,7 +124,9 @@ export async function handoffCredentials({
       throw new PairingHelperError("permission-denied");
     }
     cookies = await collectAllowedCookies(getCookie);
-    body = JSON.stringify({ ticket, cookies });
+    const payload = { ticket, cookies };
+    if (enrollAgent) payload.enroll_agent = true;
+    body = JSON.stringify(payload);
     const response = await fetchImpl(`${origin}/v1/pairing/credentials`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -135,15 +139,68 @@ export async function handoffCredentials({
     if (response.status !== 202) {
       throw new PairingHelperError("handoff-rejected");
     }
-    return { origin };
+    let agentToken;
+    if (enrollAgent) {
+      const enrollment = await response.json();
+      agentToken = enrollment.agent_token;
+      if (
+        typeof agentToken !== "string" ||
+        !/^[A-Za-z0-9_-]{43}$/.test(agentToken)
+      ) {
+        throw new PairingHelperError("handoff-rejected");
+      }
+    }
+    return { origin, ...(agentToken ? { agentToken } : {}) };
   } finally {
     cookies = undefined;
     body = undefined;
     ticket = "";
-    if (granted) {
+    if (granted && !retainPermissions) {
       try {
         await removePermissions({ origins });
       } catch {}
     }
   }
+}
+
+export async function pollPairingAgent({
+  bridgeURL,
+  agentToken,
+  hasPermissions,
+  removePermissions,
+  getCookie,
+  fetchImpl,
+}) {
+  const origin = validateBridgeURL(bridgeURL);
+  if (
+    typeof agentToken !== "string" ||
+    !/^[A-Za-z0-9_-]{43}$/.test(agentToken)
+  ) {
+    throw new PairingHelperError("invalid-agent-token");
+  }
+  const origins = requestedOrigins(origin);
+  if (!(await hasPermissions({ origins }))) {
+    throw new PairingHelperError("permission-denied");
+  }
+  const pending = await fetchImpl(`${origin}/v1/pairing/agent/pending`, {
+    method: "GET",
+    headers: { Authorization: `Pairing-Agent ${agentToken}` },
+    redirect: "error",
+    credentials: "omit",
+    cache: "no-store",
+    referrerPolicy: "no-referrer",
+  });
+  if (pending.status === 204) return false;
+  if (pending.status !== 200) throw new PairingHelperError("agent-rejected");
+  const payload = await pending.json();
+  await handoffCredentials({
+    bridgeURL: origin,
+    ticket: payload.ticket,
+    requestPermissions: async () => true,
+    removePermissions,
+    getCookie,
+    fetchImpl,
+    retainPermissions: true,
+  });
+  return true;
 }

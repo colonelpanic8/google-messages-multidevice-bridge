@@ -161,6 +161,31 @@ func (s *Store) ClearPairingAttempt() error {
 	})
 }
 
+const pairingAgentDigestKey = "pairing-agent-digest"
+
+func (s *Store) SavePairingAgentDigest(digest []byte) error {
+	if len(digest) != 32 {
+		return errors.New("invalid pairing agent digest")
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("meta")).Put([]byte(pairingAgentDigestKey), s.encrypt(digest, pairingAgentDigestKey))
+	})
+}
+
+func (s *Store) PairingAgentDigest() ([]byte, error) {
+	var digest []byte
+	err := s.db.View(func(tx *bolt.Tx) error {
+		value := tx.Bucket([]byte("meta")).Get([]byte(pairingAgentDigestKey))
+		if value == nil {
+			return nil
+		}
+		var err error
+		digest, err = s.decrypt(value, pairingAgentDigestKey)
+		return err
+	})
+	return digest, err
+}
+
 func (s *Store) RecoverPairingAttempt() (bool, error) {
 	interrupted := false
 	err := s.db.Update(func(tx *bolt.Tx) error {

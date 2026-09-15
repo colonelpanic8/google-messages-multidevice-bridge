@@ -1464,6 +1464,7 @@ button.reaction:hover {
   font-size: 20px;
   font-weight: 500;
 }
+
 .history-job {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

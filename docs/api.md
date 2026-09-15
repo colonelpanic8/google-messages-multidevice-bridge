@@ -3,7 +3,8 @@
 The bridge serves the web client at `/` and the bundled Chromium extension source
 at `/pairing-helper.zip`. Those assets are public. Every `/v1/` route requires
 `Authorization: Bearer <token>` except the narrowly scoped
-`POST /v1/pairing/credentials` handoff, which accepts only a current pairing ticket.
+`POST /v1/pairing/credentials` handoff, which accepts only a current pairing ticket,
+and `GET /v1/pairing/agent/pending`, which accepts only a scoped pairing-agent token.
 Tokens in query parameters and cookie authentication are not supported.
 
 The API sends `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
@@ -23,7 +24,9 @@ commit time. Unknown normalized Google status strings must remain displayable.
 | `POST /v1/connection/restart`                                       | Wake the supervisor and restart/cancel the current connection; returns 202                     |
 | `GET /v1/pairing`                                                   | Current guided-pairing state                                                                   |
 | `POST /v1/pairing/start`                                            | Start pairing/re-pairing and return a short-lived ticket; returns 202, or 400 in offline mode  |
+| `POST /v1/pairing/repair` | Re-pair using the encrypted saved Google sign-in; returns 202, or 400 when unavailable/offline |
 | `POST /v1/pairing/cancel`                                           | Cancel the active pairing attempt and return its state                                         |
+| `GET /v1/pairing/agent/pending`                                     | Return a pending ticket to an enrolled background pairing helper, or 204                       |
 | `GET /v1/conversations`                                             | Latest stored conversations, newest first, and snapshot `cursor`                               |
 | `POST /v1/conversations`                                            | Queue durable conversation creation from E.164 recipients                                      |
 | `POST /v1/conversations/{id}/participants`                          | Queue a conversation addressed to everyone already in `{id}` plus the named recipients         |
@@ -84,6 +87,19 @@ Authenticated pairing control uses these states:
 - `confirm_on_phone`: `emoji` must be selected in Google Messages on the phone.
 - `paired`, `failed`, or `canceled`: terminal state for that generation.
 
+Pairing status includes `can_repair` when the stored session has the required
+Google sign-in cookies. `POST /v1/pairing/repair` uses those cookies internally and
+proceeds directly to `connecting`, then `confirm_on_phone`; it exposes neither
+cookies nor a ticket. An existing `waiting_for_login` attempt is replaced and its
+ticket invalidated. Other active attempts are returned unchanged. A failed repair
+keeps the saved session and permits browser sign-in through `/v1/pairing/start`.
+Repair has the same queued-operation cancellation and session-epoch rules as
+browser pairing; the epoch advances only after successful phone confirmation.
+
+Pairing status includes `agent_enrolled` when a background helper has been enrolled.
+An authenticated client can then use `POST /v1/pairing/start`; the helper polls the
+scoped pending route and completes the credential handoff without its setup page.
+
 `POST /v1/pairing/start` returns the existing state if pairing is already active.
 Otherwise it creates a random 32-byte base64url ticket: exactly 43 characters,
 one-use, credential-handoff-only, and expiring after ten minutes.
@@ -110,13 +126,14 @@ Content-Type: application/json
     "APISID": "...",
     "SAPISID": "...",
     "__Secure-1PSIDTS": "optional"
-  }
+  },
+  "enroll_agent": true
 }
 ```
 
 This endpoint requires the `Content-Type` value to be exactly `application/json`,
 caps the body at 64 KiB, rejects unknown top-level fields and trailing JSON, and
-returns 202 with an empty body after accepting the handoff. A wrong, expired, used,
+returns 202 after accepting the handoff. A wrong, expired, used,
 or inactive ticket returns 403. Missing required cookies, empty required values, or
 any allowlisted cookie over 8192 bytes returns 400. Unknown cookie-map entries are
 discarded. The ticket is cleared when a valid handoff transitions to `connecting`;
@@ -129,12 +146,25 @@ restart during an active attempt invalidates the in-memory ticket, preserves the
 saved session, and reports `failed` with `bridge_restarted`. No ticket or Google
 cookies are persisted in the recovery marker.
 
+`enroll_agent` is optional. When true, the 202 response contains a fresh
+43-character `agent_token`. The helper stores that token and the bridge origin in
+Chrome extension storage while the bridge stores only its encrypted SHA-256 digest.
+The scoped token is accepted only as `Authorization: Pairing-Agent <token>` by:
+
+```http
+GET /v1/pairing/agent/pending
+```
+
+That route returns 204 unless a `waiting_for_login` ticket exists. It cannot access
+messages, mutation routes, or general pairing state.
+
 The helper does not receive the bearer token. It validates the bridge as an origin
 with no userinfo, non-root path, query, or fragment; requires HTTPS except for
 loopback or a literal Tailscale `100.64.0.0/10` HTTP address; requests optional host
 permissions only on the explicit Connect click; reads only the seven cookie names
-shown above; uses `redirect: "error"`; and keeps inputs and cookie values in memory
-only. The required six-cookie set follows the pinned libgm login contract.
+shown above; and uses `redirect: "error"`. Background recovery retains those host
+permissions and stores the scoped token, but never persists cookie values. The
+required six-cookie set follows the pinned libgm login contract.
 
 Starting re-pairing serializes mutation admission with the session change and
 immediately cancels all still-queued outbox operations; attempted records retain

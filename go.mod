@@ -3,6 +3,7 @@ module github.com/colonelpanic8/google-messages-multidevice-bridge
 go 1.26.7
 
 require (
+	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/rs/zerolog v1.35.1
 	go.etcd.io/bbolt v1.4.3
 	go.mau.fi/mautrix-gmessages v0.2608.1-0.20260911171723-e6cc29974f92
@@ -11,7 +12,6 @@ require (
 )
 
 require (
-	github.com/SherClockHolmes/webpush-go v1.4.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.2.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect

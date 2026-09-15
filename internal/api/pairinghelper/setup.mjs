@@ -9,6 +9,7 @@ const bridgeInput = document.querySelector("#bridge-url");
 const ticketInput = document.querySelector("#pairing-ticket");
 const signInButton = document.querySelector("#sign-in");
 const connectButton = document.querySelector("#connect");
+const backgroundRecovery = document.querySelector("#background-recovery");
 const status = document.querySelector("#status");
 
 function setStatus(message, kind = "") {
@@ -59,17 +60,34 @@ connectButton.addEventListener("click", async () => {
   setStatus("Requesting access for this one handoff…");
 
   try {
-    await handoffCredentials({
+    const keepBackground = backgroundRecovery.checked;
+    const result = await handoffCredentials({
       bridgeURL,
       ticket,
       requestPermissions: (request) => chrome.permissions.request(request),
       removePermissions: (request) => chrome.permissions.remove(request),
       getCookie: (details) => chrome.cookies.get(details),
       fetchImpl: fetch,
+      enrollAgent: keepBackground,
+      retainPermissions: keepBackground,
     });
+    if (keepBackground) {
+      await chrome.storage.local.set({
+        pairingAgent: {
+          bridgeURL: result.origin,
+          agentToken: result.agentToken,
+        },
+      });
+      await chrome.alarms.create("pairing-agent", { periodInMinutes: 1 });
+    } else {
+      await chrome.storage.local.remove("pairingAgent");
+      await chrome.alarms.clear("pairing-agent");
+    }
     bridgeInput.value = "";
     setStatus(
-      "Credentials accepted. Return to the bridge and follow its phone emoji prompt.",
+      keepBackground
+        ? "Credentials accepted. Background recovery is enabled; future reconnects can start from any bridge client."
+        : "Credentials accepted. Return to the bridge and follow its phone emoji prompt.",
       "success",
     );
   } catch (error) {
