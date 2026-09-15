@@ -501,20 +501,34 @@ func (c *Client) cancelGaiaPairing(ctx context.Context, sess *PairingSession) er
 	})
 }
 
-func (c *Client) sendGaiaPairingMessage(ctx context.Context, sess *PairingSession, action gmproto.ActionType, msg []byte) (*gmproto.GaiaPairingResponseContainer, error) {
+// buildGaiaPairingContainer builds the request container for a pairing action.
+func (c *Client) buildGaiaPairingContainer(sess *PairingSession, action gmproto.ActionType) *gmproto.GaiaPairingRequestContainer {
 	reqContainer := &gmproto.GaiaPairingRequestContainer{
 		PairingAttemptID: sess.UUID.String(),
 		BrowserDetails:   util.BrowserDetailsMessage,
 		StartTimestamp:   sess.Start.UnixMilli(),
-		Data:             msg,
+		Data:             nil,
 	}
-	msgType := gmproto.MessageType_GAIA_2
 	if action == gmproto.ActionType_CREATE_GAIA_PAIRING_CLIENT_FINISHED {
-		msgType = gmproto.MessageType_BUGLE_MESSAGE
 		reqContainer.PrivateAPIConfirmation = "This is an undocumented API. Use or access of undocumented Google APIs without express authorization is prohibited per the Google API Terms of Service (https://developers.google.com/terms)."
 	} else {
 		reqContainer.ProposedVerificationCodeVersion = 1
-		reqContainer.ProposedKeyDerivationVersion = 1
+		// Deliberately leave the key derivation proposal unset. Proposing version 1
+		// makes the server confirm it, and the version 1 derivation implemented here
+		// produces keys the phone does not agree with: pairing reports success and
+		// then every encrypted event fails its HMAC check, so the session can never
+		// read anything. Omitting the proposal makes the server confirm version 0,
+		// whose derivation yields a working session.
+	}
+	return reqContainer
+}
+
+func (c *Client) sendGaiaPairingMessage(ctx context.Context, sess *PairingSession, action gmproto.ActionType, msg []byte) (*gmproto.GaiaPairingResponseContainer, error) {
+	reqContainer := c.buildGaiaPairingContainer(sess, action)
+	reqContainer.Data = msg
+	msgType := gmproto.MessageType_GAIA_2
+	if action == gmproto.ActionType_CREATE_GAIA_PAIRING_CLIENT_FINISHED {
+		msgType = gmproto.MessageType_BUGLE_MESSAGE
 	}
 	respCh, err := c.sessionHandler.sendAsyncMessage(ctx, SendMessageParams{
 		Action:      action,

@@ -78,6 +78,28 @@ be disabled from outside the package.
    responses still require an exact session ID match and that a live logout
    still triggers `GaiaLoggedOut`.
 
+9. `pair_google.go`: the Gaia pairing request no longer proposes key derivation
+   version 1. The server confirms that version only when it is proposed, and the
+   version 1 derivation implemented upstream produces keys the phone does not
+   agree with: pairing reports success and then every encrypted event fails its
+   HMAC check, leaving a connected session that can never decrypt anything or
+   reach the phone. With the proposal omitted the server confirms version 0 and
+   the session works. The request container is split into
+   `buildGaiaPairingContainer` so a regression test can assert the proposal stays
+   unset.
+
+## Known wrong upstream behavior, not fixed here
+
+- The version 1 verification emoji list does not match what the phone displays,
+  so the emoji shown during pairing is usually not one of the three offered.
+  Google reordered the list rather than appending to it, and it could not be
+  recovered from the version 0 ordering: solving for a list length that explains
+  two observed prompts yields no common candidate. The server confirms
+  verification code version 1 regardless of what is proposed, so version 0's
+  correct list cannot be selected the way key derivation version 0 can. Until the
+  real list is known, confirming a pairing means choosing among the three emojis
+  the phone offers.
+
 ## Accepted upstream limitations
 
 - `SetEventHandlerWithError` narrows the ACK/persistence gap, but it does not
