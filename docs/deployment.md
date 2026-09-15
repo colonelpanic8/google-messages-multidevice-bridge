@@ -279,10 +279,11 @@ The ticket expires after ten minutes. Pairing cannot start while the process use
 Starting re-pair immediately cancels every still-queued outbox operation so it cannot
 cross into a different session. Canceling or failing the attempt does not restore
 those queued operations. It also does not alter the entity epoch, history jobs, or
-saved provider upload descriptors. Those latter changes occur only after a new
-session is paired and saved successfully: the epoch advances, descriptors are
-cleared, and history jobs are paused and reset. Previous records remain readable but
-cannot be mutation targets until observed by the new session.
+saved provider upload descriptors. Re-pairing the same phone never alters them. Those
+changes occur only when pairing was started with `new_phone` and the session is saved
+successfully: the epoch advances, descriptors are cleared, and history jobs are paused
+and reset. Previous records remain readable but cannot be mutation targets until
+observed by the new phone.
 
 ## Connection behavior
 

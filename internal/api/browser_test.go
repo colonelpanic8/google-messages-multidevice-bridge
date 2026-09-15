@@ -91,7 +91,7 @@ func TestBrowserFixture(t *testing.T) {
 	appendRecord("history", "messages:synthetic-sms", model.HistoryJob{Schema: 1, ID: "messages:synthetic-sms", Kind: "messages", ConversationID: "synthetic-sms", State: "failed", Pages: 2, Records: 30, Detail: "Provider repeated a history cursor; import stopped", Updated: now})
 	if os.Getenv("BRIDGE_BROWSER_RECOVERY_TEST") == "1" {
 		saved, _ := json.Marshal(map[string]any{"cookies": requiredPairingCookies()})
-		if err := s.SavePairedSession(saved); err != nil {
+		if err := s.SavePairedSession(saved, false); err != nil {
 			t.Fatal(err)
 		}
 		if err := b.Handle(&events.GaiaLoggedOut{}); err != nil {

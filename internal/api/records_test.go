@@ -64,7 +64,7 @@ func TestSessionBoundaryIsVisibleInStatusPairingAndStoredRecords(t *testing.T) {
 	if _, err := b.Store.Append(store.Event{Type: "message", EntityID: "old-message", Data: message}); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Store.SavePairedSession([]byte("new-session")); err != nil {
+	if err := b.Store.SavePairedSession([]byte("new-session"), true); err != nil {
 		t.Fatal(err)
 	}
 

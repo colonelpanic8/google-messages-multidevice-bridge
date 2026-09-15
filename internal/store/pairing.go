@@ -234,9 +234,25 @@ func (s *Store) cancelQueuedForPairing(tx *bolt.Tx) error {
 	return nil
 }
 func (s *Store) CancelQueuedForPairing() error { return s.db.Update(s.cancelQueuedForPairing) }
-func (s *Store) SavePairedSession(data []byte) error {
+
+// SavePairedSession stores the new session. A re-pair of the same phone keeps
+// every stored record writable; newPhone starts a new session epoch so old
+// records stay read-only until the replacement phone observes them.
+func (s *Store) SavePairedSession(data []byte, newPhone bool) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket([]byte("meta"))
+		if err := meta.Put([]byte("session"), s.encrypt(data, "session")); err != nil {
+			return err
+		}
+		if err := meta.Delete([]byte(pairingAttemptKey)); err != nil {
+			return err
+		}
+		if err := s.cancelQueuedForPairing(tx); err != nil {
+			return err
+		}
+		if !newPhone {
+			return nil
+		}
 		for _, kind := range []string{"conversation", "message"} {
 			var count uint64
 			prefix := []byte(kind + ":")
@@ -248,21 +264,12 @@ func (s *Store) SavePairedSession(data []byte) error {
 				return err
 			}
 		}
-		if err := meta.Put([]byte("session"), s.encrypt(data, "session")); err != nil {
-			return err
-		}
 		if err := meta.Put([]byte("session-epoch"), sequence(epoch(tx)+1)); err != nil {
-			return err
-		}
-		if err := meta.Delete([]byte(pairingAttemptKey)); err != nil {
 			return err
 		}
 		// The address book belongs to the phone that was paired, not to the one
 		// taking its place.
 		if err := meta.Delete([]byte("contacts")); err != nil {
-			return err
-		}
-		if err := s.cancelQueuedForPairing(tx); err != nil {
 			return err
 		}
 		private := tx.Bucket([]byte("private"))
