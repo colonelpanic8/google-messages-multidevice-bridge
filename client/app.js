@@ -2887,6 +2887,34 @@ function showConnect(prefill = "") {
   $("connect-url").focus();
 }
 
+// Accepts a token from the URL fragment so a bookmark can unlock the client.
+// The fragment is never sent to the server; it is cleared from the address bar
+// and history entry as soon as it is read, so a shared screenshot of the tab
+// does not leak it.
+function takeTokenFromURL() {
+  const hash = location.hash.startsWith("#") ? location.hash.slice(1) : "";
+  if (!hash) return "";
+  const params = new URLSearchParams(hash);
+  const fromURL = (params.get("token") || "").trim();
+  if (!fromURL) return "";
+  params.delete("token");
+  const rest = params.toString();
+  history.replaceState(
+    null,
+    "",
+    location.pathname + location.search + (rest ? "#" + rest : ""),
+  );
+  return fromURL;
+}
+
+async function unlockWithURLToken() {
+  const fromURL = takeTokenFromURL();
+  if (!fromURL || token) return false;
+  $("token").value = fromURL;
+  $("login-form").requestSubmit();
+  return true;
+}
+
 async function unlockWithSavedToken() {
   const saved = await desktop("get_token").catch(() => null);
   if (!saved || token) return;
@@ -2925,4 +2953,6 @@ if (desktop) {
   void window.__TAURI__?.event
     ?.listen("show-connect", () => showConnect(apiBase))
     .catch(() => {});
+} else {
+  void unlockWithURLToken();
 }
