@@ -408,7 +408,7 @@ func TestRepairUsesSavedSignInAndInvalidatesWaitingTicket(t *testing.T) {
 	if err := b.processPairing(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := b.PairingStatus(); got.State != "failed" || !got.CanRepair {
+	if got := b.PairingStatus(); got.State != "failed" || got.Reason != "provider_failure" || got.Detail != "Google pairing failed: synthetic rejected sign-in" || !got.CanRepair {
 		t.Fatalf("%+v", got)
 	}
 	after, _ := b.Store.Session()

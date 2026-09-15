@@ -367,8 +367,10 @@ func (b *Bridge) processPairing(ctx context.Context) error {
 		}
 		if !time.Now().Before(state.Expires) {
 			b.finishPairingReason("failed", "ticket_expired", "Pairing expired; start again", state.generation)
-		} else if err != nil || canceled {
-			b.finishPairing("failed", "Pairing did not complete. If you confirmed on your phone, try again; otherwise use browser sign-in to refresh your Google account", state.generation)
+		} else if err != nil {
+			b.finishPairingReason("failed", "provider_failure", fmt.Sprintf("Google pairing failed: %v", err), state.generation)
+		} else if canceled {
+			b.finishPairing("failed", "Pairing was canceled before Google completed it", state.generation)
 		} else {
 			b.finishPairing("paired", "Phone paired; connecting and loading history", state.generation)
 		}
