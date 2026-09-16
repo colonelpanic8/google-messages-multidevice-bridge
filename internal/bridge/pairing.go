@@ -111,6 +111,24 @@ func (b *Bridge) savedPairingCookies() (map[string]string, error) {
 	return clean, nil
 }
 
+// AdoptStoredRecords clears a read-only boundary left by a re-pair that was
+// treated as a phone replacement. It is a storage-only change, so it is
+// serialized against mutation admission the same way pairing is.
+func (b *Bridge) AdoptStoredRecords() (int, error) {
+	b.mutationMu.Lock()
+	defer b.mutationMu.Unlock()
+	if b.PairingActive() {
+		return 0, ErrPairing
+	}
+	adopted, err := b.Store.AdoptStoredRecords()
+	if err != nil {
+		b.storageFailure(err)
+		return 0, fmt.Errorf("%w: %v", ErrStorage, err)
+	}
+	b.Hub.Notify()
+	return adopted, nil
+}
+
 func (b *Bridge) BeginPairing(newPhone bool) (PairingState, error) {
 	return b.beginPairing(false, newPhone)
 }

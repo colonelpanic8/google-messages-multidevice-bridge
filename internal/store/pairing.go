@@ -235,6 +235,48 @@ func (s *Store) cancelQueuedForPairing(tx *bolt.Tx) error {
 }
 func (s *Store) CancelQueuedForPairing() error { return s.db.Update(s.cancelQueuedForPairing) }
 
+// AdoptStoredRecords claims every stored conversation and message for the
+// current session and reports how many it moved. It answers the question the
+// bridge used to decide on its own: the stored records describe the phone that
+// is attached now, so the read-only boundary is wrong and clearing it avoids
+// re-importing history that is already stored.
+func (s *Store) AdoptStoredRecords() (int, error) {
+	adopted := 0
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		adopted = 0
+		current := epoch(tx)
+		if current == 0 {
+			return nil
+		}
+		epochs, err := tx.CreateBucketIfNotExists([]byte("entity-epochs"))
+		if err != nil {
+			return err
+		}
+		stamp := sequence(current)
+		latest := tx.Bucket([]byte("latest"))
+		meta := tx.Bucket([]byte("meta"))
+		for _, kind := range []string{"conversation", "message"} {
+			prefix := []byte(kind + ":")
+			c := latest.Cursor()
+			for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+				key := append([]byte(nil), k...)
+				if v := epochs.Get(key); len(v) == 8 && binary.BigEndian.Uint64(v) == current {
+					continue
+				}
+				if err := epochs.Put(key, stamp); err != nil {
+					return err
+				}
+				adopted++
+			}
+			if err := meta.Put(previousCountKey(kind), sequence(0)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return adopted, err
+}
+
 // SavePairedSession stores the new session. A re-pair of the same phone keeps
 // every stored record writable; newPhone starts a new session epoch so old
 // records stay read-only until the replacement phone observes them.
