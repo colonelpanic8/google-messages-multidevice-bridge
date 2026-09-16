@@ -6,6 +6,8 @@ import {
   newConversationRequest,
   newReactionRequest,
   newRequest,
+  clipboardDataEmpty,
+  clipboardImages,
   pastedImageName,
   pastedImages,
   validateAttachments,
@@ -107,6 +109,45 @@ test("clipboard image files become attachments without consuming text paste", ()
   );
   assert.deepEqual(pastedImages({ files: [image, text] }), [image]);
   assert.deepEqual(pastedImages({ items: [], files: [text] }), []);
+});
+
+test("an empty paste DataTransfer sends us to the clipboard itself", () => {
+  assert.equal(clipboardDataEmpty(undefined), true);
+  assert.equal(clipboardDataEmpty({ types: [], items: [], files: [] }), true);
+  assert.equal(clipboardDataEmpty({ types: ["text/plain"] }), false);
+  assert.equal(
+    clipboardDataEmpty({ items: [{ kind: "file", type: "image/png" }] }),
+    false,
+  );
+});
+
+test("clipboard reads yield image blobs and survive refused flavors", async () => {
+  const png = { size: 3, type: "image/png" };
+  const clipboard = {
+    read: async () => [
+      { types: ["text/plain"], getType: async () => ({}) },
+      {
+        types: ["image/png"],
+        getType: async (type) => (assert.equal(type, "image/png"), png),
+      },
+      {
+        types: ["image/tiff"],
+        getType: async () => {
+          throw new Error("unavailable");
+        },
+      },
+    ],
+  };
+  assert.deepEqual(await clipboardImages(clipboard), [png]);
+  assert.deepEqual(await clipboardImages(undefined), []);
+  assert.deepEqual(
+    await clipboardImages({
+      read: async () => {
+        throw new Error("denied");
+      },
+    }),
+    [],
+  );
 });
 
 test("unnamed pasted images receive uploadable filenames", () => {

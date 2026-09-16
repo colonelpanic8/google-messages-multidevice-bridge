@@ -88,6 +88,42 @@ export function pastedImages(clipboardData) {
   );
 }
 
+// WebKitGTK, the engine behind the desktop window, hands the paste event a
+// DataTransfer with nothing in it — not even the text it goes on to insert. An
+// empty one is the signal to ask the clipboard itself; a populated one already
+// said everything it has, so other engines never take the slower path.
+export function clipboardDataEmpty(clipboardData) {
+  return (
+    ![...(clipboardData?.types || [])].length &&
+    ![...(clipboardData?.items || [])].length &&
+    ![...(clipboardData?.files || [])].length
+  );
+}
+
+export async function clipboardImages(clipboard) {
+  if (!clipboard?.read) return [];
+  let items;
+  try {
+    items = await clipboard.read();
+  } catch {
+    // Reading can be refused outright (no permission, no clipboard access).
+    return [];
+  }
+  const images = [];
+  for (const item of items) {
+    const type = [...(item.types || [])].find((value) =>
+      value.startsWith("image/"),
+    );
+    if (!type) continue;
+    try {
+      images.push(await item.getType(type));
+    } catch {
+      // A flavor the clipboard advertises but cannot produce is not an image.
+    }
+  }
+  return images;
+}
+
 export function pastedImageName(file, index = 0) {
   if (file.name) return file.name;
   const extensions = {
