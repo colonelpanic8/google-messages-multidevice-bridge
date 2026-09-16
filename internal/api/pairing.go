@@ -51,6 +51,14 @@ func registerPairing(mux *http.ServeMux, b *bridge.Bridge) {
 		w.WriteHeader(http.StatusAccepted)
 		writeJSON(w, state)
 	})
+	mux.HandleFunc("POST /v1/pairing/adopt", func(w http.ResponseWriter, r *http.Request) {
+		adopted, err := b.AdoptStoredRecords()
+		if err != nil {
+			apiError(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"adopted": adopted, "pairing": b.PairingStatus()})
+	})
 	mux.HandleFunc("POST /v1/pairing/cancel", func(w http.ResponseWriter, r *http.Request) {
 		state, err := b.CancelPairingAndWait(r.Context())
 		if err != nil {
