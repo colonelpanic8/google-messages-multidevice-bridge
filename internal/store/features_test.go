@@ -189,6 +189,41 @@ func TestPairingChangesRoutingEpochAndCancelsOldWork(t *testing.T) {
 	}
 }
 
+func TestAdoptStoredRecordsClearsTheReadOnlyBoundary(t *testing.T) {
+	s := openTestStore(t)
+	if _, err := s.Append(Event{Type: "conversation", EntityID: "c", Data: json.RawMessage(`{"schema":1,"id":"c"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(Event{Type: "message", EntityID: "m", Data: json.RawMessage(`{"schema":1,"id":"m","conversation_id":"c"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	// A replacement-phone pairing is what leaves the boundary behind.
+	if err := s.SavePairedSession([]byte("replacement"), true); err != nil {
+		t.Fatal(err)
+	}
+	if current, _ := s.EntityCurrent("conversation", "c"); current {
+		t.Fatal("conversation stayed current across a replacement pairing")
+	}
+	adopted, err := s.AdoptStoredRecords()
+	if err != nil || adopted != 2 {
+		t.Fatalf("adopted %d records: %v", adopted, err)
+	}
+	for _, kind := range []string{"conversation", "message"} {
+		id := map[string]string{"conversation": "c", "message": "m"}[kind]
+		if current, err := s.EntityCurrent(kind, id); err != nil || !current {
+			t.Fatalf("%s still read-only after adoption: %v %v", kind, current, err)
+		}
+	}
+	summary, err := s.SessionSummary()
+	if err != nil || summary.PreviousConversations != 0 || summary.PreviousMessages != 0 {
+		t.Fatalf("boundary still reported: %+v %v", summary, err)
+	}
+	// Adoption is idempotent, so a second press cannot double-count.
+	if adopted, err = s.AdoptStoredRecords(); err != nil || adopted != 0 {
+		t.Fatalf("second adoption moved %d records: %v", adopted, err)
+	}
+}
+
 func TestRepairingSamePhoneKeepsRecordsWritable(t *testing.T) {
 	s := openTestStore(t)
 	if _, err := s.Append(Event{Type: "conversation", EntityID: "c", Data: json.RawMessage(`{"schema":1,"id":"c"}`)}); err != nil {

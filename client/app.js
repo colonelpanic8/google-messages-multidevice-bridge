@@ -77,6 +77,7 @@ const draftFiles = new Map();
 const pendingReactions = new Map();
 let emojiCatalog, emojiTarget, emojiGroup;
 let sending = false,
+  adopting = false,
   creatingConversation = false,
   pendingSend,
   pendingConversation,
@@ -1425,6 +1426,7 @@ function renderStatus() {
         status.previous_session_messages || 0
       } messages from an earlier pairing are read-only.`
     : "";
+  $("adopt-records").disabled = adopting;
   const needsAction = ["connection_failed", "authentication_required"].includes(
     providerState,
   );
@@ -2419,6 +2421,23 @@ $("logout").onclick = () => {
 // --- Wiring -----------------------------------------------------------------
 
 $("search").oninput = () => invalidate("list");
+$("adopt-records").onclick = async () => {
+  const actionGeneration = generation;
+  adopting = true;
+  invalidate("status");
+  try {
+    const result = await request("/v1/pairing/adopt", { method: "POST" });
+    if (actionGeneration !== generation) return;
+    notice(`${result.adopted} stored records now belong to this phone.`);
+    await loadAll();
+  } catch (error) {
+    if (actionGeneration !== generation) return;
+    notice(error.message);
+  } finally {
+    adopting = false;
+    invalidate("status");
+  }
+};
 $("open-pairing").onclick = () => openDialog("pairing-dialog");
 $("settings-pairing").onclick = () => {
   $("settings-dialog").close();

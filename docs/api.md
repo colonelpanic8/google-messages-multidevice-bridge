@@ -24,6 +24,7 @@ commit time. Unknown normalized Google status strings must remain displayable.
 | `POST /v1/connection/restart`                                       | Wake the supervisor and restart/cancel the current connection; returns 202                     |
 | `GET /v1/pairing`                                                   | Current guided-pairing state                                                                   |
 | `POST /v1/pairing/start`                                            | Start pairing/re-pairing and return a short-lived ticket; returns 202, or 400 in offline mode  |
+| `POST /v1/pairing/adopt`                                            | Claim every stored conversation and message for the current session; returns the count |
 | `POST /v1/pairing/repair` | Re-pair using the encrypted saved Google sign-in; returns 202, or 400 when unavailable/offline |
 | `POST /v1/pairing/cancel`                                           | Cancel the active pairing attempt and return its state                                         |
 | `GET /v1/pairing/agent/pending`                                     | Return a pending ticket to an enrolled background pairing helper, or 204                       |
@@ -103,7 +104,10 @@ scoped pending route and completes the credential handoff without its setup page
 `POST /v1/pairing/start` returns the existing state if pairing is already active.
 Both `start` and `repair` accept an optional JSON body `{"new_phone": true}`. Without
 it, the bridge assumes the same phone is being paired again and keeps every stored
-conversation and message writable.
+conversation and message writable. `POST /v1/pairing/adopt` clears a boundary that is
+already stored, for a database re-paired before the bridge asked. It stamps every
+stored conversation and message with the current session epoch, zeroes the previous
+session counts, and reports `adopted`. It is idempotent and changes no history job.
 Otherwise it creates a random 32-byte base64url ticket: exactly 43 characters,
 one-use, credential-handoff-only, and expiring after ten minutes.
 `POST /v1/pairing/cancel` cancels and joins an in-flight provider attempt before
