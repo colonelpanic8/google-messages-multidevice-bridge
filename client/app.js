@@ -5,6 +5,8 @@ import {
   newConversationRequest,
   addParticipantsRequest,
   newReactionRequest,
+  clipboardDataEmpty,
+  clipboardImages,
   pastedImageName,
   pastedImages,
   splitRequests,
@@ -2637,16 +2639,14 @@ $("text").oninput = () => {
   autogrow();
   scheduleTyping();
 };
-$("text").onpaste = (event) => {
-  const pasted = pastedImages(event.clipboardData);
-  if (!pasted.length) return;
-  event.preventDefault();
-  const files = pasted.map((file, index) =>
-    file.name
-      ? file
-      : new File([file], pastedImageName(file, index), {
-          type: file.type,
-          lastModified: file.lastModified,
+function attachPastedImages(images) {
+  if (!images.length) return;
+  const files = images.map((image, index) =>
+    image.name
+      ? image
+      : new File([image], pastedImageName(image, index), {
+          type: image.type,
+          lastModified: image.lastModified,
         }),
   );
   try {
@@ -2658,6 +2658,19 @@ $("text").onpaste = (event) => {
     notice(error.message);
   }
   invalidate("compose");
+}
+$("text").onpaste = (event) => {
+  const pasted = pastedImages(event.clipboardData);
+  if (pasted.length) {
+    event.preventDefault();
+    attachPastedImages(pasted);
+    return;
+  }
+  // The desktop window's engine delivers an empty DataTransfer, so the image
+  // only reaches us through a clipboard read started inside this gesture.
+  // Whatever text the engine pastes on its own is left alone.
+  if (!clipboardDataEmpty(event.clipboardData)) return;
+  void clipboardImages(navigator.clipboard).then(attachPastedImages);
 };
 $("text").onkeydown = (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
