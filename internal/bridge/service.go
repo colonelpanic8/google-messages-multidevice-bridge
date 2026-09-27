@@ -12,10 +12,6 @@ import (
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/provider"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
-	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
-	"go.mau.fi/mautrix-gmessages/pkg/libgm/util"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 )
 
 var ErrInvalid = errors.New("invalid request")
@@ -100,25 +96,12 @@ func (b *Bridge) prepare() error {
 			return err
 		}
 		for _, raw := range records {
-			var header struct {
-				Schema int `json:"schema"`
-			}
-			if err := json.Unmarshal(raw, &header); err != nil {
-				return err
-			}
-			if header.Schema != 0 {
-				continue
-			}
-			var msg proto.Message = &gmproto.Message{}
-			if kind == "conversation" {
-				msg = &gmproto.Conversation{}
-			}
-			if err := protojson.Unmarshal(raw, msg); err != nil {
-				return errors.New("cannot migrate legacy snapshot")
-			}
-			snap, err := provider.SnapshotOf(msg)
+			snap, legacy, err := provider.NormalizeLegacy(kind, raw)
 			if err != nil {
 				return err
+			}
+			if !legacy {
+				continue
 			}
 			if _, err = b.Store.Apply(snap.Event, snap.Private, nil); err != nil {
 				return err
@@ -188,7 +171,7 @@ func (b *Bridge) Queue(id string, req model.SendRequest) (model.Outbox, bool, er
 			return model.Outbox{}, false, provider.ErrTooLarge
 		}
 	}
-	o, created, err := b.Store.Enqueue(id, util.GenerateTmpID(), req)
+	o, created, err := b.Store.Enqueue(id, provider.NewTransactionID(), req)
 	if err == nil {
 		b.Hub.Notify()
 		wake(b.sendWake)
@@ -314,9 +297,9 @@ func (b *Bridge) sendOne(ctx context.Context) (bool, error) {
 			err = p.Send(callCtx, target, o)
 		}
 		cancel()
-		state, detail := "accepted", "Google accepted the request; delivery is not confirmed"
+		state, detail := "accepted", "Provider accepted the request; delivery is not confirmed"
 		if o.Request.Kind == "reaction" {
-			detail = "Google accepted the reaction update"
+			detail = "Provider accepted the reaction update"
 		}
 		if errors.Is(err, provider.ErrRejected) {
 			state, detail = "rejected", "Provider explicitly rejected the send request"
