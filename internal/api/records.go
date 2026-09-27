@@ -16,9 +16,6 @@ import (
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/provider"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
-	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 )
 
 // publicEvent normalizes legacy prototype records without exposing provider keys.
@@ -26,28 +23,12 @@ func publicEvent(e store.Event) (store.Event, error) {
 	if e.Type != "message" && e.Type != "conversation" {
 		return e, nil
 	}
-	var header struct {
-		Schema int `json:"schema"`
-	}
-	if err := json.Unmarshal(e.Data, &header); err != nil {
-		return e, err
-	}
-	if header.Schema == model.Schema {
-		return e, nil
-	}
-	if header.Schema != 0 {
-		return e, errors.New("unsupported event schema")
-	}
-	var raw proto.Message = &gmproto.Message{}
-	if e.Type == "conversation" {
-		raw = &gmproto.Conversation{}
-	}
-	if err := protojson.Unmarshal(e.Data, raw); err != nil {
-		return e, err
-	}
-	s, err := provider.SnapshotOf(raw)
+	s, legacy, err := provider.NormalizeLegacy(e.Type, e.Data)
 	if err != nil {
 		return e, err
+	}
+	if !legacy {
+		return e, nil
 	}
 	e.Data = s.Event.Data
 	return e, nil
