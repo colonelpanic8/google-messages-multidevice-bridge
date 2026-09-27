@@ -1398,6 +1398,14 @@ function renderCompose() {
 // --- Status, banner, settings ----------------------------------------------
 
 function renderStatus() {
+  if (status.network === "whatsapp") {
+    $("add-people-hint").textContent =
+      "Adding people creates a new group with the combined recipients.";
+  }
+
+  if (status.network)
+    document.title = status.network === "whatsapp" ? "WhatsApp" : "Messages";
+
   const state = providerState.replaceAll("_", " ");
   $("status").textContent = token ? state : "Locked";
   $("provider-detail").textContent = status.detail || "";
@@ -1533,11 +1541,49 @@ document.addEventListener("keydown", (event) => {
 // --- Pairing ----------------------------------------------------------------
 
 function pairingActive() {
-  return ["waiting_for_login", "connecting", "confirm_on_phone"].includes(
-    pairingState.state,
-  );
+  return [
+    "waiting_for_login",
+    "connecting",
+    "confirm_on_phone",
+    "scan_qr",
+    "enter_pairing_code",
+  ].includes(pairingState.state);
 }
+let waQRValue = "",
+  waQRURL = "";
 function renderPairing() {
+  const whatsapp = status.network === "whatsapp";
+  $("whatsapp-pairing").hidden = !whatsapp;
+  $("pairing-browser-setup").hidden = whatsapp;
+  $("wa-code").textContent = pairingState.pairing_code || "";
+  $("wa-qr-start").disabled = pairingActive();
+  $("wa-phone-start").disabled = pairingActive();
+  $("wa-qr").hidden = !whatsapp || !pairingState.qr;
+  if ((pairingState.qr || "") !== waQRValue) {
+    waQRValue = pairingState.qr || "";
+    if (waQRURL) URL.revokeObjectURL(waQRURL);
+    waQRURL = "";
+    if (waQRValue) {
+      const expected = waQRValue;
+      fetch(api("/v1/pairing/qr"), {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      })
+        .then((response) => {
+          if (!response.ok) throw new Error("QR unavailable");
+          return response.blob();
+        })
+        .then((blob) => {
+          if (expected !== waQRValue || !token) return;
+          waQRURL = URL.createObjectURL(blob);
+          $("wa-qr").src = waQRURL;
+        })
+        .catch(() => {
+          $("wa-qr").hidden = true;
+        });
+    }
+  }
+
   const state =
     pairingState.state ||
     (pairingState.required ? "pairing required" : "not started");
@@ -2053,6 +2099,7 @@ async function sendMessage() {
       pending.conversationID,
       pending.text,
       pending.uploadIDs,
+      status.network,
     );
     for (const item of pending.requests) {
       if (item.queued) continue;
@@ -2281,6 +2328,11 @@ function clearPrivateUI() {
   typingUntil = 0;
   typingConversation = "";
   status = {};
+  waQRValue = "";
+  if (waQRURL) URL.revokeObjectURL(waQRURL);
+  waQRURL = "";
+  $("wa-qr").removeAttribute("src");
+  $("wa-code").textContent = "";
   providerState = "offline";
   sending = false;
   creatingConversation = false;
@@ -2418,6 +2470,23 @@ async function startPairing(reuseSignIn = false) {
   }
 }
 $("start-pairing").onclick = () => startPairing();
+$("wa-qr-start").onclick = () => startPairing();
+$("wa-phone-start").onclick = async () => {
+  try {
+    pairingState = await request("/v1/pairing/phone", {
+      method: "POST",
+      body: JSON.stringify({
+        phone_number: $("wa-phone").value.trim(),
+        new_phone: $("pairing-new-phone").checked,
+      }),
+    });
+    renderPairing();
+    schedulePairingPoll();
+  } catch (error) {
+    $("pairing-status").textContent = error.message;
+  }
+};
+
 $("repair-pairing").onclick = () => startPairing(!pairingState.agent_enrolled);
 $("cancel-pairing").onclick = async () => {
   const actionGeneration = generation;

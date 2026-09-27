@@ -269,3 +269,5 @@ func (g *googleConnection) Run(b *Bridge, ctx context.Context, offline bool, coo
 		return nil
 	}
 }
+
+func (*googleConnection) TransactionID() string { return provider.NewTransactionID() }

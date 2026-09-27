@@ -15,6 +15,8 @@ var ErrPairing = errors.New("pairing in progress")
 var ErrPairingTicket = errors.New("invalid or expired pairing ticket")
 
 type PairingState struct {
+	QR                    string `json:"qr,omitempty"`
+	PairingCode           string `json:"pairing_code,omitempty"`
 	generation            uint64
 	newPhone              bool
 	State                 string    `json:"state"`
@@ -33,7 +35,7 @@ type PairingState struct {
 }
 
 func activePair(state string) bool {
-	return state == "waiting_for_login" || state == "connecting" || state == "confirm_on_phone"
+	return state == "scan_qr" || state == "enter_pairing_code" || state == "waiting_for_login" || state == "connecting" || state == "confirm_on_phone"
 }
 func (b *Bridge) PairingActive() bool {
 	b.mu.RLock()
@@ -52,6 +54,7 @@ func (b *Bridge) PairingStatus() PairingState {
 			b.pairingState.Detail = "Pairing expired; start again"
 			b.pairingState.Ticket = ""
 			b.pairingState.Emoji = ""
+			b.pairingState.QR, b.pairingState.PairingCode = "", ""
 			b.pairCookies = nil
 			clearErr = b.Store.ClearPairingAttempt()
 		}
@@ -112,10 +115,16 @@ func (b *Bridge) savedPairingCookies() (map[string]string, error) {
 }
 
 func (b *Bridge) BeginPairing(newPhone bool) (PairingState, error) {
+	if b.Network() == "whatsapp" {
+		return b.BeginWhatsAppPairing("", newPhone)
+	}
 	return b.beginPairing(false, newPhone)
 }
 
 func (b *Bridge) BeginRepairing(newPhone bool) (PairingState, error) {
+	if b.Network() == "whatsapp" {
+		return PairingState{}, ErrInvalid
+	}
 	return b.beginPairing(true, newPhone)
 }
 
@@ -242,6 +251,7 @@ func (b *Bridge) cancelPairing() (PairingState, <-chan struct{}, bool) {
 		b.pairingState.Detail = "Pairing canceled"
 		b.pairingState.Ticket = ""
 		b.pairingState.Emoji = ""
+		b.pairingState.QR, b.pairingState.PairingCode = "", ""
 		b.pairCookies = nil
 	}
 	state := b.pairingState
@@ -270,6 +280,7 @@ func (b *Bridge) finishPairingReason(state, reason, detail string, generation ui
 	b.pairingState.Detail = detail
 	b.pairingState.Ticket = ""
 	b.pairingState.Emoji = ""
+	b.pairingState.QR, b.pairingState.PairingCode = "", ""
 	b.pairCookies = nil
 	clearErr := b.Store.ClearPairingAttempt()
 	b.mu.Unlock()
@@ -369,9 +380,13 @@ func (b *Bridge) processPairing(ctx context.Context) error {
 		if !time.Now().Before(state.Expires) {
 			b.finishPairingReason("failed", "ticket_expired", "Pairing expired; start again", state.generation)
 		} else if err != nil {
-			b.finishPairingReason("failed", "provider_failure", fmt.Sprintf("Google pairing failed: %v", err), state.generation)
+			detail := "Pairing failed; start again"
+			if b.Network() == "google-messages" {
+				detail = fmt.Sprintf("Google pairing failed: %v", err)
+			}
+			b.finishPairingReason("failed", "provider_failure", detail, state.generation)
 		} else if canceled {
-			b.finishPairing("failed", "Pairing was canceled before Google completed it", state.generation)
+			b.finishPairing("failed", "Pairing was canceled before completion", state.generation)
 		} else {
 			b.finishPairing("paired", "Phone paired; connecting and loading history", state.generation)
 		}
@@ -394,6 +409,7 @@ func (b *Bridge) commitPairedSession(ctx context.Context, generation uint64, dat
 		b.pairingState.Reason = ""
 		b.pairingState.Detail = "Phone paired; connecting and loading history"
 		b.pairingState.Ticket, b.pairingState.Emoji = "", ""
+		b.pairingState.QR, b.pairingState.PairingCode = "", ""
 		b.pairCookies = nil
 	}
 	b.mu.Unlock()

@@ -1,14 +1,14 @@
 # Deployment and operations
 
-This service owns one bbolt database and one Google Messages connection. Run one
+This service owns one bbolt database and one upstream connection selected by
+`serve --network google-messages|whatsapp`. Google Messages is the default. Run one
 process per database; the database lock rejects a second process. The supported
 interactive setup is the web app's **Pair / Re-pair** flow with the bundled Chromium
 helper. Users do not need to export Google cookies manually.
 
-The Google-facing paths remain validated only with synthetic providers and local
-HTTP servers. Treat an initial deployment as an evaluation: keep the Android phone
-and Google Messages available for comparison, and do not assume complete history or
-exactly-once delivery.
+Google live-verification details are recorded in README.md. The WhatsApp path is
+fake-tested only; no live WhatsApp account has been connected during this work.
+Do not assume complete history or exactly-once delivery.
 
 ## Runtime secrets with `pass`
 
@@ -339,8 +339,8 @@ snapshots.
 
 ## Operational limits
 
-- No live Google account, pairing, message, media, or long-history validation has
-  been completed for this milestone.
+- WhatsApp has no live verification. Google verification and remaining gaps are
+  listed in README.md.
 - `complete` history jobs mean the mapped provider cursor ended, not that every phone
   record was archived. Unsupported, invalid, or repeated cursors stop a job.
 - Provider event persistence before ACK admission reduces loss but does not provide
@@ -349,10 +349,59 @@ snapshots.
 - Mutations use conservative `rejected` versus `ambiguous` outcomes and avoid known
   automatic POST replay, but Google and network behavior cannot guarantee exactly-once
   effects.
-- The phone must remain responsive for new provider traffic. Cached history and
+- Google needs a responsive phone; WhatsApp ordinary messaging does not. Older
+  WhatsApp history requests may require the primary device. Cached history and
   downloaded attachments remain local; unavailable phone-side media may remain
   unavailable.
 
 See the [API contract](api.md), [durability ADR](adr/0002-durable-history-and-send-boundaries.md),
 and [libgm patch notes](../third_party/mautrix-gmessages/PATCHES.md) for the precise
 boundaries.
+
+
+## Additional network instances
+
+Keep the existing `services.google-messages-multidevice-bridge` configuration.
+Its new `network` option defaults to `"google-messages"`. Both Home Manager and
+NixOS modules also accept `instances.<name>` with the same server options:
+
+```nix
+services.google-messages-multidevice-bridge.instances.whatsapp = {
+  enable = true;
+  package = pkgs.google-messages-multidevice-bridge;
+  network = "whatsapp";
+  listen = "127.0.0.1:8788";
+  storageKeyFile = "/run/agenix/whatsapp-storage-key";
+  apiTokenFile = "/run/agenix/whatsapp-api-token";
+};
+```
+
+With Home Manager this creates the user unit
+`google-messages-multidevice-bridge-whatsapp.service` and defaults to
+`${config.xdg.dataHome}/google-messages-multidevice-bridge-whatsapp/bridge.db`.
+The original user unit and data directory retain their names. Use different secrets
+and listen addresses for each instance. The modules reject duplicate database or
+listen settings; the name `default` is reserved for the original service.
+
+The NixOS module can now run server instances as system services, in addition to
+its existing desktop-client options. Its default database is
+`/var/lib/google-messages-multidevice-bridge-whatsapp/bridge.db`; systemd creates
+the state directory for the service. These system services require file-backed secrets, loaded by systemd with
+`LoadCredential` for their dynamic service users; the source files can stay
+root-owned. Use Home Manager for `pass`-backed services.
+Use either the Home Manager user service or the NixOS system service for a given
+database, never both. Nix module evaluation checks exercise the two-instance Home
+Manager configuration and system-service credential loading; actual systemd activation is not live-tested here.
+
+Expose the second listener through a separate HTTPS origin/port, enter that
+instance's API token, and choose **Link with QR** or enter your E.164 number for a
+pairing code. No Chromium helper is involved. QR/phone-code pairing lasts up to
+three minutes and cancellation clears the displayed linking secret. Logout,
+stream replacement, temporary ban and obsolete-client failures wait for explicit
+attention rather than continually reconnecting.
+
+Back up each instance's database and its matching storage key separately, following
+the offline backup procedure above. WhatsApp credentials and pending history/events
+are inside that database; no extra credential file is needed. The same legacy
+environment-variable names for storage key and API token work for both networks.
+`--offline` never opens either upstream connection.

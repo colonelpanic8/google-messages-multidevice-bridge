@@ -67,7 +67,7 @@ func (b *Bridge) supervise(ctx context.Context, offline bool, run func(context.C
 		if ctx.Err() != nil {
 			return nil
 		}
-		if b.Status().State == "authentication_required" {
+		if b.Status().State == "authentication_required" || b.Status().Reason == "stream_replaced" || b.Status().Reason == "temporary_ban" || b.Status().Reason == "client_outdated" {
 			select {
 			case <-ctx.Done():
 				return nil
@@ -77,7 +77,7 @@ func (b *Bridge) supervise(ctx context.Context, offline bool, run func(context.C
 			if time.Since(started) > time.Minute {
 				delay = b.reconnectDelay
 			}
-			b.setStatusReason("connection_failed", "transient_connection_failure", "Google connection stopped; reconnecting automatically")
+			b.setStatusReason("connection_failed", "transient_connection_failure", "Upstream connection stopped; reconnecting automatically")
 			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():

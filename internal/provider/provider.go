@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
@@ -13,6 +14,8 @@ import (
 
 // ErrRejected reports a definite refusal before or by the phone; nothing was sent.
 var ErrRejected = errors.New("provider rejected send")
+
+var ErrRecipientUnavailable = fmt.Errorf("%w: recipient is not on this network", ErrRejected)
 
 // ErrUnavailable reports a read-only operation that could not complete.
 var ErrUnavailable = errors.New("provider unavailable")
@@ -30,6 +33,7 @@ type Snapshot struct {
 
 // SendTarget is resolved by a read-only preflight and consumed by one Send.
 type SendTarget struct {
+	TransactionID  string
 	ConversationID string
 	Media          [][]byte
 	participantID  string

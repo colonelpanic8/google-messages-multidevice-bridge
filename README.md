@@ -2,7 +2,11 @@
 
 [![CI](https://github.com/colonelpanic8/google-messages-multidevice-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/colonelpanic8/google-messages-multidevice-bridge/actions/workflows/ci.yml)
 
-One always-on Google Messages connection, available to all your devices.
+One always-on Google Messages or WhatsApp connection, available to all your devices.
+
+Each instance serves exactly one network and owns one encrypted bbolt database.
+Google Messages remains the default. Run a separate instance with
+`serve --network whatsapp` for WhatsApp linked-device support.
 
 Google Messages Multi-Device Bridge is a personal messaging service built on
 [`mautrix-gmessages/pkg/libgm`](https://github.com/mautrix/gmessages/tree/main/pkg/libgm).
@@ -10,7 +14,46 @@ It does not run a Matrix server or require a Matrix account. The libgm source is
 pinned to `e6cc29974f92` and carried in `third_party/mautrix-gmessages` with narrow
 reliability patches; see its [patch notes](third_party/mautrix-gmessages/PATCHES.md).
 
-## Current milestone
+## WhatsApp
+
+WhatsApp uses pinned `go.mau.fi/whatsmeow` as a linked device. Link from the web
+client using a rotating, locally rendered QR or a phone-number pairing code.
+The primary phone does not need to remain online for ordinary messaging.
+
+Signal sessions, identity keys and app-state keys use the same encrypted bbolt
+database as messages; there is no plaintext SQLite sidecar. Person/chat identity
+uses stable LIDs, with E.164 addresses when known. Unknown phone-to-LID mappings
+delay publication rather than creating duplicate chats. See
+[ADR 0003](docs/adr/0003-whatsapp-linked-device-storage-and-identity.md).
+
+Implemented: app-state contacts and names, group metadata, durable history
+ingestion, older-history requests, text/media sends, reactions, read receipts,
+typing, edits/revokes, readable ephemeral/view-once content, attachment downloads,
+and conversation/contact search with `q` and `limit`. WhatsApp uses one attachment
+per durable request; the web client splits multiple files into separate requests.
+
+**WhatsApp has not been live-verified.** Tests use fake clients and synthetic
+protocol events. Linking, actual historical coverage, delivery timing, group
+creation and media transfers still need testing with Ivan's account. This work
+never connected to WhatsApp or Google, paired an account or sent a real message.
+History completeness, interactive polls/calls/payments and disappearing-message
+erasure from the local archive are not promised.
+
+```sh
+bin/google-messages-multidevice-bridge serve --network whatsapp \
+  --db data/whatsapp.db --listen 127.0.0.1:8788 \
+  --storage-key-pass-entry services/whatsapp-bridge/storage-key \
+  --api-token-pass-entry services/whatsapp-bridge/api-token
+```
+
+Use separate secrets, databases and listen addresses for separate instances.
+The database rejects a mismatched network. Both networks retain the schema-1 API;
+[the API contract](docs/api.md) documents network-specific states and limitations.
+[Nix deployment](docs/deployment.md#additional-network-instances) supports named
+instances without changing the existing Google service.
+
+## Google Messages milestone
+
 
 - Guided pairing and re-pairing from the web app using a bundled Chromium helper.
   The user does not export cookies or give the helper an API bearer token.
@@ -68,7 +111,7 @@ just build
 ```
 
 `nix build` produces the packaged service, while `nix flake check` verifies the
-package and flake outputs. Tests never connect to Google. See
+package and flake outputs. Tests never connect to either upstream network. See
 [`docs/adr/0001-use-go-for-the-bridge-service.md`](docs/adr/0001-use-go-for-the-bridge-service.md)
 for the language decision.
 

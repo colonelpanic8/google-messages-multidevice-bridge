@@ -46,7 +46,8 @@ func run() error {
 	storageFile := flags.String("storage-key-file", "", "file containing the base64 storage key, for deployments without pass")
 	tokenFile := flags.String("api-token-file", "", "file containing the API token, for deployments without pass")
 	pushSubject := flags.String("push-subject", "https://github.com/colonelpanic8/google-messages-multidevice-bridge", "VAPID subject identifying this deployment to push services")
-	offline := flags.Bool("offline", false, "serve stored history without connecting to Google")
+	network := flags.String("network", "google-messages", "upstream network: google-messages or whatsapp")
+	offline := flags.Bool("offline", false, "serve stored history without connecting to the upstream network")
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -67,6 +68,12 @@ func run() error {
 	}
 	defer s.Close()
 	b := bridge.New(s)
+	if err := b.SetNetwork(*network); err != nil {
+		return err
+	}
+	if command == "pair" && *network != "google-messages" {
+		return errors.New("use web pairing for WhatsApp")
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if command == "pair" {
@@ -148,7 +155,7 @@ func serve(parent context.Context, b *bridge.Bridge, offline bool, token string,
 		go func() { defer watcher.Done(); _ = b.WatchForPush(ctx, pushAdapter{sender}) }()
 	}
 	defer watcher.Wait()
-	fmt.Fprintln(os.Stderr, "Google Messages Multi-Device Bridge listening on", listener.Addr())
+	fmt.Fprintln(os.Stderr, b.Network(), "bridge listening on", listener.Addr())
 	bridgeFinished := false
 serveLoop:
 	for {
@@ -161,7 +168,7 @@ serveLoop:
 				break serveLoop
 			}
 			if failure != nil {
-				fmt.Fprintln(os.Stderr, "Google connection stopped; stored history remains available. Check status and re-pair or restart when ready.")
+				fmt.Fprintln(os.Stderr, "Upstream connection stopped; stored history remains available. Check status and re-pair or restart when ready.")
 			}
 		case err = <-serverErr:
 			if errors.Is(err, http.ErrServerClosed) {

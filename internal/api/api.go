@@ -198,7 +198,7 @@ func New(b *bridge.Bridge, token string, push PushService) http.Handler {
 			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 			return
 		}
-		if serveAsset(w, r) {
+		if serveAsset(w, r, b.Network()) {
 			return
 		}
 		value, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
