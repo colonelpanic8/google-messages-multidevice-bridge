@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -191,6 +192,19 @@ func TestSingleSendIDAndOutcome(t *testing.T) {
 	}{
 		{"ack", nil, nil}, {"validation", &whatsmeow.IQError{Code: 403}, provider.ErrRejected},
 		{"server refusal", whatsmeow.ErrServerReturnedError, provider.ErrRejected},
+		{"nil client", whatsmeow.ErrClientIsNil, provider.ErrRejected},
+		{"disconnected before write", whatsmeow.ErrNotConnected, provider.ErrRejected},
+		{"not logged in", whatsmeow.ErrNotLoggedIn, provider.ErrRejected},
+		{"device JID", whatsmeow.ErrRecipientADJID, provider.ErrRejected},
+		{"unknown server", fmt.Errorf("%w invalid", whatsmeow.ErrUnknownServer), provider.ErrRejected},
+		{"invalid bot", whatsmeow.ErrInvalidInlineBotID, provider.ErrRejected},
+		{"unsupported broadcast", whatsmeow.ErrBroadcastListUnsupported, provider.ErrRejected},
+		{"lost connection after write", &whatsmeow.DisconnectedError{Action: "message send"}, provider.ErrAmbiguous},
+		{"message timeout", whatsmeow.ErrMessageTimedOut, provider.ErrAmbiguous},
+		{"IQ timeout", &whatsmeow.IQError{Code: 408}, provider.ErrAmbiguous},
+		{"IQ server error", &whatsmeow.IQError{Code: 500}, provider.ErrAmbiguous},
+		{"device lookup", fmt.Errorf("failed to get device list: %w", context.DeadlineExceeded), provider.ErrAmbiguous},
+		{"unknown", errors.New("unknown send failure"), provider.ErrAmbiguous},
 		{"timeout", context.DeadlineExceeded, provider.ErrAmbiguous}, {"canceled", context.Canceled, provider.ErrAmbiguous},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

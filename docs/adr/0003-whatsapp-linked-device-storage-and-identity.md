@@ -58,10 +58,18 @@ Generate a WhatsApp message ID before queueing and persist it as the outbox
 transaction ID. A send uses that exact ID. A successful server response is
 `accepted`; a later outgoing echo can confirm the matching conversation and
 transaction. The initial local `server_ack` snapshot does not itself claim an echo.
-Explicit validation/server refusals are rejected. Unknown failures are ambiguous.
+Explicit validation/server refusals and known pre-write errors (including not
+connected, not logged in and invalid destination JIDs) are rejected. Post-write
+disconnection, timeouts, cancellation and unknown failures remain ambiguous.
 The client queues one attachment per WhatsApp message, each with its own outbox key.
 
-Disable whatsmeow auto-reconnect, login auto-reconnect and retry-receipt resends.
+Allow recipient-requested retry receipts: they re-encrypt the same message ID for
+one device, not repeat an uncertain `SendMessage`. The pinned library limits these
+to nine attempts per requesting device/message per client lifetime. Enable its
+retry-message store using the encrypted bbolt outgoing-event records; payloads
+survive process restarts and are pruned after seven days when sending messages.
+
+Disable whatsmeow auto-reconnect and login auto-reconnect.
 Never reconnect an already-used Client: the supervisor waits for its bridge-owned
 operations to finish, then constructs a new client. Therefore the pinned library's
 `retryFrame` cannot regain a connected socket and replay an uncertain mutation.

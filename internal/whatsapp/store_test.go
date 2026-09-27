@@ -10,7 +10,12 @@ import (
 	"time"
 
 	local "github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
+	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
+	waLog "go.mau.fi/whatsmeow/util/log"
+	"google.golang.org/protobuf/proto"
 )
 
 func credentialFixture(t *testing.T) (*Credentials, string) {
@@ -169,5 +174,71 @@ func TestLIDLookupPreservesDeviceForSignal(t *testing.T) {
 	present, err := s.HasSession(ctx, pn.SignalAddress().String())
 	if err != nil || present {
 		t.Fatal(present, err)
+	}
+}
+
+func TestRecipientRetryPayloadSurvivesRestart(t *testing.T) {
+	s, path := credentialFixture(t)
+	ctx := context.Background()
+	pn := types.NewJID("14155550100", types.DefaultUserServer)
+	lid := types.NewJID("123", types.HiddenUserServer)
+	if err := s.PutLIDMapping(ctx, lid, pn); err != nil {
+		t.Fatal(err)
+	}
+	device, err := s.Device(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := whatsmeow.NewClient(device, waLog.Noop)
+	client.UseRetryMessageStore = true
+	body := "synthetic-retry-payload-never-plaintext"
+	message := &waE2E.Message{Conversation: proto.String(body)}
+	//lint:ignore SA1019 Exercise the pinned retry cache without connecting to WhatsApp.
+	cache := client.DangerousInternals()
+	if err = cache.AddRecentMessage(ctx, lid, "SAME-ID", message, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte(body)) {
+		t.Fatal("plaintext retry payload in database")
+	}
+	db, err := local.Open(path, bytes.Repeat([]byte{7}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	restored := NewCredentials(db, s.Namespace)
+	device, err = restored.Device(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := whatsmeow.NewClient(device, waLog.Noop)
+	restarted.UseRetryMessageStore = true
+	//lint:ignore SA1019 Exercise the pinned retry lookup without connecting to WhatsApp.
+	retry := restarted.DangerousInternals()
+	format, payload, err := restored.GetOutgoingEvent(ctx, pn, lid, "SAME-ID")
+	decoded := &waE2E.Message{}
+	if err != nil || format != "wa" {
+		t.Fatal("retry payload missing", format, err)
+	}
+	if err = proto.Unmarshal(payload, decoded); err != nil || !proto.Equal(message, decoded) {
+		t.Fatal("retry content changed", err)
+	}
+	for _, chat := range []types.JID{lid, pn} {
+		if !retry.GetRecentMessage(chat, "SAME-ID").IsEmpty() {
+			t.Fatal("new client has an in-memory message")
+		}
+		recovered, err := retry.GetMessageForRetry(ctx, &events.Receipt{
+			MessageSource: types.MessageSource{Chat: chat, Sender: chat},
+		}, "SAME-ID")
+		if err != nil || recovered == nil || recovered.IsEmpty() {
+			t.Fatal("retry payload did not survive restart and JID alias lookup", err)
+		}
 	}
 }

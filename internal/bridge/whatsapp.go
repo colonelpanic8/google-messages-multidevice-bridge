@@ -7,7 +7,6 @@ import (
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
 	"github.com/rs/zerolog"
-	"go.mau.fi/whatsmeow/proto/waE2E"
 	"sync"
 	"time"
 
@@ -153,7 +152,7 @@ func (w *whatsappConnection) Run(b *Bridge, ctx context.Context, offline bool, c
 	client.EnableAutoReconnect = false
 	client.InitialAutoReconnect = false
 	client.DisableLoginAutoReconnect = true
-	client.PreRetryCallback = func(*events.Receipt, types.MessageID, int, *waE2E.Message) bool { return false }
+	client.UseRetryMessageStore = true
 	w.client = client
 	w.provider = &waProvider.Provider{Client: client, Keys: keys, Device: device, DB: b.Store}
 	b.mu.Lock()

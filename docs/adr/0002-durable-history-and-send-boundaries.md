@@ -62,7 +62,9 @@ could replay their bodies. A known provider refusal becomes `rejected`; a transp
 error, cancellation after claim, lost response, or uncertain response becomes
 `ambiguous`. A matching transaction plus conversation ID may later confirm a sent
 message. Matching text or timestamps may not. Acceptance, observation, delivery,
-and read status are distinct facts.
+and read status are distinct facts. WhatsApp recipient-requested retry receipts
+re-encrypt the same message ID for the requesting device; they are protocol
+redelivery, distinct from repeating a `SendMessage` whose outcome is unknown.
 
 Typing and mark-read remain direct, connected-only, non-durable operations. They are
 not presented as outbox-guaranteed actions and are not automatically retried.
