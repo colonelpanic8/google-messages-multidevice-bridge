@@ -171,7 +171,13 @@ func (b *Bridge) Queue(id string, req model.SendRequest) (model.Outbox, bool, er
 			return model.Outbox{}, false, provider.ErrTooLarge
 		}
 	}
-	o, created, err := b.Store.Enqueue(id, provider.NewTransactionID(), req)
+	transactionID := b.connector.TransactionID()
+	if b.Network() == "whatsapp" {
+		if len(req.AttachmentIDs) > 1 {
+			return model.Outbox{}, false, ErrInvalid
+		}
+	}
+	o, created, err := b.Store.Enqueue(id, transactionID, req)
 	if err == nil {
 		b.Hub.Notify()
 		wake(b.sendWake)
@@ -292,6 +298,7 @@ func (b *Bridge) sendOne(ctx context.Context) (bool, error) {
 				return true, nil
 			}
 		case "reaction":
+			target.TransactionID = o.TransactionID
 			err = p.React(callCtx, target, o.Request.MessageID, o.Request.Emoji, o.Request.Remove)
 		default:
 			err = p.Send(callCtx, target, o)
@@ -303,6 +310,9 @@ func (b *Bridge) sendOne(ctx context.Context) (bool, error) {
 		}
 		if errors.Is(err, provider.ErrRejected) {
 			state, detail = "rejected", "Provider explicitly rejected the send request"
+			if errors.Is(err, provider.ErrRecipientUnavailable) {
+				detail = "Recipient is not registered on this network"
+			}
 		} else if err != nil {
 			state, detail = "ambiguous", "Send outcome unknown; inspect phone before sending again"
 		}
@@ -344,6 +354,9 @@ func (b *Bridge) syncLoop(ctx context.Context) {
 		} else {
 			now := time.Now().UTC()
 			b.status.SyncState = "recent_window_complete"
+			if b.Network() == "whatsapp" {
+				b.status.SyncState = "metadata_refreshed"
+			}
 			b.status.LastSync = &now
 			if b.status.Updated.Equal(before.Updated) && ctx.Err() == nil {
 				b.status.State = "connected"

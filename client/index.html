@@ -554,6 +554,21 @@
       <button id="repair-pairing" type="button" class="filled" hidden>
         Reconnect phone
       </button>
+      <section id="whatsapp-pairing" hidden>
+        <p>Open WhatsApp → Linked devices → Link a device.</p>
+        <button id="wa-qr-start" type="button">Link with QR</button>
+        <label for="wa-phone">Or link with phone number (E.164)</label>
+        <input id="wa-phone" type="tel" placeholder="+14155550100" />
+        <button id="wa-phone-start" type="button">Get pairing code</button>
+        <img
+          id="wa-qr"
+          width="320"
+          height="320"
+          alt="WhatsApp linking QR"
+          hidden
+        />
+        <p id="wa-code"></p>
+      </section>
       <details id="pairing-browser-setup">
         <summary>Use browser sign-in</summary>
         <p class="hint">
@@ -650,10 +665,10 @@
       <div id="people-list" class="people-list"></div>
       <section id="add-people" hidden>
         <h3>Add people</h3>
-        <p class="hint">
-          Google Messages cannot change who is in a conversation. Adding someone
-          addresses a conversation to everyone, which opens this thread again if
-          the group already matches and otherwise starts a new one.
+        <p id="add-people-hint" class="hint">
+          Adding someone creates a conversation with the combined recipients.
+          Google may return an existing matching conversation; WhatsApp creates
+          a new group.
         </p>
         <div class="to-field">
           <span>Add:</span>

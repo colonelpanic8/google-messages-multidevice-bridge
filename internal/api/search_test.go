@@ -99,3 +99,36 @@ func TestFinishedConversationOutboxHasID(t *testing.T) {
 		t.Fatal(out, err)
 	}
 }
+
+func TestContactSearchAndDefaultCompleteSnapshot(t *testing.T) {
+	b, server := fixture(t)
+	book := model.ContactBook{Schema: 1, Updated: time.Now(), Contacts: []model.Contact{
+		{ID: "a", Name: "Alice", Address: "+14155550100"},
+		{ID: "b", Name: "Alice Work", Address: "+14155550200"},
+		{ID: "c", Name: "Bob", Address: "+442071838750"},
+	}}
+	raw, _ := json.Marshal(book)
+	if err := b.Store.SaveContacts(raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		query string
+		count int
+		first string
+	}{
+		{"", 3, "a"}, {"?q=ALICE&limit=1", 1, "a"}, {"?q=2071", 1, "c"}, {"?q=unknown", 0, ""},
+	} {
+		req, _ := http.NewRequest("GET", server.URL+"/v1/contacts"+tt.query, nil)
+		req.Header.Set("Authorization", "Bearer test-token")
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got model.ContactBook
+		err = json.NewDecoder(resp.Body).Decode(&got)
+		resp.Body.Close()
+		if err != nil || len(got.Contacts) != tt.count || (tt.count > 0 && got.Contacts[0].ID != tt.first) {
+			t.Fatal(got, err)
+		}
+	}
+}

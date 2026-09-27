@@ -37,9 +37,17 @@ export function newRequest(conversationID, text, attachmentIDs = []) {
 }
 
 // Media and text never share one send; a caption follows as its own message.
-export function splitRequests(conversationID, text, attachmentIDs = []) {
+export function splitRequests(
+  conversationID,
+  text,
+  attachmentIDs = [],
+  network = "google-messages",
+) {
   const requests = [];
-  if (attachmentIDs.length)
+  if (network === "whatsapp") {
+    for (const id of attachmentIDs)
+      requests.push(newRequest(conversationID, "", [id]));
+  } else if (attachmentIDs.length)
     requests.push(newRequest(conversationID, "", attachmentIDs));
   if (text.trim()) requests.push(newRequest(conversationID, text));
   return requests;

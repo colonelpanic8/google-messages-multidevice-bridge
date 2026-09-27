@@ -43,6 +43,9 @@ type ContactBook struct {
 }
 
 type Conversation struct {
+	Archived     bool          `json:"archived,omitempty"`
+	Pinned       bool          `json:"pinned,omitempty"`
+	MutedUntil   time.Time     `json:"muted_until,omitzero"`
 	Schema       int           `json:"schema"`
 	ID           string        `json:"id"`
 	Name         string        `json:"name"`

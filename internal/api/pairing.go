@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/skip2/go-qrcode"
 	"io"
 	"io/fs"
 	"net/http"
@@ -22,6 +23,41 @@ import (
 var pairingHelper embed.FS
 
 func registerPairing(mux *http.ServeMux, b *bridge.Bridge) {
+	mux.HandleFunc("POST /v1/pairing/phone", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Phone    string `json:"phone_number"`
+			NewPhone bool   `json:"new_phone"`
+		}
+		if !decode(w, r, &req) {
+			return
+		}
+		if req.Phone == "" {
+			apiError(w, bridge.ErrInvalid)
+			return
+		}
+		state, err := b.BeginWhatsAppPairing(req.Phone, req.NewPhone)
+		if err != nil {
+			apiError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		writeJSON(w, state)
+	})
+	mux.HandleFunc("GET /v1/pairing/qr", func(w http.ResponseWriter, r *http.Request) {
+		state := b.PairingStatus()
+		if state.State != "scan_qr" || state.QR == "" {
+			http.Error(w, "no active QR", 404)
+			return
+		}
+		png, err := qrcode.Encode(state.QR, qrcode.Medium, 320)
+		if err != nil {
+			apiError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(png)
+	})
+
 	mux.HandleFunc("GET /v1/pairing", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, b.PairingStatus()) })
 	mux.HandleFunc("POST /v1/pairing/start", func(w http.ResponseWriter, r *http.Request) {
 		newPhone, ok := pairingOptions(w, r)

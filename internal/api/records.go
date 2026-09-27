@@ -3,11 +3,9 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"mime"
 	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -241,9 +239,6 @@ func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 		}
 		data, err := b.Attachment(r.Context(), id)
 		if err != nil {
-			if !errors.Is(err, store.ErrNotFound) && !errors.Is(err, bridge.ErrInvalid) {
-				fmt.Fprintf(os.Stderr, "attachment %s: %v\n", id, err)
-			}
 			apiError(w, err)
 			return
 		}

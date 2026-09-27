@@ -397,3 +397,108 @@ ordering remains the address-book order. Filtering never changes the snapshot
 A successful conversation-creation outbox record has `state:"accepted"` and a
 top-level `conversation_id`. Clients may poll `GET /v1/outbox/{key}`, then use that
 ID in `POST /v1/messages`. A rejected or ambiguous creation has no guaranteed ID.
+
+## WhatsApp network (schema 1)
+
+`serve --network whatsapp` uses the same authenticated routes and outbox. The
+default remains `google-messages`. `GET /v1/status` adds `network` with one of
+those values. On WhatsApp, `phone_responsive:true` means the linked-device
+connection is usable; it does not assert that the primary phone is online. The
+phone need not stay online for ordinary messaging. WhatsApp reconciliation reports
+`sync_state:"metadata_refreshed"`: it refreshes chat metadata, while messages arrive
+through the event stream and history sync.
+
+### Linking
+
+`POST /v1/pairing/start` starts QR linking on WhatsApp, with the existing optional
+`{"new_phone":true}` body. Poll `GET /v1/pairing`:
+
+- `connecting`: connecting to the linked-device service.
+- `scan_qr`: `qr` contains the current QR payload. It rotates; replace the old QR.
+- `enter_pairing_code`: `pairing_code` contains the code to enter on the phone.
+- `paired`, `failed`, `canceled`: terminal states; QR and pairing code are cleared.
+
+`GET /v1/pairing/qr` returns a locally generated PNG for the current QR, or 404
+when none is active. It requires the same bearer authentication and is never
+rendered by an external service. Fetch it with authentication and use a blob URL.
+
+For phone-code linking, use the new authenticated route:
+
+```http
+POST /v1/pairing/phone
+Content-Type: application/json
+```
+
+```json
+{"phone_number":"+14155550100","new_phone":false}
+```
+
+It returns 202 and the pairing state. Phone numbers must be E.164. Open WhatsApp's
+Linked devices screen and choose linking with a phone number. Both linking methods
+have the existing cancellation and offline-mode restrictions. WhatsApp does not
+use the Chromium Google-sign-in helper or `/pairing/repair` (400 on WhatsApp).
+Changing the account number automatically advances the entity epoch.
+
+Logout is `authentication_required/session_expired`; a reported account ban is
+`authentication_required/account_banned`. Stream replacement, temporary ban and
+an obsolete client use `connection_failed` with `stream_replaced`,
+`temporary_ban`, or `client_outdated`. Those conditions wait for an explicit
+restart or linking attempt; ordinary disconnections use supervisor backoff.
+
+### Records, contacts and mutations
+
+Direct conversation and participant IDs are non-device LID JIDs; group IDs end in
+`@g.us`. IDs are opaque to clients and must be URL-encoded in route paths.
+A message ID combines the canonical chat and remote message ID; it can contain
+`/`. A known phone number appears as E.164 in `Participant.Address` and contact
+`address`. Unresolved PN events wait durably for their LID mapping rather than
+creating a duplicate chat. Contacts come from the synchronized app-state address
+book; push names and business names supplement conversation participants.
+
+WhatsApp `Message.Status` values are:
+
+| Value | Meaning |
+| --- | --- |
+| `received` | Incoming content was observed |
+| `server_ack` | WhatsApp accepted an outgoing message, or an outgoing echo was observed |
+| `delivered` | A delivery receipt was observed |
+| `read` | A read/played receipt was observed |
+
+Receipts do not regress a higher status. For groups, delivered/read mean a receipt
+from a recipient, not proof that every participant received/read it. These values
+are independent of outbox state. Edits update the original message, revokes set
+`deleted:true`, and reactions update its `reactions` list. Readable ephemeral and
+view-once wrappers are unwrapped. Older local versions and cached media remain in
+the encrypted archive.
+
+Conversation records optionally add `archived`, `pinned` and `muted_until`.
+Group subjects/participants are refreshed from group metadata. Text, image, video,
+audio and document sends use the existing message/upload routes. WhatsApp accepts
+one attachment per outbox request (400 for more); queue separate requests for more
+files. The web client does this automatically and queues any caption separately.
+Attachments retain the existing 20-MiB bridge limit and download route.
+WhatsApp does not implement Google's explicit full-media request operation.
+
+One-recipient creation checks registration with WhatsApp and returns the canonical
+chat without sending a message. Unregistered recipients produce a rejected outbox
+record with an explicit registration detail. Multiple recipients create a group
+using `name`, or `New group` when omitted. Adding participants through the existing
+API route creates a conversation with the combined recipients; it does not modify
+the existing group. Mark-read and typing remain immediate, connected-only calls.
+
+### History
+
+Full-history sync is requested at linking and ingested durably as events arrive.
+Per-conversation jobs request older messages from the primary device using the
+oldest known message as their boundary. A chat without any known message cannot
+supply that boundary and the job fails as unsupported. A missing asynchronous
+response keeps the job queued; read-only requests may be repeated after two minutes.
+Inbox/archive jobs enumerate locally synchronized chats; spam yields no chats.
+
+A completed job means the available response did not expose an older boundary.
+It does not prove a complete archive. Imported messages arrive through ordinary
+message events; per-job record counts do not count asynchronous imports. Local
+history and downloaded attachments remain readable without an upstream connection.
+
+All WhatsApp behavior described here is implemented and tested with fakes where
+listed in ADR 0003; no WhatsApp behavior has been live-verified.

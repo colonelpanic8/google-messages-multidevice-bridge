@@ -16,6 +16,7 @@ import (
 var ErrStorage = errors.New("storage failure")
 
 type Status struct {
+	Network               string     `json:"network"`
 	State                 string     `json:"state"`
 	Reason                string     `json:"reason,omitempty"`
 	Detail                string     `json:"detail,omitempty"`
@@ -30,6 +31,7 @@ type Status struct {
 }
 
 type Bridge struct {
+	network          string
 	mutationMu       sync.Mutex
 	offlineOnly      bool
 	pairingState     PairingState
@@ -76,6 +78,7 @@ func New(s *store.Store) *Bridge {
 func (b *Bridge) Status() Status {
 	b.mu.RLock()
 	status := b.status
+	status.Network = b.Network()
 	b.mu.RUnlock()
 	if summary, err := b.Store.SessionSummary(); err == nil {
 		status.SessionEpoch = summary.Epoch
@@ -141,6 +144,7 @@ func (b *Bridge) failed() bool {
 
 // connection owns network-specific pairing, events and connection lifetime.
 type connection interface {
+	TransactionID() string
 	Run(*Bridge, context.Context, bool, map[string]string, func(string)) error
 	Handle(*Bridge, any) error
 }

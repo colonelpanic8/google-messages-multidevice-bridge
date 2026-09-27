@@ -58,7 +58,7 @@ var assets = map[string]asset{
 	"/icons/icon-maskable-512.png": {"icons/icon-maskable-512.png", "image/png", false},
 }
 
-func serveAsset(w http.ResponseWriter, r *http.Request) bool {
+func serveAsset(w http.ResponseWriter, r *http.Request, networks ...string) bool {
 	if r.Method != "GET" && r.Method != "HEAD" {
 		return false
 	}
@@ -75,8 +75,21 @@ func serveAsset(w http.ResponseWriter, r *http.Request) bool {
 		http.Error(w, "client unavailable", http.StatusInternalServerError)
 		return true
 	}
+	network := "google-messages"
+	if len(networks) > 0 {
+		network = networks[0]
+	}
+	if network == "whatsapp" && (entry.file == "index.html" || entry.file == "manifest.webmanifest") {
+		data = bytes.ReplaceAll(data, []byte("Google Messages Multi-Device Bridge"), []byte("WhatsApp Multi-Device Bridge"))
+		data = bytes.ReplaceAll(data, []byte("Google Messages"), []byte("WhatsApp"))
+		data = bytes.ReplaceAll(data, []byte("Google account"), []byte("WhatsApp account"))
+		data = bytes.ReplaceAll(data, []byte("Google may return an existing matching conversation; WhatsApp creates"), []byte("WhatsApp creates"))
+		data = bytes.ReplaceAll(data, []byte("<title>Messages</title>"), []byte("<title>WhatsApp</title>"))
+		data = bytes.ReplaceAll(data, []byte(`"short_name": "Messages"`), []byte(`"short_name": "WhatsApp"`))
+		data = bytes.ReplaceAll(data, []byte("Read shared SMS, MMS, and RCS history and send through your Android phone."), []byte("Your linked WhatsApp device and encrypted message archive."))
+	}
 	if entry.file == "sw.js" {
-		data = bytes.ReplaceAll(data, []byte("__ASSET_VERSION__"), []byte(assetVersion))
+		data = bytes.ReplaceAll(data, []byte("__ASSET_VERSION__"), []byte(assetVersion+"-"+network))
 	}
 	w.Header().Set("Content-Type", entry.contentType)
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
