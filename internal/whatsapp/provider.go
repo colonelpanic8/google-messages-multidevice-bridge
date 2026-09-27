@@ -278,8 +278,17 @@ func Classify(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, whatsmeow.ErrServerReturnedError) {
-		return provider.ErrRejected
+	// ErrNotConnected is pre-write with our fresh-client lifecycle: a used
+	// client never reconnects, so retryFrame cannot reach its socket check.
+	for _, refusal := range []error{
+		whatsmeow.ErrClientIsNil, whatsmeow.ErrNotConnected, whatsmeow.ErrNotLoggedIn,
+		whatsmeow.ErrRecipientADJID, whatsmeow.ErrUnknownServer,
+		whatsmeow.ErrInvalidInlineBotID, whatsmeow.ErrBroadcastListUnsupported,
+		whatsmeow.ErrServerReturnedError,
+	} {
+		if errors.Is(err, refusal) {
+			return provider.ErrRejected
+		}
 	}
 	var iq *whatsmeow.IQError
 	if errors.As(err, &iq) && iq.Code >= 400 && iq.Code < 500 && iq.Code != 408 {

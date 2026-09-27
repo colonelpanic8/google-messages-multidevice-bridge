@@ -400,6 +400,13 @@ ID in `POST /v1/messages`. A rejected or ambiguous creation has no guaranteed ID
 
 ## WhatsApp network (schema 1)
 
+Known pre-write WhatsApp failures (not connected, not logged in, invalid destination)
+produce `rejected`; timeouts, post-write disconnection and unknown failures remain
+`ambiguous`. Recipient-requested retry receipts may re-encrypt the same message ID
+for the requesting device. This protocol redelivery does not repeat an uncertain
+`SendMessage` or create another outbox operation. Its encrypted payload cache
+survives restarts, with records older than seven days pruned during sends.
+
 `serve --network whatsapp` uses the same authenticated routes and outbox. The
 default remains `google-messages`. `GET /v1/status` adds `network` with one of
 those values. On WhatsApp, `phone_responsive:true` means the linked-device
