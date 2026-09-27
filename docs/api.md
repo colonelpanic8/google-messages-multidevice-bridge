@@ -380,3 +380,20 @@ than five minutes old, and not already announced. History imports and
 reconciliation replay old messages through the same event log and must never
 light up a phone, which is what the age check is for. Subscriptions the push
 service reports as `404` or `410` are deleted.
+
+## Conversation and contact search
+
+Both networks accept optional `q` and `limit` parameters on
+`GET /v1/conversations` and `GET /v1/contacts`. Matching is case-insensitive:
+conversation names, participant names and addresses, or contact names and addresses.
+Phone-number queries may include spaces, parentheses, hyphens, dots and a leading
+plus; their digits match the digits of an address. Empty `q` matches everything.
+Filtering precedes limiting. `limit` must be an integer from 1 through 500;
+invalid, empty or repeated limits return 400. Omitting it preserves the original
+unlimited snapshot response. Conversation ordering remains newest first; contact
+ordering remains the address-book order. Filtering never changes the snapshot
+`cursor`. These are search results, not additional pagination cursors.
+
+A successful conversation-creation outbox record has `state:"accepted"` and a
+top-level `conversation_id`. Clients may poll `GET /v1/outbox/{key}`, then use that
+ID in `POST /v1/messages`. A rejected or ambiguous creation has no guaranteed ID.

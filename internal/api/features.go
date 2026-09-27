@@ -24,11 +24,25 @@ func registerFeatures(mux *http.ServeMux, b *bridge.Bridge) {
 		writeJSON(w, out)
 	}
 	mux.HandleFunc("GET /v1/contacts", func(w http.ResponseWriter, r *http.Request) {
+		q, limit, ok := searchOptions(w, r)
+		if !ok {
+			return
+		}
 		book, err := b.Contacts(r.Context(), r.URL.Query().Get("refresh") == "1")
 		if err != nil {
 			apiError(w, err)
 			return
 		}
+		filtered := make([]model.Contact, 0, len(book.Contacts))
+		for _, c := range book.Contacts {
+			if searchMatch(q, []string{c.Name}, []string{c.Address, c.Formatted}) {
+				filtered = append(filtered, c)
+			}
+		}
+		if limit > 0 && len(filtered) > limit {
+			filtered = filtered[:limit]
+		}
+		book.Contacts = filtered
 		writeJSON(w, book)
 	})
 	mux.HandleFunc("POST /v1/conversations", func(w http.ResponseWriter, r *http.Request) {
