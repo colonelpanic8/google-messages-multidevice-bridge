@@ -38,6 +38,14 @@ let
           package = bridgePackage;
           storageKeyPassEntry = "keys/a'b\"c\\d%t$HOME";
           apiTokenPassEntry = "tokens/bridge";
+          instances.whatsapp = {
+            enable = true;
+            package = bridgePackage;
+            network = "whatsapp";
+            listen = "127.0.0.1:8788";
+            storageKeyFile = "/run/secrets/wa-storage";
+            apiTokenFile = "/run/secrets/wa-token";
+          };
         };
       }
     ];
@@ -112,6 +120,10 @@ let
         { lib, ... }:
         {
           options = {
+            systemd.services = lib.mkOption {
+              type = lib.types.attrsOf lib.types.anything;
+              default = { };
+            };
             environment.systemPackages = lib.mkOption {
               type = lib.types.listOf lib.types.package;
               default = [ ];
@@ -124,6 +136,14 @@ let
           config.services.google-messages-multidevice-bridge = {
             client.enable = true;
             client.package = bridgePackage;
+            instances.whatsapp = {
+              enable = true;
+              package = bridgePackage;
+              network = "whatsapp";
+              listen = "127.0.0.1:8788";
+              storageKeyFile = "/run/secrets/wa-storage";
+              apiTokenFile = "/run/secrets/wa-token";
+            };
           };
         }
       )
@@ -132,6 +152,10 @@ let
 in
 assert lib.hasInfix ''"keys/a'b\"c\\d%%t$$HOME"'' service.ExecStart;
 assert lib.hasInfix ''"/test/data/google-messages-multidevice-bridge/bridge.db"'' service.ExecStart;
+assert lib.hasInfix ''"--network" "whatsapp"''
+  evaluated.config.systemd.user.services.google-messages-multidevice-bridge-whatsapp.Service.ExecStart;
+assert lib.hasInfix "google-messages-multidevice-bridge-whatsapp/bridge.db"
+  evaluated.config.systemd.user.services.google-messages-multidevice-bridge-whatsapp.Service.ExecStart;
 assert service.UMask == "0077";
 assert lib.hasInfix ''"--storage-key-file" "/run/agenix/storage-key"'' fileSecretsService.ExecStart;
 assert lib.hasInfix ''"--api-token-file" "/run/agenix/api-token"'' fileSecretsService.ExecStart;
@@ -149,4 +173,14 @@ assert builtins.head clientPreseeded.config.home.packages != bridgePackage;
 assert builtins.all (a: a.assertion) clientPreseeded.config.assertions;
 assert nixosEvaluated.config.environment.systemPackages == [ bridgePackage ];
 assert builtins.all (a: a.assertion) nixosEvaluated.config.assertions;
+assert
+  nixosEvaluated.config.systemd.services.google-messages-multidevice-bridge-whatsapp.serviceConfig.DynamicUser;
+assert
+  nixosEvaluated.config.systemd.services.google-messages-multidevice-bridge-whatsapp.serviceConfig.LoadCredential
+  == [
+    "storage-key:/run/secrets/wa-storage"
+    "api-token:/run/secrets/wa-token"
+  ];
+assert lib.hasInfix "google-messages-multidevice-bridge-whatsapp.service/storage-key"
+  nixosEvaluated.config.systemd.services.google-messages-multidevice-bridge-whatsapp.serviceConfig.ExecStart;
 pkgs.runCommand "bridge-home-manager-module-check" { } ''touch "$out"''
