@@ -80,6 +80,10 @@ func pageLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
 }
 func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 	mux.HandleFunc("GET /v1/conversations", func(w http.ResponseWriter, r *http.Request) {
+		q, limit, ok := searchOptions(w, r)
+		if !ok {
+			return
+		}
 		raw, cursor, err := b.Store.SnapshotCurrent("conversation")
 		if err != nil {
 			apiError(w, err)
@@ -93,7 +97,14 @@ func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 				return
 			}
 			c.ReadOnly = !record.Current
-			convs = append(convs, c)
+			names, addresses := []string{c.Name}, []string{}
+			for _, p := range c.Participants {
+				names = append(names, p.Name)
+				addresses = append(addresses, p.Address)
+			}
+			if searchMatch(q, names, addresses) {
+				convs = append(convs, c)
+			}
 		}
 		sort.Slice(convs, func(i, j int) bool {
 			if convs[i].Updated.Equal(convs[j].Updated) {
@@ -101,6 +112,9 @@ func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 			}
 			return convs[i].Updated.After(convs[j].Updated)
 		})
+		if limit > 0 && len(convs) > limit {
+			convs = convs[:limit]
+		}
 		writeJSON(w, map[string]any{"conversations": convs, "cursor": cursor})
 	})
 	mux.HandleFunc("GET /v1/conversations/{id}/messages", func(w http.ResponseWriter, r *http.Request) {
