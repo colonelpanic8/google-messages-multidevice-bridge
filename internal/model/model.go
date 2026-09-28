@@ -52,6 +52,7 @@ type Conversation struct {
 	Preview      string        `json:"preview"`
 	Updated      time.Time     `json:"updated"`
 	Unread       bool          `json:"unread"`
+	UnreadCount  uint32        `json:"unread_count,omitempty"`
 	ReadOnly     bool          `json:"read_only"`
 	Protocol     string        `json:"protocol"`
 	State        string        `json:"state"`

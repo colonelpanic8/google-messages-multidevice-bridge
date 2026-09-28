@@ -1,7 +1,14 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
+	wa "github.com/colonelpanic8/google-messages-multidevice-bridge/internal/whatsapp"
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/proto"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,5 +110,42 @@ func TestWhatsAppQuarantineStatusDetail(t *testing.T) {
 	b.setStatus("connected", "")
 	if got := b.Status(); got.Detail != "2 WhatsApp pending events quarantined" {
 		t.Fatal(got)
+	}
+}
+
+func TestWhatsAppSameAccountPairingStartsNewEpoch(t *testing.T) {
+	b := testBridge(t)
+	if err := b.SetNetwork("whatsapp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Store.SavePairedSession([]byte("old"), true); err != nil {
+		t.Fatal(err)
+	}
+	state, err := b.BeginWhatsAppPairing("", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = b.commitPairedSession(context.Background(), state.generation, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := b.Store.SessionSummary()
+	if err != nil || summary.Epoch != 2 {
+		t.Fatal(summary, err)
+	}
+}
+
+func TestWhatsAppDiagnosticsDoNotLogContent(t *testing.T) {
+	b := testBridge(t)
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+	w := &whatsappConnection{ctx: context.Background(), provider: &wa.Provider{DB: b.Store, Keys: wa.NewCredentials(b.Store, "synthetic")}}
+	event := &events.Message{Info: types.MessageInfo{ID: "secret-id", PushName: "secret-name", MessageSource: types.MessageSource{Chat: types.NewJID("secret-number", types.HiddenUserServer)}}, Message: &waE2E.Message{Conversation: proto.String("secret-body")}}
+	if err := w.Handle(b, event); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "secret-") || !strings.Contains(buf.String(), "event=*events.Message") {
+		t.Fatal("unsafe or missing diagnostics")
 	}
 }

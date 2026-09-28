@@ -102,8 +102,8 @@ An authenticated client can then use `POST /v1/pairing/start`; the helper polls 
 scoped pending route and completes the credential handoff without its setup page.
 
 `POST /v1/pairing/start` returns the existing state if pairing is already active.
-Both `start` and `repair` accept an optional JSON body `{"new_phone": true}`. Without
-it, the bridge assumes the same phone is being paired again and keeps every stored
+Both `start` and `repair` accept an optional JSON body `{"new_phone": true}`. For Google Messages, without
+it the bridge assumes the same phone is being paired again and keeps every stored
 conversation and message writable. `POST /v1/pairing/adopt` clears a boundary that is
 already stored, for a database re-paired before the bridge asked. It stamps every
 stored conversation and message with the current session epoch, zeroes the previous
@@ -177,8 +177,9 @@ Starting re-pairing serializes mutation admission with the session change and
 immediately cancels all still-queued outbox operations; attempted records retain
 their existing terminal/ambiguous state. Cancel or failure does not roll those
 cancellations back, but it also does not change the entity epoch, provider upload
-descriptors, or history jobs. Saving a same-phone re-pair changes none of those either.
-Only successfully saving a session started with `new_phone` clears provider upload
+descriptors, or history jobs. Saving a Google same-phone re-pair changes none of those either.
+Successfully saving a Google session started with `new_phone`, or any WhatsApp
+pairing, clears provider upload
 descriptors, pauses and resets existing history jobs, and advances the entity epoch.
 Previously stored entities then remain readable, but conversations and
 messages cannot be mutation targets until the new session observes them again. Their
@@ -427,7 +428,11 @@ through the event stream and history sync.
 ### Linking
 
 `POST /v1/pairing/start` starts QR linking on WhatsApp, with the existing optional
-`{"new_phone":true}` body. Poll `GET /v1/pairing`:
+`{"new_phone":true}` body. Every successful WhatsApp linking now uses a fresh
+credential namespace and starts a new entity epoch, even for the same number.
+Cancellation/failure keeps the previous session. Old records remain read-only until
+actually observed by the new session; metadata refresh alone cannot adopt them.
+Poll `GET /v1/pairing`:
 
 - `connecting`: connecting to the linked-device service.
 - `scan_qr`: `qr` contains the current QR payload. It rotates; replace the old QR.
@@ -516,5 +521,31 @@ It does not prove a complete archive. Imported messages arrive through ordinary
 message events; per-job record counts do not count asynchronous imports. Local
 history and downloaded attachments remain readable without an upstream connection.
 
-All WhatsApp behavior described here is implemented and tested with fakes where
-listed in ADR 0003; no WhatsApp behavior has been live-verified.
+WhatsApp linking has been observed by the operator, and the connected status was
+verified through read-only API access. The fixes below are tested offline; full
+history coverage, delivery and media transfers still require live verification.
+
+Only user-displayable WhatsApp content creates message records. Protocol/peer
+traffic, sender-key-only messages, poll updates, keep/pin controls, ephemeral
+settings, call logs and security/system notices do not. Reactions, edits and revokes
+update their target. Broadcast/status and newsletter chats are excluded. Templates,
+interactive messages, contacts, locations and poll creations have text summaries;
+interactive operations are not implemented. Empty legacy protocol artifacts are
+omitted from message snapshots; empty previous-epoch conversations are omitted
+from conversation snapshots. Raw historical event-log entries remain retained.
+After re-pairing, clients should take fresh snapshots and resume SSE from their
+snapshot cursors, rather than rebuild state by replaying the old epoch from zero.
+
+Conversation `updated`, `preview`, `preview_sender_id` and `preview_direction`
+follow the newest displayable message. History conversation timestamps supply
+`updated` before messages arrive. Optional `unread_count` records the history
+snapshot count; fresh incoming messages increase it and mark-read clears it.
+Replayed history, edits and receipts do not increment it. `unread` remains present.
+
+App-state collections are fetched once per connection after keys are available;
+incomplete attempts are retried every 30 seconds and fully resynced after failure
+or reconnect. Contact snapshots include app-state names, push names and business
+names. Entries with a known phone number are available before a LID mapping exists;
+these contact IDs initially use the phone JID and become canonical LIDs when known.
+Conversation IDs remain canonical LIDs. Contacts refresh from the local encrypted
+address book without making one network lookup per contact.

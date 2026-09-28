@@ -34,8 +34,12 @@ const unreadWindow = 5 * time.Minute
 // protocol notice, leaves the existing preview alone.
 func previewSource(data []byte) (model.Message, latestMessage, bool) {
 	var m model.Message
-	if json.Unmarshal(data, &m) != nil || m.Schema != model.Schema || m.ID == "" || m.ConversationID == "" || m.Deleted || m.Time.IsZero() {
+	if json.Unmarshal(data, &m) != nil || m.Schema != model.Schema || m.ID == "" || m.ConversationID == "" || m.Time.IsZero() {
 		return m, latestMessage{}, false
+	}
+	if m.Deleted {
+		m.Text = "Message deleted"
+		m.Attachments = nil
 	}
 	l := latestMessage{MessageID: m.ID, Time: m.Time, Preview: m.PreviewText(), SenderID: m.SenderID, Direction: m.Direction}
 	return m, l, l.Preview != ""
@@ -101,6 +105,14 @@ func mergeLatestMessage(c *model.Conversation, l latestMessage, unread *bool) bo
 	if l.Time.After(c.Updated) {
 		c.Updated = l.Time
 	}
+	if unread != nil && c.Protocol == "whatsapp" {
+		if *unread {
+			c.UnreadCount++
+		} else {
+			c.UnreadCount = 0
+		}
+		changed = true
+	}
 	if unread != nil && c.Unread != *unread {
 		c.Unread = *unread
 		changed = true
@@ -160,6 +172,7 @@ func (s *Store) ReadConversation(conversationID string) (bool, error) {
 				return false
 			}
 			c.Unread = false
+			c.UnreadCount = 0
 			return true
 		})
 		return err

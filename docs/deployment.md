@@ -6,8 +6,8 @@ process per database; the database lock rejects a second process. The supported
 interactive setup is the web app's **Pair / Re-pair** flow with the bundled Chromium
 helper. Users do not need to export Google cookies manually.
 
-Google live-verification details are recorded in README.md. The WhatsApp path is
-fake-tested only; no live WhatsApp account has been connected during this work.
+Google and WhatsApp verification details are recorded in README.md. WhatsApp
+linking has been observed; the sync recovery fixes are currently fake-tested only.
 Do not assume complete history or exactly-once delivery.
 
 ## Runtime secrets with `pass`
@@ -279,8 +279,9 @@ The ticket expires after ten minutes. Pairing cannot start while the process use
 Starting re-pair immediately cancels every still-queued outbox operation so it cannot
 cross into a different session. Canceling or failing the attempt does not restore
 those queued operations. It also does not alter the entity epoch, history jobs, or
-saved provider upload descriptors. Re-pairing the same phone never alters them. Those
-changes occur only when pairing was started with `new_phone` and the session is saved
+saved provider upload descriptors. Google same-phone re-pairing does not alter them. Those
+changes occur when Google pairing was started with `new_phone`, or any WhatsApp
+linking, and the session is saved
 successfully: the epoch advances, descriptors are cleared, and history jobs are paused
 and reset. Previous records remain readable but cannot be mutation targets until
 observed by the new phone.
@@ -339,8 +340,8 @@ snapshots.
 
 ## Operational limits
 
-- WhatsApp has no live verification. Google verification and remaining gaps are
-  listed in README.md.
+- WhatsApp linking and read-only connected status were observed. Sync recovery and
+  historical coverage still need live verification; see README.md.
 - `complete` history jobs mean the mapped provider cursor ended, not that every phone
   record was archived. Unsupported, invalid, or repeated cursors stop a job.
 - Provider event persistence before ACK admission reduces loss but does not provide
@@ -405,3 +406,41 @@ the offline backup procedure above. WhatsApp credentials and pending history/eve
 are inside that database; no extra credential file is needed. The same legacy
 environment-variable names for storage key and API token work for both networks.
 `--offline` never opens either upstream connection.
+
+## Recovering WhatsApp history after the legacy inbox failure
+
+Use a fresh link with the fixed build; deleting the encrypted database is not
+required. WhatsApp offers on-demand history for known chat boundaries, but that is
+not a reliable way to recover an initial archive containing unknown chats. The
+bridge requests full history at linking; WhatsApp still controls how much it sends.
+
+1. Deploy this build to the WhatsApp instance. Keep its data directory and storage
+   key. Do not delete the database or use the pairing `adopt` operation.
+2. On the primary phone, open WhatsApp → Settings → Linked devices, select the
+   existing **whatsmeow** device, and log it out.
+3. Open the WhatsApp bridge web client, choose **Pair / Re-pair**, and start QR
+   linking. On the phone choose **Link a device** and scan the QR (or use the
+   phone-number linking option). Leave WhatsApp open with a reliable connection
+   while the initial history transfer runs.
+4. A successful link creates fresh device keys and a new credential namespace,
+   advances `session_epoch`, clears attachment descriptors and pauses old history
+   jobs. Old records remain encrypted and read-only until re-observed. The old
+   quarantine also remains in its old namespace; the new session count starts at
+   zero. An abandoned/failed pairing does not replace the saved session.
+5. Refresh the web client and any EVA snapshot caches after the epoch changes.
+   The web client reloads snapshots when it sees a new epoch. Empty legacy protocol
+   messages are hidden from message snapshots, and metadata refresh cannot revive
+   previous-epoch records. Do not replay the old event log from cursor zero into a
+   fresh client cache; resume from current snapshot cursors.
+6. Check GET `/v1/status`, `/v1/conversations` and `/v1/contacts?refresh=1`. Confirm
+   nonzero conversation timestamps and increasing chat/message/contact counts.
+   Logs include `history_received` (sync type/progress/counts), `history_expanded`,
+   `history_messages_queued`, `appstate_fetch`, `appstate_error` and
+   `appstate_waiting_keys`. Missing-key/incomplete sync retries every 30 seconds.
+   `metadata_refreshed` does not mean full history transfer is complete.
+
+Safe diagnostics are enabled by default, while upstream logs remain disabled.
+They contain only event type names, counts, sync types/progress and coarse error
+classes—no message bodies, identifiers, names, tokens or keys. Startup counts of
+stored keys, app-state versions, contacts, inbox and quarantine (including event
+kinds) help distinguish missing history from an incomplete app-state sync.

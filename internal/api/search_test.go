@@ -132,3 +132,53 @@ func TestContactSearchAndDefaultCompleteSnapshot(t *testing.T) {
 		}
 	}
 }
+
+func TestWhatsAppSnapshotsHideLegacyProtocolArtifacts(t *testing.T) {
+	b, server := fixture(t)
+	if err := b.SetNetwork("whatsapp"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"empty@lid", "real@lid", "status@broadcast"} {
+		c := model.Conversation{Schema: 1, ID: id, Protocol: "whatsapp"}
+		raw, _ := json.Marshal(c)
+		if _, err := b.Store.Apply(store.Event{Type: "conversation", EntityID: id, Data: raw}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, m := range []model.Message{
+		{Schema: 1, ID: "real@lid/visible", ConversationID: "real@lid", Text: "hello", Time: time.Unix(100, 0)},
+		{Schema: 1, ID: "real@lid/protocol", ConversationID: "real@lid", Time: time.Unix(101, 0)},
+	} {
+		raw, _ := json.Marshal(m)
+		if _, err := b.Store.Apply(store.Event{Type: "message", EntityID: m.ID, Data: raw}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := b.Store.SavePairedSession([]byte("new"), true); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("GET", server.URL+"/v1/conversations", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conversations struct{ Conversations []model.Conversation }
+	err = json.NewDecoder(resp.Body).Decode(&conversations)
+	resp.Body.Close()
+	if err != nil || len(conversations.Conversations) != 1 || conversations.Conversations[0].ID != "real@lid" || !conversations.Conversations[0].ReadOnly {
+		t.Fatal(conversations, err)
+	}
+	req, _ = http.NewRequest("GET", server.URL+"/v1/conversations/real@lid/messages", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err = server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var messages struct{ Messages []model.Message }
+	err = json.NewDecoder(resp.Body).Decode(&messages)
+	resp.Body.Close()
+	if err != nil || len(messages.Messages) != 1 || !messages.Messages[0].ReadOnly || messages.Messages[0].Text != "hello" {
+		t.Fatal(messages, err)
+	}
+}

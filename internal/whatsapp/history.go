@@ -2,6 +2,8 @@ package whatsapp
 
 import (
 	"context"
+	"encoding/json"
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
 	"time"
 
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/provider"
@@ -33,11 +35,21 @@ func (p *Provider) History(ctx context.Context, e *events.HistorySync) error {
 			return err
 		}
 	}
+	for _, name := range e.Data.GetPushnames() {
+		jid, err := types.ParseJID(name.GetID())
+		if err != nil {
+			continue
+		}
+		if _, _, err = p.Keys.PutPushName(ctx, jid, name.GetPushname()); err != nil {
+			return err
+		}
+	}
 	for _, c := range e.Data.GetConversations() {
 		if err := p.Ingest(ctx, "history-chat", historyChat{Conversation: c, OnDemand: e.Data.GetSyncType() == waHistorySync.HistorySync_ON_DEMAND}); err != nil {
 			return err
 		}
 	}
+	p.diagnostic("history_expanded", len(e.Data.GetConversations()), "")
 	return nil
 }
 
@@ -52,6 +64,9 @@ func (p *Provider) HistoryChat(ctx context.Context, h *historyChat) ([]provider.
 	chat, err := types.ParseJID(c.GetID())
 	if err != nil {
 		return nil, err
+	}
+	if !chatSupported(chat) {
+		return nil, nil
 	}
 	if c.GetPnJID() != "" && c.GetLidJID() != "" {
 		pn, e := types.ParseJID(c.GetPnJID())
@@ -120,5 +135,24 @@ func (p *Provider) HistoryChat(ctx context.Context, h *historyChat) ([]provider.
 	if err != nil {
 		return nil, err
 	}
-	return []provider.Snapshot{snap}, nil
+	var conv model.Conversation
+	if err = json.Unmarshal(snap.Event.Data, &conv); err != nil {
+		return nil, err
+	}
+	timestamp := max(c.GetLastMsgTimestamp(), c.GetConversationTimestamp())
+	updated := time.Time{}
+	if timestamp > 0 {
+		updated = time.Unix(int64(timestamp), 0).UTC()
+	}
+	if conv.Updated.IsZero() || updated.After(conv.Updated) {
+		conv.Updated = updated
+		if c.UnreadCount != nil {
+			conv.UnreadCount = c.GetUnreadCount()
+			conv.Unread = conv.UnreadCount > 0 || c.GetMarkedAsUnread()
+		}
+	}
+
+	p.diagnostic("history_messages_queued", len(pending), "")
+	snap, err = snapshot("conversation", conv.ID, conv)
+	return []provider.Snapshot{snap}, err
 }
