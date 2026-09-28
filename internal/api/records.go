@@ -95,6 +95,9 @@ func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 				return
 			}
 			c.ReadOnly = !record.Current
+			if b.Network() == "whatsapp" && (strings.HasSuffix(c.ID, "@broadcast") || strings.HasSuffix(c.ID, "@newsletter") || (c.ReadOnly && c.Updated.IsZero() && c.Preview == "")) {
+				continue
+			}
 			names, addresses := []string{c.Name}, []string{}
 			for _, p := range c.Participants {
 				names = append(names, p.Name)
@@ -137,6 +140,9 @@ func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 				return
 			}
 			m.ReadOnly = !record.Current
+			if b.Network() == "whatsapp" && !m.Deleted && m.Text == "" && len(m.Attachments) == 0 {
+				continue
+			}
 			messages = append(messages, m)
 		}
 		sort.Slice(messages, func(i, j int) bool {

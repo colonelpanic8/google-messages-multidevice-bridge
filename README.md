@@ -32,10 +32,12 @@ typing, edits/revokes, readable ephemeral/view-once content, attachment download
 and conversation/contact search with `q` and `limit`. WhatsApp uses one attachment
 per durable request; the web client splits multiple files into separate requests.
 
-**WhatsApp has not been live-verified.** Tests use fake clients and synthetic
-protocol events. Linking, actual historical coverage, delivery timing, group
-creation and media transfers still need testing with Ivan's account. This work
-never connected to WhatsApp or Google, paired an account or sent a real message.
+**WhatsApp verification:** the operator has linked a device, and read-only API
+inspection confirmed a connected session. That inspection also exposed incomplete
+history, empty protocol records and missing contacts. The fixes for message
+filtering, history metadata and app-state recovery are tested with fakes, not yet
+live-verified. No real messages were sent during this work. Historical coverage,
+delivery, group creation and media transfers still need live verification.
 History completeness, interactive polls/calls/payments and disappearing-message
 erasure from the local archive are not promised.
 

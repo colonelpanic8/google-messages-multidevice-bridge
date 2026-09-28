@@ -21,6 +21,8 @@ import (
 func unwrap(m *waE2E.Message) *waE2E.Message {
 	for m != nil {
 		switch {
+		case m.DeviceSentMessage != nil:
+			m = m.DeviceSentMessage.Message
 		case m.EphemeralMessage != nil:
 			m = m.EphemeralMessage.Message
 		case m.ViewOnceMessage != nil:
@@ -55,10 +57,7 @@ func mediaSize(m *waE2E.Message) uint64 {
 	return 0
 }
 func content(m *model.Message, body *waE2E.Message) map[string][]byte {
-	m.Text = body.GetConversation()
-	if body.ExtendedTextMessage != nil {
-		m.Text = body.ExtendedTextMessage.GetText()
-	}
+	m.Text = displayText(body)
 	mime, name := "", ""
 	switch {
 	case body.ImageMessage != nil:
@@ -105,6 +104,18 @@ func (p *Provider) learnSource(ctx context.Context, source types.MessageSource) 
 	return nil
 }
 func (p *Provider) Message(ctx context.Context, e *events.Message) ([]provider.Snapshot, error) {
+	if !chatSupported(e.Info.Chat) {
+		return nil, nil
+	}
+	body := unwrap(e.Message)
+	mutation := e.IsEdit || e.Info.Edit == types.EditAttributeMessageEdit || body.ReactionMessage != nil || (body.ProtocolMessage != nil && (body.ProtocolMessage.GetType() == waE2E.ProtocolMessage_REVOKE || body.ProtocolMessage.GetType() == waE2E.ProtocolMessage_MESSAGE_EDIT))
+	if !mutation && !displayable(body) {
+		p.diagnostic("message_ignored", 1, "")
+		return nil, nil
+	}
+	if e.SourceWebMsg != nil && e.SourceWebMsg.GetMessageStubType() != waWeb.WebMessageInfo_UNKNOWN {
+		return nil, nil
+	}
 	if err := p.learnSource(ctx, e.Info.MessageSource); err != nil {
 		return nil, err
 	}
@@ -121,13 +132,15 @@ func (p *Provider) Message(ctx context.Context, e *events.Message) ([]provider.S
 			return nil, err
 		}
 	}
-	body := unwrap(e.Message)
 	targetID := e.Info.ID
 	if pm := body.ProtocolMessage; pm != nil && (pm.GetType() == waE2E.ProtocolMessage_REVOKE || pm.GetType() == waE2E.ProtocolMessage_MESSAGE_EDIT) {
 		targetID = pm.GetKey().GetID()
 	}
 	if body.ReactionMessage != nil {
 		targetID = body.ReactionMessage.GetKey().GetID()
+	}
+	if targetID == "" {
+		return nil, nil
 	}
 	id := messageID(chat.String(), targetID)
 	m := model.Message{Schema: 1, ID: id, ConversationID: chat.String(), SenderID: sender.String(), Time: e.Info.Timestamp.UTC(), Direction: "incoming", Status: "received", Attachments: []model.Attachment{}, Reactions: []model.Reaction{}}
@@ -138,6 +151,13 @@ func (p *Provider) Message(ctx context.Context, e *events.Message) ([]provider.S
 	}
 	raw, loadErr := p.DB.Record("message", id)
 	existing := loadErr == nil
+	if existing {
+		current, err := p.DB.EntityCurrent("message", id)
+		if err != nil {
+			return nil, p.Keys.failed(err)
+		}
+		existing = current
+	}
 	if loadErr != nil && !errors.Is(loadErr, local.ErrNotFound) {
 		return nil, p.Keys.failed(loadErr)
 	}
@@ -163,6 +183,12 @@ func (p *Provider) Message(ctx context.Context, e *events.Message) ([]provider.S
 		}
 		m = old
 		private = content(&m, unwrap(body.ProtocolMessage.EditedMessage))
+	case e.IsEdit || e.Info.Edit == types.EditAttributeMessageEdit:
+		if !existing {
+			return nil, provider.ErrUnavailable
+		}
+		m = old
+		private = content(&m, body)
 	case body.ReactionMessage != nil:
 		if !existing {
 			return nil, provider.ErrUnavailable
@@ -206,6 +232,9 @@ func (p *Provider) Message(ctx context.Context, e *events.Message) ([]provider.S
 		}
 		private = content(&m, body)
 	}
+	if !mutation && m.Text == "" && len(m.Attachments) == 0 {
+		return nil, nil
+	}
 	if e.SourceWebMsg != nil && m.Direction == "outgoing" {
 		switch e.SourceWebMsg.GetStatus() {
 		case waWeb.WebMessageInfo_DELIVERY_ACK:
@@ -223,6 +252,7 @@ func (p *Provider) Message(ctx context.Context, e *events.Message) ([]provider.S
 		return nil, err
 	}
 	snap.Private = private
+	snap.Event.Historical = e.SourceWebMsg != nil
 	return []provider.Snapshot{conv, snap}, nil
 }
 func statusRank(s string) int {
@@ -248,6 +278,9 @@ func ReceiptStatus(t types.ReceiptType) string {
 	return ""
 }
 func (p *Provider) Receipt(ctx context.Context, e *events.Receipt) ([]provider.Snapshot, error) {
+	if !chatSupported(e.Chat) {
+		return nil, nil
+	}
 	status := ReceiptStatus(e.Type)
 	if status == "" {
 		return nil, nil
@@ -268,6 +301,13 @@ func (p *Provider) Receipt(ctx context.Context, e *events.Receipt) ([]provider.S
 		}
 		if err != nil {
 			return nil, p.Keys.failed(err)
+		}
+		current, err := p.DB.EntityCurrent("message", id)
+		if err != nil {
+			return nil, p.Keys.failed(err)
+		}
+		if !current {
+			continue
 		}
 		var m model.Message
 		if err = json.Unmarshal(raw, &m); err != nil {
@@ -349,6 +389,11 @@ func (p *Provider) Drain(ctx context.Context, persist func(provider.Snapshot) er
 			if errors.As(err, &storage) || ctx.Err() != nil {
 				return err
 			}
+			class := ErrorClass(err)
+			if decodeErr != nil {
+				class = "decode"
+			}
+			p.diagnostic("inbox_quarantine", 1, class)
 			if err = p.quarantine(ctx, id, rows[id]); err != nil {
 				return err
 			}

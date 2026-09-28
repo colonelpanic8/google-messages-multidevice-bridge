@@ -19,11 +19,12 @@ import (
 )
 
 type Event struct {
-	ID       uint64          `json:"id"`
-	Type     string          `json:"type"`
-	EntityID string          `json:"entity_id,omitempty"`
-	Time     time.Time       `json:"time"`
-	Data     json.RawMessage `json:"data"`
+	Historical bool            `json:"-"`
+	ID         uint64          `json:"id"`
+	Type       string          `json:"type"`
+	EntityID   string          `json:"entity_id,omitempty"`
+	Time       time.Time       `json:"time"`
+	Data       json.RawMessage `json:"data"`
 }
 
 type Store struct {
@@ -183,6 +184,7 @@ func (s *Store) Apply(event Event, private map[string][]byte, watermark *uint64)
 				}
 			}
 			var err error
+			fresh := tx.Bucket([]byte("latest")).Get([]byte(key)) == nil
 			changed, err = s.appendTx(tx, applied)
 			if err != nil {
 				return err
@@ -200,7 +202,7 @@ func (s *Store) Apply(event Event, private map[string][]byte, watermark *uint64)
 				}
 			}
 			if event.Type == "message" {
-				refreshed, err := s.refreshConversationTx(tx, event.Data, changed)
+				refreshed, err := s.refreshConversationTx(tx, event.Data, fresh && !event.Historical)
 				if err != nil {
 					return err
 				}

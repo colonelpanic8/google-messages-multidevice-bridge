@@ -295,6 +295,14 @@ func (s *Store) SavePairedSession(data []byte, newPhone bool) error {
 		if !newPhone {
 			return nil
 		}
+		if tx.Bucket([]byte(latestMessageBucket)) != nil {
+			if err := tx.DeleteBucket([]byte(latestMessageBucket)); err != nil {
+				return err
+			}
+			if _, err := tx.CreateBucket([]byte(latestMessageBucket)); err != nil {
+				return err
+			}
+		}
 		for _, kind := range []string{"conversation", "message"} {
 			var count uint64
 			prefix := []byte(kind + ":")

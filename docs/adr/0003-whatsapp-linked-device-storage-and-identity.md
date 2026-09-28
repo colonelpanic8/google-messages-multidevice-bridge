@@ -118,3 +118,30 @@ quarantining the affected row. Decode errors do not report a storage failure.
 Offline regression tests exercise template and interactive oneofs, nested history,
 unknown protobuf fields, legacy quarantine with continued draining, and device
 identity migration. This recovery has not been verified against a live account.
+
+## Sync recovery and display filtering
+
+Allow only known user content into the normalized message store. Control and
+system events still reach whatsmeow's own handlers; the bridge drops only their
+public message projection. History timestamps and unread counts complement the
+store's newest-message previews. Historical imports cannot increment unread
+counts. Templates/interactive content receive readable summaries, while
+poll/control updates and call logs do not create blank messages.
+
+Fetch all app-state collections when keys are available. Persist an incomplete
+marker before fetching; after a crash or failure, restart that collection from a
+full snapshot instead of treating a partial version as complete. Retry missing
+keys every 30 seconds. Fetch completed collections incrementally once per
+connection. Contacts are read locally, including push/business-name-only entries.
+Diagnostics contain type/count/progress/error-class metadata only.
+
+Every WhatsApp re-pair starts a fresh credential namespace and entity epoch,
+including the same account. Clear the derived newest-message index at an epoch
+boundary. Do not refresh old-epoch conversations or suppress re-observation of
+old-epoch messages as duplicates. Empty legacy protocol records remain retained
+but are hidden from API snapshots. A destructive network reset is unnecessary.
+
+Offline tests cover protocol filtering, historical and live conversation metadata,
+unread counts, contact variants, missing-key retries, incomplete reconnects,
+independent device keys, epoch isolation and content-free logging. Read-only
+production GETs confirmed the previous bugs, not the behavior of this fix.

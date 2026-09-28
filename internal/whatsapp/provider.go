@@ -34,10 +34,11 @@ type Client interface {
 }
 
 type Provider struct {
-	Client Client
-	Keys   *Credentials
-	Device *wa.Device
-	DB     *local.Store
+	Client     Client
+	Keys       *Credentials
+	Device     *wa.Device
+	DB         *local.Store
+	Diagnostic func(string, int, string)
 }
 
 var _ provider.Provider = (*Provider)(nil)
@@ -135,15 +136,22 @@ func (p *Provider) Conversation(ctx context.Context, j types.JID, name string) (
 	if err != nil {
 		return provider.Snapshot{}, err
 	}
+	if !chatSupported(j) {
+		return provider.Snapshot{}, provider.ErrUnavailable
+	}
+	current, err := p.DB.EntityCurrent("conversation", j.String())
+	if err != nil {
+		return provider.Snapshot{}, p.Keys.failed(err)
+	}
 	c := model.Conversation{Schema: 1, ID: j.String(), Name: name, Protocol: "whatsapp", State: "active", Participants: []model.Participant{}}
-	if raw, e := p.DB.Record("conversation", c.ID); e == nil {
+	if raw, e := p.DB.Record("conversation", c.ID); e == nil && current {
 		if err = json.Unmarshal(raw, &c); err != nil {
 			return provider.Snapshot{}, err
 		}
 		if name != "" {
 			c.Name = name
 		}
-	} else if !errors.Is(e, local.ErrNotFound) {
+	} else if e != nil && !errors.Is(e, local.ErrNotFound) {
 		return provider.Snapshot{}, p.Keys.failed(e)
 	}
 	settings, err := p.Keys.GetChatSettings(ctx, j)
@@ -195,13 +203,29 @@ func (p *Provider) Contacts(ctx context.Context) ([]model.Contact, error) {
 		return nil, err
 	}
 	out := []model.Contact{}
+	localProvider := *p
+	localProvider.Client = nil
 	seen := map[string]bool{}
 	for j, c := range contacts {
-		if c.FullName == "" && c.FirstName == "" {
+		if !chatSupported(j) || (c.FullName == "" && c.FirstName == "" && c.PushName == "" && c.BusinessName == "") {
 			continue
 		}
-		person, e := p.participant(ctx, j)
-		if errors.Is(e, provider.ErrUnavailable) {
+		person, e := localProvider.participant(ctx, j)
+		if errors.Is(e, provider.ErrUnavailable) && normalizeJID(j).Server == types.DefaultUserServer {
+			// Address-book entries remain usable before their LID mapping arrives.
+			name := c.FullName
+			if name == "" {
+				name = c.FirstName
+			}
+			if name == "" {
+				name = c.PushName
+			}
+			if name == "" {
+				name = c.BusinessName
+			}
+			person = model.Participant{ID: j.ToNonAD().String(), Name: name, Address: "+" + j.User}
+			e = nil
+		} else if errors.Is(e, provider.ErrUnavailable) {
 			continue
 		}
 		if e != nil {
@@ -235,6 +259,13 @@ func (p *Provider) Conversations(ctx context.Context) ([]provider.Snapshot, erro
 		j, e := types.ParseJID(c.ID)
 		if e != nil {
 			return nil, e
+		}
+		current, e := p.DB.EntityCurrent("conversation", c.ID)
+		if e != nil {
+			return nil, p.Keys.failed(e)
+		}
+		if !current || !chatSupported(j) {
+			continue
 		}
 		s, e := p.Conversation(ctx, j, c.Name)
 		if e != nil {
@@ -474,4 +505,10 @@ func messageRemoteID(id string) string                         { _, remote, _ :=
 func attachmentID(chat, id string) string {
 	h := sha256.Sum256([]byte("whatsapp:" + chat + ":" + id))
 	return hex.EncodeToString(h[:])
+}
+
+func (p *Provider) diagnostic(event string, count int, class string) {
+	if p.Diagnostic != nil {
+		p.Diagnostic(event, count, class)
+	}
 }

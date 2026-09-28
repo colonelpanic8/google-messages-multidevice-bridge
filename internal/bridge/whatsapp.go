@@ -7,6 +7,7 @@ import (
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
 	"github.com/rs/zerolog"
+	stdlog "log"
 	"sync"
 	"time"
 
@@ -24,6 +25,7 @@ type whatsappConnection struct {
 	provider *waProvider.Provider
 	ctx      context.Context
 	paired   chan error
+	appState *waProvider.AppStateSync
 }
 type whatsappSession struct {
 	Namespace string `json:"whatsapp_namespace"`
@@ -72,7 +74,7 @@ func (b *Bridge) BeginWhatsAppPairing(phone string, newPhone bool) (PairingState
 		return PairingState{}, ErrPairing
 	}
 	now := time.Now().UTC()
-	state := PairingState{generation: b.pairingState.generation + 1, newPhone: newPhone, State: "connecting", Expires: now.Add(3 * time.Minute), Detail: "Connecting to WhatsApp"}
+	state := PairingState{generation: b.pairingState.generation + 1, newPhone: true, State: "connecting", Expires: now.Add(3 * time.Minute), Detail: "Connecting to WhatsApp"}
 	if err := b.Store.BeginPairingAttempt(now, state.Expires); err != nil {
 		b.mu.Unlock()
 		b.storageFailure(err)
@@ -154,7 +156,14 @@ func (w *whatsappConnection) Run(b *Bridge, ctx context.Context, offline bool, c
 	client.DisableLoginAutoReconnect = true
 	client.UseRetryMessageStore = true
 	w.client = client
-	w.provider = &waProvider.Provider{Client: client, Keys: keys, Device: device, DB: b.Store}
+	w.provider = &waProvider.Provider{Client: client, Keys: keys, Device: device, DB: b.Store, Diagnostic: func(event string, count int, class string) {
+		stdlog.Printf("whatsapp event=%s count=%d error_class=%s", event, count, class)
+	}}
+	w.appState = &waProvider.AppStateSync{Provider: w.provider, Client: client}
+	if err := w.provider.Diagnose(providerCtx); err != nil {
+		cancel()
+		return err
+	}
 	updateQuarantined := func() error {
 		count, err := w.provider.Quarantined(providerCtx)
 		if err != nil {
@@ -240,22 +249,6 @@ func (w *whatsappConnection) Run(b *Bridge, ctx context.Context, offline bool, c
 				if err != nil {
 					return err
 				}
-				oldRaw, loadErr := b.Store.Session()
-				if loadErr != nil {
-					return loadErr
-				}
-				var oldSession whatsappSession
-				if len(oldRaw) > 0 && json.Unmarshal(oldRaw, &oldSession) == nil && oldSession.Namespace != "" {
-					oldDevice, loadErr := waProvider.NewCredentials(b.Store, oldSession.Namespace).Device(providerCtx)
-					if loadErr != nil {
-						return loadErr
-					}
-					if oldDevice.GetJID().ToNonAD() != device.GetJID().ToNonAD() {
-						b.mu.Lock()
-						b.pairingState.newPhone = true
-						b.mu.Unlock()
-					}
-				}
 				raw, _ := json.Marshal(whatsappSession{namespace})
 				return b.commitPairedSession(providerCtx, generation, raw)
 			case err := <-b.fatal:
@@ -266,7 +259,27 @@ func (w *whatsappConnection) Run(b *Bridge, ctx context.Context, offline bool, c
 		}
 	}
 	b.setProvider(w.provider)
-	workers.Add(4)
+	workers.Add(5)
+	go func() {
+		defer workers.Done()
+		timer := time.NewTimer(0)
+		defer timer.Stop()
+		for {
+			select {
+			case <-providerCtx.Done():
+				return
+			case <-timer.C:
+				syncCtx, done := context.WithTimeout(providerCtx, 2*time.Minute)
+				err := w.appState.Sync(syncCtx)
+				done()
+				if err == nil {
+					_, _ = b.Contacts(providerCtx, true)
+					b.RequestSync()
+				}
+				timer.Reset(30 * time.Second)
+			}
+		}
+	}()
 	go func() { defer workers.Done(); b.syncLoop(providerCtx) }()
 	go func() { defer workers.Done(); b.sendLoop(providerCtx) }()
 	go func() { defer workers.Done(); b.historyLoop(providerCtx) }()
@@ -327,6 +340,7 @@ func (w *whatsappConnection) Handle(b *Bridge, event any) error {
 	if b.stopped {
 		return context.Canceled
 	}
+	stdlog.Printf("whatsapp event=%T", event)
 	if state, reason := WhatsAppFailure(event); state != "" {
 		b.setStatusReason(state, reason, "WhatsApp connection requires attention")
 		b.fail(errors.New("WhatsApp connection stopped"))
@@ -351,11 +365,29 @@ func (w *whatsappConnection) Handle(b *Bridge, event any) error {
 		default:
 		}
 	case *events.Message:
+		if pm := e.Message.GetProtocolMessage(); pm != nil {
+			stdlog.Printf("whatsapp event=protocol_message sync_type=%d", pm.GetType())
+		}
 		return w.provider.Ingest(w.ctx, "message", e)
 	case *events.Receipt:
 		return w.provider.Ingest(w.ctx, "receipt", e)
 	case *events.HistorySync:
+		count := 0
+		for _, c := range e.Data.GetConversations() {
+			count += len(c.GetMessages())
+		}
+		stdlog.Printf("whatsapp event=history_received sync_type=%d progress=%d conversations=%d messages=%d", e.Data.GetSyncType(), e.Data.GetProgress(), len(e.Data.GetConversations()), count)
 		return w.provider.Ingest(w.ctx, "history", e)
+	case *events.AppStateSyncComplete:
+		stdlog.Printf("whatsapp event=appstate_complete count=1")
+		b.RequestSync()
+	case *events.AppStateSyncError:
+		if err := w.appState.Retry(w.ctx, e.Name); err != nil {
+			return err
+		}
+		stdlog.Printf("whatsapp event=appstate_error error_class=%s", waProvider.ErrorClass(e.Error))
+	case *events.Contact, *events.PushName, *events.BusinessName:
+		b.RequestSync()
 	case *events.ChatPresence:
 		chat, err := w.provider.Canonical(w.ctx, e.Chat)
 		if err != nil {
