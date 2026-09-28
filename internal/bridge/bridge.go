@@ -31,6 +31,8 @@ type Status struct {
 }
 
 type Bridge struct {
+	whatsappQuarantined uint64
+
 	network          string
 	mutationMu       sync.Mutex
 	offlineOnly      bool
@@ -79,6 +81,12 @@ func (b *Bridge) Status() Status {
 	b.mu.RLock()
 	status := b.status
 	status.Network = b.Network()
+	if b.whatsappQuarantined > 0 {
+		if status.Detail != "" {
+			status.Detail += "; "
+		}
+		status.Detail += fmt.Sprintf("%d WhatsApp pending events quarantined", b.whatsappQuarantined)
+	}
 	b.mu.RUnlock()
 	if summary, err := b.Store.SessionSummary(); err == nil {
 		status.SessionEpoch = summary.Epoch

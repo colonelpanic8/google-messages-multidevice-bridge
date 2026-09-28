@@ -155,13 +155,27 @@ func (w *whatsappConnection) Run(b *Bridge, ctx context.Context, offline bool, c
 	client.UseRetryMessageStore = true
 	w.client = client
 	w.provider = &waProvider.Provider{Client: client, Keys: keys, Device: device, DB: b.Store}
+	updateQuarantined := func() error {
+		count, err := w.provider.Quarantined(providerCtx)
+		if err != nil {
+			return err
+		}
+		b.mu.Lock()
+		b.whatsappQuarantined = count
+		b.mu.Unlock()
+		return nil
+	}
+	if err := updateQuarantined(); err != nil {
+		cancel()
+		return err
+	}
 	b.mu.Lock()
 	b.providerCtx = providerCtx
 	b.mu.Unlock()
 	handler := client.AddEventHandlerWithSuccessStatus(func(e any) bool {
 		if err := w.Handle(b, e); err != nil {
 			if !errors.Is(err, context.Canceled) {
-				b.storageFailure(err)
+				b.fail(errors.New("WhatsApp event ingestion failed"))
 			}
 			return false
 		}
@@ -266,7 +280,11 @@ func (w *whatsappConnection) Run(b *Bridge, ctx context.Context, offline bool, c
 				return
 			case <-ticker.C:
 				if err := w.provider.Drain(providerCtx, b.persist); err != nil && !errors.Is(err, context.Canceled) {
-					b.storageFailure(err)
+					b.fail(errors.New("WhatsApp inbox processing failed"))
+					return
+				}
+				if err := updateQuarantined(); err != nil {
+					b.fail(errors.New("WhatsApp quarantine status unavailable"))
 					return
 				}
 			}

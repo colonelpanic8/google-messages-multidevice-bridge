@@ -143,6 +143,8 @@ func (p *Provider) Conversation(ctx context.Context, j types.JID, name string) (
 		if name != "" {
 			c.Name = name
 		}
+	} else if !errors.Is(e, local.ErrNotFound) {
+		return provider.Snapshot{}, p.Keys.failed(e)
 	}
 	settings, err := p.Keys.GetChatSettings(ctx, j)
 	if err != nil {

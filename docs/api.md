@@ -404,6 +404,11 @@ ID in `POST /v1/messages`. A rejected or ambiguous creation has no guaranteed ID
 
 ## WhatsApp network (schema 1)
 
+Status `detail` includes `N WhatsApp pending events quarantined` when malformed
+pending events have been isolated. Their original bytes remain encrypted for
+manual recovery, while other events continue processing. The count survives
+restarts; no new route or schema version is required.
+
 Known pre-write WhatsApp failures (not connected, not logged in, invalid destination)
 produce `rejected`; timeouts, post-write disconnection and unknown failures remain
 `ambiguous`. Recipient-requested retry receipts may re-encrypt the same message ID

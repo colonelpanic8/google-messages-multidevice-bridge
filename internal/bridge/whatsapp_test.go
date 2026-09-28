@@ -92,3 +92,16 @@ func TestWhatsAppConnectionFailureReasons(t *testing.T) {
 		}
 	}
 }
+
+func TestWhatsAppQuarantineStatusDetail(t *testing.T) {
+	b := testBridge(t)
+	b.whatsappQuarantined = 2
+	b.setStatus("connected", "ready")
+	if got := b.Status(); got.State != "connected" || got.Detail != "ready; 2 WhatsApp pending events quarantined" {
+		t.Fatal(got)
+	}
+	b.setStatus("connected", "")
+	if got := b.Status(); got.Detail != "2 WhatsApp pending events quarantined" {
+		t.Fatal(got)
+	}
+}

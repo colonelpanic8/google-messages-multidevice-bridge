@@ -11,10 +11,12 @@ import (
 	"strings"
 
 	local "github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
+	"go.mau.fi/whatsmeow/proto/waAdv"
 	wa "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/util/keys"
 	waLog "go.mau.fi/whatsmeow/util/log"
+	"google.golang.org/protobuf/proto"
 )
 
 // Credentials implements whatsmeow's stores in the bridge's encrypted database.
@@ -32,11 +34,19 @@ func NewCredentials(db *local.Store, namespace string) *Credentials {
 }
 func NewNamespace() string                        { var id [16]byte; rand.Read(id[:]); return hex.EncodeToString(id[:]) }
 func (s *Credentials) key(kind, id string) string { return "wa:" + s.Namespace + ":" + kind + ":" + id }
+
+type storageError struct{ error }
+
+func (e *storageError) Unwrap() error { return e.error }
+
 func (s *Credentials) failed(err error) error {
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && s.Failure != nil {
 		s.Failure(err)
 	}
-	return err
+	if err != nil {
+		return &storageError{err}
+	}
+	return nil
 }
 func (s *Credentials) txn(ctx context.Context, fn func(context.Context) error) error {
 	var callbackErr error
@@ -58,7 +68,7 @@ func (s *Credentials) get(ctx context.Context, kind, id string, value any) (bool
 	if err != nil || data == nil {
 		return false, s.failed(err)
 	}
-	return true, s.failed(json.Unmarshal(data, value))
+	return true, json.Unmarshal(data, value)
 }
 func (s *Credentials) del(ctx context.Context, kind, id string) error {
 	return s.failed(s.DB.NetworkPut(ctx, s.key(kind, id), nil))
@@ -96,7 +106,9 @@ type deviceRecord struct {
 	Secret                          []byte
 	ID                              *types.JID
 	LID                             types.JID
-	Account                         json.RawMessage
+	Account                         json.RawMessage `json:",omitempty"`
+	AccountProto                    []byte
+	Version                         int `json:",omitempty"`
 	Platform, Business, Push, Nonce string
 	Migration                       int64
 }
@@ -123,7 +135,16 @@ func (s *Credentials) Device(ctx context.Context) (*wa.Device, error) {
 	d.NoiseKey, d.IdentityKey, d.SignedPreKey, d.RegistrationID, d.AdvSecretKey = r.Noise, r.Identity, r.Signed, r.Registration, r.Secret
 	d.ID, d.LID, d.Platform, d.BusinessName, d.PushName = r.ID, r.LID, r.Platform, r.Business, r.Push
 	d.CompanionMetaNonce, d.LIDMigrationTimestamp, d.Initialized = r.Nonce, r.Migration, true
-	if len(r.Account) > 0 {
+	if r.Version == 1 {
+		if r.AccountProto != nil {
+			d.Account = &waAdv.ADVSignedDeviceIdentity{}
+			if err = proto.Unmarshal(r.AccountProto, d.Account); err != nil {
+				return nil, err
+			}
+		}
+	} else if r.Version != 0 {
+		return nil, errors.New("unsupported device record version")
+	} else if len(r.Account) > 0 {
 		if err = json.Unmarshal(r.Account, &d.Account); err != nil {
 			return nil, err
 		}
@@ -134,12 +155,12 @@ func (s *Credentials) Device(ctx context.Context) (*wa.Device, error) {
 	return d, nil
 }
 func (s *Credentials) PutDevice(ctx context.Context, d *wa.Device) error {
-	account, err := json.Marshal(d.Account)
+	account, err := proto.Marshal(d.Account)
 	if err != nil {
 		return err
 	}
 	d.Initialized = true
-	return s.put(ctx, "device", "current", deviceRecord{d.NoiseKey, d.IdentityKey, d.SignedPreKey, d.RegistrationID, d.AdvSecretKey, d.ID, d.LID, account, d.Platform, d.BusinessName, d.PushName, d.CompanionMetaNonce, d.LIDMigrationTimestamp})
+	return s.put(ctx, "device", "current", deviceRecord{Noise: d.NoiseKey, Identity: d.IdentityKey, Signed: d.SignedPreKey, Registration: d.RegistrationID, Secret: d.AdvSecretKey, ID: d.ID, LID: d.LID, AccountProto: account, Version: 1, Platform: d.Platform, Business: d.BusinessName, Push: d.PushName, Nonce: d.CompanionMetaNonce, Migration: d.LIDMigrationTimestamp})
 }
 func (s *Credentials) DeleteDevice(ctx context.Context, d *wa.Device) error {
 	return s.del(ctx, "device", "current")
