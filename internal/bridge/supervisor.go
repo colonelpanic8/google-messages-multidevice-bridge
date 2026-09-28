@@ -17,7 +17,7 @@ func (b *Bridge) RequestReconnect() {
 }
 
 // ServeConnection retains the local service while transient provider failures
-// reconnect. Authentication failures wait for an explicit restart after pairing.
+// reconnect. Authentication failures wait for pairing or configured WhatsApp recovery.
 func (b *Bridge) ServeConnection(ctx context.Context, offline bool) error {
 	return b.supervise(ctx, offline, func(ctx context.Context) error { return b.Run(ctx, offline, nil, nil) })
 }
@@ -68,10 +68,8 @@ func (b *Bridge) supervise(ctx context.Context, offline bool, run func(context.C
 			return nil
 		}
 		if b.Status().State == "authentication_required" || b.Status().Reason == "stream_replaced" || b.Status().Reason == "temporary_ban" || b.Status().Reason == "client_outdated" {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-b.reconnectWake:
+			if err := b.waitForAuthentication(ctx); err != nil {
+				return err
 			}
 		} else {
 			if time.Since(started) > time.Minute {

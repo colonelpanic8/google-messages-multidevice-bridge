@@ -99,6 +99,7 @@ func (b *Bridge) setStatus(state, detail string) {
 	b.setStatusReason(state, "", detail)
 }
 func (b *Bridge) setStatusReason(state, reason, detail string) {
+	defer b.Hub.Notify()
 	b.mu.Lock()
 	b.status.State, b.status.Reason, b.status.Detail, b.status.Updated = state, reason, detail, time.Now().UTC()
 	if state != "connected" && state != "degraded" {

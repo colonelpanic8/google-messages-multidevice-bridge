@@ -33,6 +33,8 @@ func (b *Bridge) WatchForPush(ctx context.Context, notifier PushNotifier) error 
 	defer unsubscribe()
 	seen := map[string]bool{}
 	var order []string
+	var recoveryNotice string
+	b.Hub.Notify()
 	for {
 		select {
 		case <-ctx.Done():
@@ -40,6 +42,14 @@ func (b *Bridge) WatchForPush(ctx context.Context, notifier PushNotifier) error 
 		case <-sub.Done:
 			return nil
 		case <-sub.Wake:
+		}
+
+		if key, body := b.pairingPush(); key != "" && key != recoveryNotice {
+			send, cancel := context.WithTimeout(ctx, 30*time.Second)
+			if err := notifier.Send(send, "WhatsApp linking required", body, "whatsapp-pairing", ""); err == nil {
+				recoveryNotice = key
+			}
+			cancel()
 		}
 		for {
 			events, err := b.Store.Events(cursor, 100)
@@ -106,4 +116,21 @@ func (b *Bridge) describe(message model.Message) (string, string) {
 		body = "Sent an attachment"
 	}
 	return title, body
+}
+
+func (b *Bridge) pairingPush() (string, string) {
+	if b.Network() != "whatsapp" {
+		return "", ""
+	}
+	state := b.PairingStatus()
+	if state.Recovery == nil || !state.Recovery.Enabled || state.Recovery.Paused {
+		return "", ""
+	}
+	if state.Automatic && state.State == "enter_pairing_code" {
+		return state.Expires.String(), "Open the bridge for your linking code, then approve Link a device in WhatsApp."
+	}
+	if !activePair(state.State) && recoveryEligible(b.Status()) && state.Recovery.Attempts >= recoveryAttempts {
+		return "exhausted:" + state.Recovery.NextAttempt.String(), "Automatic linking attempts ended. Open the bridge to resume when your phone is ready."
+	}
+	return "", ""
 }

@@ -89,6 +89,8 @@ func TestWhatsAppConnectionFailureReasons(t *testing.T) {
 	}{
 		{&events.LoggedOut{}, "authentication_required", "session_expired"},
 		{&events.LoggedOut{Reason: events.ConnectFailureUnknownLogout}, "authentication_required", "account_banned"},
+		{&events.ConnectFailure{Reason: events.ConnectFailureUnknownLogout}, "authentication_required", "account_banned"},
+		{&events.ConnectFailure{Reason: events.ConnectFailureClientOutdated}, "connection_failed", "client_outdated"},
 		{&events.StreamReplaced{}, "connection_failed", "stream_replaced"},
 		{&events.TemporaryBan{}, "connection_failed", "temporary_ban"},
 		{&events.ConnectFailure{Reason: events.ConnectFailureServiceUnavailable}, "connection_failed", "provider_failure"},

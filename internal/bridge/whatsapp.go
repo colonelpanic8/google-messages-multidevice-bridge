@@ -59,6 +59,11 @@ func (b *Bridge) BeginWhatsAppPairing(phone string, newPhone bool) (PairingState
 	}
 	b.mutationMu.Lock()
 	defer b.mutationMu.Unlock()
+	return b.beginWhatsAppPairing(phone, false)
+}
+
+// Caller holds mutationMu.
+func (b *Bridge) beginWhatsAppPairing(phone string, automatic bool) (PairingState, error) {
 	b.mu.Lock()
 	if b.offlineOnly {
 		b.mu.Unlock()
@@ -74,7 +79,7 @@ func (b *Bridge) BeginWhatsAppPairing(phone string, newPhone bool) (PairingState
 		return PairingState{}, ErrPairing
 	}
 	now := time.Now().UTC()
-	state := PairingState{generation: b.pairingState.generation + 1, newPhone: true, State: "connecting", Expires: now.Add(3 * time.Minute), Detail: "Connecting to WhatsApp"}
+	state := PairingState{generation: b.pairingState.generation + 1, newPhone: true, State: "connecting", Automatic: automatic, Expires: now.Add(whatsappPairingLifetime), Detail: "Connecting to WhatsApp"}
 	if err := b.Store.BeginPairingAttempt(now, state.Expires); err != nil {
 		b.mu.Unlock()
 		b.storageFailure(err)
@@ -83,11 +88,13 @@ func (b *Bridge) BeginWhatsAppPairing(phone string, newPhone bool) (PairingState
 	b.pairingState = state
 	b.pairCookies = map[string]string{"phone": phone}
 	b.mu.Unlock()
+	b.Hub.Notify()
 	b.RequestReconnect()
 	wake(b.pairWake)
 	return state, nil
 }
 func (b *Bridge) whatsappCode(generation uint64, kind, code string) {
+	defer b.Hub.Notify()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.pairingState.generation != generation || !activePair(b.pairingState.State) {
@@ -324,6 +331,12 @@ func WhatsAppFailure(event any) (state, reason string) {
 	case *events.ClientOutdated:
 		return "connection_failed", "client_outdated"
 	case *events.ConnectFailure:
+		if e.Reason == events.ConnectFailureUnknownLogout {
+			return "authentication_required", "account_banned"
+		}
+		if e.Reason == events.ConnectFailureClientOutdated {
+			return "connection_failed", "client_outdated"
+		}
 		if e.Reason.IsLoggedOut() {
 			return "authentication_required", "session_expired"
 		}

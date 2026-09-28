@@ -312,7 +312,8 @@ See [deployment](docs/deployment.md) for the snippets.
   not cross the start of a re-pair.
 - The supervisor retries transient connection failures with bounded exponential
   backoff. Authentication failure is reported as `authentication_required` with a
-  machine-readable reason and waits for explicit restart or re-pair. Stored history
+  machine-readable reason and waits for explicit restart or re-pair unless WhatsApp
+  automatic pairing recovery is enabled. Stored history
   and the HTTP service remain available unless storage itself fails.
 - Patched libgm joins client-owned poll, ACK, ping, recovery, and post-connect workers
   on disconnect. Foreground pairing and request/media calls remain caller-owned and
@@ -351,3 +352,11 @@ license notices with distributed builds.
 The application icon is derived from the Numix icon theme (GPL-3.0-only,
 https://numixproject.github.io). It is redistributed here under the GPL-3.0, which
 AGPL-3.0-or-later permits combining with.
+
+WhatsApp can opt into automatic phone-code pairing after logout/session expiry
+from **Pair / Re-pair**. Recovery is bounded to three attempts, survives process
+restart, and pauses on cancellation; phone approval remains manual. The saved
+phone number is encrypted with the database. Web Push can announce a ready code;
+EVA can consume the authenticated pairing API. See [recovery setup](docs/deployment.md#opt-in-whatsapp-pairing-recovery)
+and the [API contract](docs/api.md#automatic-whatsapp-pairing-recovery). This
+controller is fake-tested, not live-verified.

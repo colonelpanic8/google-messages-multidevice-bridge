@@ -282,6 +282,13 @@ func (s *Store) AdoptStoredRecords() (int, error) {
 // records stay read-only until the replacement phone observes them.
 func (s *Store) SavePairedSession(data []byte, newPhone bool) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
+		if tx.Bucket([]byte("meta")).Get([]byte("whatsapp-pairing-recovery")) != nil {
+			if err := s.updatePairingRecovery(tx, func(state *PairingRecovery) {
+				state.Attempts, state.Paused, state.NextAttempt = 0, false, time.Time{}
+			}); err != nil {
+				return err
+			}
+		}
 		meta := tx.Bucket([]byte("meta"))
 		if err := meta.Put([]byte("session"), s.encrypt(data, "session")); err != nil {
 			return err
