@@ -571,6 +571,18 @@
           hidden
         />
         <p id="wa-code"></p>
+        <p class="hint">
+          Automatic recovery requests a new linking code when this session
+          expires. You still approve linking on your phone. Up to three
+          attempts; starting an attempt cancels queued sends.
+        </p>
+        <button id="wa-recovery-enable" type="button">
+          Enable automatic recovery for this number
+        </button>
+        <button id="wa-recovery-disable" type="button" hidden>
+          Disable automatic recovery
+        </button>
+        <p id="wa-recovery-status" class="hint"></p>
       </section>
       <details id="pairing-browser-setup">
         <summary>Use browser sign-in</summary>

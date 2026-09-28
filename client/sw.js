@@ -73,7 +73,10 @@ self.addEventListener("push", (event) => {
       tag: data.tag || undefined,
       icon: "/icons/icon-192.png",
       badge: "/icons/icon-192.png",
-      data: { conversation: data.conversation || "" },
+      data: {
+        conversation: data.conversation || "",
+        pairing: data.tag === "whatsapp-pairing",
+      },
     }),
   );
 });
@@ -81,19 +84,25 @@ self.addEventListener("push", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const conversation = event.notification.data?.conversation || "";
+  const pairing = event.notification.data?.pairing;
   event.waitUntil(
     self.clients
       .matchAll({ type: "window", includeUncontrolled: true })
       .then((clients) => {
         for (const client of clients) {
           if (new URL(client.url).origin !== self.location.origin) continue;
-          client.postMessage({ type: "open-conversation", conversation });
+          client.postMessage({
+            type: pairing ? "open-pairing" : "open-conversation",
+            conversation,
+          });
           return client.focus();
         }
         return self.clients.openWindow(
-          conversation
-            ? `/?conversation=${encodeURIComponent(conversation)}`
-            : "/",
+          pairing
+            ? "/?pairing=1"
+            : conversation
+              ? `/?conversation=${encodeURIComponent(conversation)}`
+              : "/",
         );
       }),
   );

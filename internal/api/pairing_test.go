@@ -289,3 +289,53 @@ func TestPairingAgentCanOnlyReadPendingTicket(t *testing.T) {
 		t.Fatalf("agent enrollment missing from state: %s %v", body, err)
 	}
 }
+
+func TestWhatsAppRecoveryConfiguration(t *testing.T) {
+	b, server := fixture(t)
+	route := "/v1/pairing/recovery"
+	req, err := http.NewRequest("OPTIONS", server.URL+route, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "tauri://localhost")
+	req.Header.Set("Access-Control-Request-Method", "PUT")
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 204 || !strings.Contains(resp.Header.Get("Access-Control-Allow-Methods"), "PUT") {
+		t.Fatal("desktop recovery preflight rejected")
+	}
+
+	status, body := pairingRequest(t, server, "PUT", route, "", "application/json", strings.NewReader(`{"enabled":true,"phone_number":"+15550000001"}`))
+	requireStatus(t, status, body, 401)
+	status, body = pairingRequest(t, server, "PUT", route, "test-token", "application/json", strings.NewReader(`{"enabled":true,"phone_number":"+15550000001"}`))
+	requireStatus(t, status, body, 400)
+	if err := b.SetNetwork("whatsapp"); err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []string{`{"enabled":true}`, `{"enabled":true,"phone_number":"555"}`, `{"enabled":true,"phone_number":"+15550000001","unexpected":true}`} {
+		status, body = pairingRequest(t, server, "PUT", route, "test-token", "application/json", strings.NewReader(input))
+		requireStatus(t, status, body, 400)
+	}
+	status, body = pairingRequest(t, server, "PUT", route, "test-token", "application/json", strings.NewReader(`{"enabled":true,"phone_number":"+15550000001"}`))
+	requireStatus(t, status, body, 200)
+	var state bridge.PairingState
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Recovery == nil || !state.Recovery.Enabled || state.Recovery.Attempts != 0 || state.Recovery.PhoneNumber != "+15550000001" {
+		t.Fatal(state)
+	}
+	status, body = pairingRequest(t, server, "POST", "/v1/pairing/cancel", "test-token", "", nil)
+	requireStatus(t, status, body, 200)
+	if !b.PairingStatus().Recovery.Paused {
+		t.Fatal("cancel did not pause recovery")
+	}
+	status, body = pairingRequest(t, server, "PUT", route, "test-token", "application/json", strings.NewReader(`{"enabled":true,"phone_number":"+15550000001","resume":true}`))
+	requireStatus(t, status, body, 200)
+	if b.PairingStatus().Recovery.Paused {
+		t.Fatal("resume did not clear pause")
+	}
+}

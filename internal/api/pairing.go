@@ -23,6 +23,21 @@ import (
 var pairingHelper embed.FS
 
 func registerPairing(mux *http.ServeMux, b *bridge.Bridge) {
+	mux.HandleFunc("PUT /v1/pairing/recovery", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Enabled     bool   `json:"enabled"`
+			PhoneNumber string `json:"phone_number"`
+			Resume      bool   `json:"resume"`
+		}
+		if !decode(w, r, &req) {
+			return
+		}
+		if err := b.ConfigurePairingRecovery(req.Enabled, req.PhoneNumber, req.Resume); err != nil {
+			apiError(w, err)
+			return
+		}
+		writeJSON(w, b.PairingStatus())
+	})
 	mux.HandleFunc("POST /v1/pairing/phone", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Phone    string `json:"phone_number"`

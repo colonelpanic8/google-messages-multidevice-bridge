@@ -95,6 +95,7 @@ let pairingState = {},
   pairingPoll,
   pairingPanelOpen = false;
 let pendingConversationFromLink = "";
+let pendingPairingFromLink = false;
 let contactBook = { contacts: [], stale: false };
 let contactsLoading;
 // Set while a conversation request is in flight or waiting to be retried, when
@@ -322,6 +323,10 @@ function loadAll() {
     if (!desktop && !pushSynced && $("notify").checked) {
       pushSynced = true;
       void enablePush().catch(() => {});
+    }
+    if (pendingPairingFromLink) {
+      pendingPairingFromLink = false;
+      openDialog("pairing-dialog");
     }
     if (
       pendingConversationFromLink &&
@@ -1554,6 +1559,23 @@ function pairingActive() {
 let waQRValue = "",
   waQRURL = "";
 function renderPairing() {
+  const recovery = pairingState.recovery || {};
+  $("wa-recovery-enable").textContent = recovery.enabled
+    ? "Resume automatic recovery"
+    : "Enable automatic recovery for this number";
+  $("wa-recovery-enable").disabled =
+    pairingActive() ||
+    (recovery.enabled && !recovery.paused && recovery.attempts < 3);
+  $("wa-recovery-disable").hidden = !recovery.enabled;
+  $("wa-recovery-status").textContent = !recovery.enabled
+    ? "Automatic recovery is off."
+    : recovery.paused
+      ? "Recovery paused. Resume when your phone is ready."
+      : recovery.attempts >= 3 && !pairingActive()
+        ? "Attempt limit reached. Resume when your phone is ready."
+        : `Recovery enabled · ${recovery.attempts}/3 attempts${recovery.attempts > 0 && !pairingActive() ? ` · next eligible ${new Date(recovery.next_attempt).toLocaleTimeString()}` : ""}`;
+  if (recovery.phone_number && !$("wa-phone").value)
+    $("wa-phone").value = recovery.phone_number;
   const whatsapp = status.network === "whatsapp";
   $("whatsapp-pairing").hidden = !whatsapp;
   $("pairing-browser-setup").hidden = whatsapp;
@@ -1625,27 +1647,39 @@ function renderPairing() {
     setup.dataset.state = setupState;
   }
   $("pairing-helper-download").href = api("/pairing-helper.zip");
-  $("cancel-pairing").hidden = !pairingActive();
+  $("cancel-pairing").hidden =
+    !pairingActive() && !(recovery.enabled && !recovery.paused);
+  $("cancel-pairing").textContent = pairingActive()
+    ? "Cancel pairing"
+    : "Pause automatic recovery";
 }
 function schedulePairingPoll() {
   clearTimeout(pairingPoll);
   pairingPoll = undefined;
-  if (!pairingPanelOpen || !pairingActive()) return;
-  pairingPoll = setTimeout(async () => {
-    const pollGeneration = generation;
-    try {
-      const state = await request("/v1/pairing");
-      if (pollGeneration !== generation) return;
-      pairingState = state;
-      renderPairing();
-      if (pairingState.state === "paired")
-        void loadAll().catch((error) => notice(error.message));
-    } catch (error) {
-      if (pollGeneration !== generation) return;
-      $("pairing-status").textContent = error.message;
-    }
-    schedulePairingPoll();
-  }, 1000);
+  if (
+    !pairingPanelOpen ||
+    (!pairingActive() && !pairingState.recovery?.enabled)
+  )
+    return;
+  pairingPoll = setTimeout(
+    async () => {
+      const pollGeneration = generation;
+      try {
+        const state = await request("/v1/pairing");
+        if (pollGeneration !== generation) return;
+        const completed =
+          state.state === "paired" && pairingState.state !== "paired";
+        pairingState = state;
+        renderPairing();
+        if (completed) void loadAll().catch((error) => notice(error.message));
+      } catch (error) {
+        if (pollGeneration !== generation) return;
+        $("pairing-status").textContent = error.message;
+      }
+      schedulePairingPoll();
+    },
+    pairingActive() ? 1000 : 3000,
+  );
 }
 async function loadPairingState() {
   const requestGeneration = generation;
@@ -2360,6 +2394,8 @@ function clearPrivateUI() {
     "thread-info",
     "pairing-status",
     "pairing-emoji",
+    "wa-code",
+    "wa-recovery-status",
     "history-summary",
   ])
     $(id).textContent = "";
@@ -2370,6 +2406,7 @@ function clearPrivateUI() {
     "attachments",
     "bridge-url",
     "pairing-ticket",
+    "wa-phone",
   ])
     $(id).value = "";
   contactBook = { contacts: [], stale: false };
@@ -2490,6 +2527,28 @@ async function startPairing(reuseSignIn = false) {
 }
 $("start-pairing").onclick = () => startPairing();
 $("wa-qr-start").onclick = () => startPairing();
+async function configureRecovery(enabled) {
+  const actionGeneration = generation;
+  try {
+    const state = await request("/v1/pairing/recovery", {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled,
+        phone_number: enabled ? $("wa-phone").value.trim() : "",
+        resume: enabled,
+      }),
+    });
+    if (actionGeneration !== generation) return;
+    pairingState = state;
+    renderPairing();
+    schedulePairingPoll();
+  } catch (error) {
+    if (actionGeneration !== generation) return;
+    $("pairing-status").textContent = error.message;
+  }
+}
+$("wa-recovery-enable").onclick = () => configureRecovery(true);
+$("wa-recovery-disable").onclick = () => configureRecovery(false);
 $("wa-phone-start").onclick = async () => {
   try {
     pairingState = await request("/v1/pairing/phone", {
@@ -2963,11 +3022,17 @@ if (!desktop && "serviceWorker" in navigator) {
     notice("Background updates are unavailable in this browser.");
   });
   navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event.data?.type === "open-pairing") {
+      if (token) openDialog("pairing-dialog");
+      else pendingPairingFromLink = true;
+    }
     if (event.data?.type === "open-conversation" && event.data.conversation)
       void select(event.data.conversation);
   });
 }
 {
+  pendingPairingFromLink =
+    new URLSearchParams(location.search).get("pairing") === "1";
   const requested = new URLSearchParams(location.search).get("conversation");
   if (requested) {
     history.replaceState(null, "", location.pathname);

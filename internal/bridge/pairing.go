@@ -9,14 +9,18 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
 )
 
 var ErrPairing = errors.New("pairing in progress")
 var ErrPairingTicket = errors.New("invalid or expired pairing ticket")
 
 type PairingState struct {
-	QR                    string `json:"qr,omitempty"`
-	PairingCode           string `json:"pairing_code,omitempty"`
+	Automatic             bool                   `json:"automatic,omitempty"`
+	Recovery              *store.PairingRecovery `json:"recovery,omitempty"`
+	QR                    string                 `json:"qr,omitempty"`
+	PairingCode           string                 `json:"pairing_code,omitempty"`
 	generation            uint64
 	newPhone              bool
 	State                 string    `json:"state"`
@@ -83,6 +87,14 @@ func (b *Bridge) PairingStatus() PairingState {
 	state.CanRepair = err == nil && len(cookies) > 0
 	digest, err := b.Store.PairingAgentDigest()
 	state.AgentEnrolled = err == nil && len(digest) == 32
+	if b.Network() == "whatsapp" {
+		recovery, err := b.Store.PairingRecovery()
+		if err == nil {
+			state.Recovery = &recovery
+		} else {
+			b.storageFailure(err)
+		}
+	}
 	return state
 }
 func (b *Bridge) SetOfflineOnly(offline bool) {
@@ -231,16 +243,22 @@ func (b *Bridge) SubmitPairingCookies(ticket string, cookies map[string]string) 
 func (b *Bridge) CancelPairing() PairingState {
 	b.mutationMu.Lock()
 	defer b.mutationMu.Unlock()
-	state, _, changed := b.cancelPairing()
+	if err := b.pausePairingRecovery(); err != nil {
+		return b.PairingStatus()
+	}
+	_, _, changed := b.cancelPairing()
 	if changed {
 		b.clearPairingAttempt()
 	}
-	return state
+	return b.PairingStatus()
 }
 
 func (b *Bridge) CancelPairingAndWait(ctx context.Context) (PairingState, error) {
 	b.mutationMu.Lock()
 	defer b.mutationMu.Unlock()
+	if err := b.pausePairingRecovery(); err != nil {
+		return b.PairingStatus(), err
+	}
 	state, done, changed := b.cancelPairing()
 	if changed {
 		b.clearPairingAttempt()
@@ -252,7 +270,7 @@ func (b *Bridge) CancelPairingAndWait(ctx context.Context) (PairingState, error)
 			return state, ctx.Err()
 		}
 	}
-	return state, nil
+	return b.PairingStatus(), nil
 }
 
 func (b *Bridge) cancelPairing() (PairingState, <-chan struct{}, bool) {
@@ -285,6 +303,7 @@ func (b *Bridge) finishPairing(state, detail string, generation uint64) {
 }
 
 func (b *Bridge) finishPairingReason(state, reason, detail string, generation uint64) {
+	defer b.Hub.Notify()
 	b.mu.Lock()
 	if b.pairingState.generation != generation || !activePair(b.pairingState.State) {
 		b.mu.Unlock()
@@ -327,7 +346,8 @@ func (b *Bridge) processPairing(ctx context.Context) error {
 			return nil
 		}
 		if ctx.Err() != nil {
-			b.CancelPairing()
+			b.cancelPairing()
+			b.clearPairingAttempt()
 			return nil
 		}
 		if time.Now().After(state.Expires) {
@@ -339,7 +359,8 @@ func (b *Bridge) processPairing(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				b.CancelPairing()
+				b.cancelPairing()
+				b.clearPairingAttempt()
 				return nil
 			case <-b.pairWake:
 				timer.Stop()
@@ -382,6 +403,14 @@ func (b *Bridge) processPairing(ctx context.Context) error {
 				b.pairingState.Detail = "Choose this emoji in Google Messages on your phone"
 			}
 		})
+
+		failure := b.Status()
+		if state.Automatic && (failure.Reason == "account_banned" || failure.Reason == "temporary_ban" || failure.Reason == "stream_replaced" || failure.Reason == "client_outdated" || failure.Reason == "invalid_session") {
+			pauseErr := b.pausePairingRecovery()
+			if pauseErr != nil {
+				err = pauseErr
+			}
+		}
 		canceled := callCtx.Err() != nil
 		cancel()
 		b.mu.Lock()

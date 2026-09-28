@@ -22,6 +22,7 @@ commit time. Unknown normalized Google status strings must remain displayable.
 | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `GET /v1/status`                                                    | Connection, phone responsiveness, and recent-reconciliation status                             |
 | `POST /v1/connection/restart`                                       | Wake the supervisor and restart/cancel the current connection; returns 202                     |
+| `PUT /v1/pairing/recovery` | Configure/resume opt-in WhatsApp phone-code recovery; returns current pairing state |
 | `GET /v1/pairing`                                                   | Current guided-pairing state                                                                   |
 | `POST /v1/pairing/start`                                            | Start pairing/re-pairing and return a short-lived ticket; returns 202, or 400 in offline mode  |
 | `POST /v1/pairing/adopt`                                            | Claim every stored conversation and message for the current session; returns the count |
@@ -464,7 +465,8 @@ Logout is `authentication_required/session_expired`; a reported account ban is
 `authentication_required/account_banned`. Stream replacement, temporary ban and
 an obsolete client use `connection_failed` with `stream_replaced`,
 `temporary_ban`, or `client_outdated`. Those conditions wait for an explicit
-restart or linking attempt; ordinary disconnections use supervisor backoff.
+restart or linking attempt unless WhatsApp session-expiry recovery is explicitly
+enabled (see below); ordinary disconnections use supervisor backoff.
 
 ### Records, contacts and mutations
 
@@ -549,3 +551,63 @@ names. Entries with a known phone number are available before a LID mapping exis
 these contact IDs initially use the phone JID and become canonical LIDs when known.
 Conversation IDs remain canonical LIDs. Contacts refresh from the local encrypted
 address book without making one network lookup per contact.
+
+### Automatic WhatsApp pairing recovery
+
+Recovery is off by default. Configure it with the normal API bearer:
+
+```http
+PUT /v1/pairing/recovery
+Content-Type: application/json
+
+{"enabled":true,"phone_number":"+15555550123"}
+```
+
+Returns 200 with the current pairing state. This route is WhatsApp-only (400 on
+Google); enabling requires an E.164 phone number. Enabling/resuming during an
+active pairing returns 503. `{"enabled":false}` disables recovery, forgets its
+phone number, and cancels an active automatic attempt. Configuration and retry
+budgets are encrypted in the database and survive restart. No CLI/Nix setting
+or plaintext phone-number file is needed.
+
+Only `authentication_required` with reason `no_session` or `session_expired`
+starts automatic phone-code linking. Transient disconnects, quarantine counts,
+invalid stored sessions, bans, stream replacement, and obsolete clients never
+trigger it. Offline mode does not pair. Each episode allows three attempts,
+spaced at least four minutes apart (up to three minutes for linking plus a
+one-minute cooldown). After exhaustion it waits for user action. A crash consumes
+the reserved attempt rather than replenishing the budget. A successful pairing
+resets the budget. Terminal ban/replacement/outdated-client errors during linking
+pause recovery.
+
+`GET /v1/pairing` adds `automatic:true` for an automatically initiated attempt and,
+on WhatsApp instances, a `recovery` object:
+
+```json
+{"enabled":true,"phone_number":"+15555550123","attempts":1,"paused":false,"next_attempt":"2026-09-27T20:04:00Z"}
+```
+
+`next_attempt` is the earliest time another attempt may start, not a promise of
+one: authentication must still be expired, recovery enabled and unpaused, and the
+budget below three. Before the first attempt it is the zero timestamp. Repeating
+the same configuration preserves the budget. To explicitly resume after a pause
+or exhausted budget, PUT the enabled configuration with `"resume":true`.
+`POST /v1/pairing/cancel` pauses automatic recovery, including during cooldown;
+manual pairing remains available. Cancellation does not refund attempts.
+
+EVA should poll `/v1/pairing` every few seconds during linking and read the code
+only from its authenticated `enter_pairing_code` response. Show a notification
+and a user action to open WhatsApp (`com.whatsapp` on Android), then guide the
+user through **Linked devices → Link a device → Link with phone number**. Phone
+approval and any biometric prompt remain manual; the bridge cannot open a native
+phone app itself. Never put codes, QR strings, or phone numbers into notifications
+or logs. The bridge's existing Web Push subscriptions receive a content-free
+notification when an automatic code is ready, and when attempts are exhausted;
+these are Web Push notifications, not an EVA-specific push transport. Tapping the
+web notification opens the pairing panel. Delivery requires an existing working
+push subscription. Pairing state/codes are not durable SSE events.
+
+Automatic attempts have the same outbox and epoch effects as manual pairing:
+starting cancels queued operations; a successful link creates fresh device keys
+and advances the epoch. Clients must refresh snapshots after the epoch changes.
+Automatic pairing never retries a user message whose outcome is uncertain.

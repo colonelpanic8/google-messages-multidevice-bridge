@@ -291,7 +291,8 @@ observed by the new phone.
 The HTTP service and encrypted local history stay available across ordinary provider
 failures. The supervisor reconnects transient failures after five seconds and backs
 off to at most five minutes; a connection that survives over a minute resets the
-delay. Authentication failure waits for explicit **Retry connection** or re-pair.
+delay. Authentication failure waits for explicit **Retry connection** or re-pair,
+unless WhatsApp pairing recovery is explicitly enabled (below).
 `POST /v1/connection/restart` supplies the same restart wake-up for API clients.
 
 `serve --offline` never opens a Google connection. Durable conversation, message,
@@ -399,7 +400,8 @@ instance's API token, and choose **Link with QR** or enter your E.164 number for
 pairing code. No Chromium helper is involved. QR/phone-code pairing lasts up to
 three minutes and cancellation clears the displayed linking secret. Logout,
 stream replacement, temporary ban and obsolete-client failures wait for explicit
-attention rather than continually reconnecting.
+attention rather than continually reconnecting. Opt-in recovery (below) can
+initiate linking for session expiry only.
 
 Back up each instance's database and its matching storage key separately, following
 the offline backup procedure above. WhatsApp credentials and pending history/events
@@ -444,3 +446,29 @@ They contain only event type names, counts, sync types/progress and coarse error
 classes—no message bodies, identifiers, names, tokens or keys. Startup counts of
 stored keys, app-state versions, contacts, inbox and quarantine (including event
 kinds) help distinguish missing history from an incomplete app-state sync.
+
+## Opt-in WhatsApp pairing recovery
+
+In **Pair / Re-pair**, enter your E.164 phone number and choose **Enable automatic
+recovery for this number**. The setting is saved encrypted in this instance's
+existing database, so Nix declarations and secret files do not need to change.
+Enable browser notifications separately if you want Web Push alerts when a code
+is ready. EVA can use `PUT /v1/pairing/recovery` and poll the pairing state; its
+Android notification/open-WhatsApp action must be implemented by the EVA client.
+
+On logout or expired authentication, the bridge starts phone-code linking and
+makes up to three attempts with a cooldown. Open the bridge for the code, open
+WhatsApp's **Linked devices**, and approve linking (including any face/fingerprint
+prompt). Expired codes are replaced automatically while the budget permits.
+After cancellation or exhaustion, select **Resume automatic recovery** when your
+phone is ready. **Disable automatic recovery** stops automatic linking. Ordinary
+network failures still reconnect without pairing. Bans, invalid sessions,
+stream replacement, outdated clients and quarantined events require separate
+attention and never cause automatic linking.
+
+Starting an automatic attempt cancels queued sends. Success creates a new session
+epoch and fresh credentials, preserving earlier records as described above.
+The new recovery controller is tested with fakes for eligibility, retry limits,
+restart persistence, cooldown, cancellation, notifications and successful epoch
+transition. Unattended recovery and notification delivery have not been live
+verified; no production logout, pairing or message send was performed to test it.
