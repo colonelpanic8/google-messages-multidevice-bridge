@@ -3,6 +3,7 @@ package whatsapp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	local "github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waAdv"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -240,5 +242,54 @@ func TestRecipientRetryPayloadSurvivesRestart(t *testing.T) {
 		if err != nil || recovered == nil || recovered.IsEmpty() {
 			t.Fatal("retry payload did not survive restart and JID alias lookup", err)
 		}
+	}
+}
+
+func TestDeviceLegacyAccountMigration(t *testing.T) {
+	s, _ := credentialFixture(t)
+	ctx := context.Background()
+	device, err := s.Device(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device.Account = &waAdv.ADVSignedDeviceIdentity{Details: []byte("synthetic-identity")}
+	account, err := json.Marshal(device.Account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.put(ctx, "device", "current", deviceRecord{Noise: device.NoiseKey, Identity: device.IdentityKey, Signed: device.SignedPreKey, Account: account}); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := s.Device(ctx)
+	if err != nil || !proto.Equal(device.Account, restored.Account) {
+		t.Fatal("legacy identity lost", err)
+	}
+	restored.Account.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
+	if err = s.PutDevice(ctx, restored); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := s.Device(ctx)
+	if err != nil || !proto.Equal(restored.Account, migrated.Account) {
+		t.Fatal("protobuf identity lost", err)
+	}
+}
+
+func TestCredentialDecodeErrorIsNotStorageFailure(t *testing.T) {
+	s, _ := credentialFixture(t)
+	ctx := context.Background()
+	failures := 0
+	s.Failure = func(error) { failures++ }
+	if err := s.DB.NetworkPut(ctx, s.key("meta", "bad"), []byte("{")); err != nil {
+		t.Fatal(err)
+	}
+	var value string
+	if _, err := s.get(ctx, "meta", "bad", &value); err == nil || failures != 0 {
+		t.Fatal("decode error classified as storage failure", err, failures)
+	}
+	if err := s.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.get(ctx, "meta", "bad", &value); err == nil || failures != 1 {
+		t.Fatal("database failure was not reported", err, failures)
 	}
 }

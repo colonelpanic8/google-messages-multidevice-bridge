@@ -88,7 +88,7 @@ func (p *Provider) HistoryChat(ctx context.Context, h *historyChat) ([]provider.
 		}
 	}
 	pending := []string{}
-	var oldest types.MessageInfo
+	var oldest historyBoundary
 	for _, m := range c.GetMessages() {
 		parsed, err := parser.ParseWebMessage(chat, m.GetMessage())
 		if err != nil {
@@ -103,7 +103,7 @@ func (p *Provider) HistoryChat(ctx context.Context, h *historyChat) ([]provider.
 		}
 		pending = append(pending, id)
 		if oldest.ID == "" || parsed.Info.Timestamp.Before(oldest.Timestamp) {
-			oldest = parsed.Info
+			oldest = historyBoundary{Chat: parsed.Info.Chat, ID: parsed.Info.ID, Timestamp: parsed.Info.Timestamp, IsFromMe: parsed.Info.IsFromMe}
 		}
 	}
 	var request historyRequest

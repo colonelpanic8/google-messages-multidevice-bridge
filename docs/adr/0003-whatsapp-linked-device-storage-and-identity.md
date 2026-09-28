@@ -97,3 +97,24 @@ when the remote message expires or is revoked. Unsupported message forms (calls,
 poll interaction, newsletters' specialized mutations, payments, etc.) are not
 implemented as interactive client features. Undelivered pending updates and old
 credential namespaces have no automatic retention cleanup.
+
+## Pending-event encoding and quarantine
+
+Pending events use a version-1 envelope. Plain Go metadata is JSON; every nested
+protobuf payload (including message, raw message, web message, verified-name
+certificate, history sync and conversation) is stored as protobuf wire bytes.
+Device account identity also uses versioned protobuf storage, with a legacy JSON
+reader. History boundaries retain only chat, message ID, timestamp and direction;
+they do not serialize business certificates. Media descriptors/private attachment
+content and the retry cache already use protobuf bytes and require no migration.
+
+Legacy JSON inbox rows are decoded when possible. Undecodable rows, unsupported
+versions/kinds, and event-processing failures move atomically to the encrypted
+`quarantine` namespace with their original bytes preserved. A durable count appears
+in status `detail`. These rows require manual recovery; they are not silently
+removed or automatically replayed. Database failures still stop processing without
+quarantining the affected row. Decode errors do not report a storage failure.
+
+Offline regression tests exercise template and interactive oneofs, nested history,
+unknown protobuf fields, legacy quarantine with continued draining, and device
+identity migration. This recovery has not been verified against a live account.

@@ -139,7 +139,7 @@ func (p *Provider) Message(ctx context.Context, e *events.Message) ([]provider.S
 	raw, loadErr := p.DB.Record("message", id)
 	existing := loadErr == nil
 	if loadErr != nil && !errors.Is(loadErr, local.ErrNotFound) {
-		return nil, loadErr
+		return nil, p.Keys.failed(loadErr)
 	}
 	old := m
 	if existing {
@@ -267,7 +267,7 @@ func (p *Provider) Receipt(ctx context.Context, e *events.Receipt) ([]provider.S
 			return nil, provider.ErrUnavailable
 		}
 		if err != nil {
-			return nil, err
+			return nil, p.Keys.failed(err)
 		}
 		var m model.Message
 		if err = json.Unmarshal(raw, &m); err != nil {
@@ -293,6 +293,10 @@ func (p *Provider) Ingest(ctx context.Context, kind string, e any) error {
 	return err
 }
 func (p *Provider) ingest(ctx context.Context, kind string, e any) (id string, err error) {
+	encoded, err := encodePending(kind, e)
+	if err != nil {
+		return "", err
+	}
 	err = p.Keys.txn(ctx, func(ctx context.Context) error {
 		var sequence uint64
 		if _, err := p.Keys.get(ctx, "meta", "inbox-sequence", &sequence); err != nil {
@@ -303,17 +307,9 @@ func (p *Provider) ingest(ctx context.Context, kind string, e any) (id string, e
 			return err
 		}
 		id = fmt.Sprintf("%020d", sequence)
-		return p.Keys.put(ctx, "inbox", id, struct {
-			Kind string
-			Data any
-		}{kind, e})
+		return p.Keys.put(ctx, "inbox", id, encoded)
 	})
 	return
-}
-
-type pendingEvent struct {
-	Kind string
-	Data json.RawMessage
 }
 
 func (p *Provider) Drain(ctx context.Context, persist func(provider.Snapshot) error) error {
@@ -330,38 +326,33 @@ func (p *Provider) Drain(ctx context.Context, persist func(provider.Snapshot) er
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		var e pendingEvent
-		if err = json.Unmarshal(rows[id], &e); err != nil {
-			return err
-		}
+		_, event, decodeErr := decodePending(rows[id])
 		var snaps []provider.Snapshot
-		switch e.Kind {
-		case "message":
-			var m events.Message
-			if err = json.Unmarshal(e.Data, &m); err == nil {
-				snaps, err = p.Message(ctx, &m)
-			}
-		case "history-chat":
-			var h historyChat
-			if err = json.Unmarshal(e.Data, &h); err == nil {
-				snaps, err = p.HistoryChat(ctx, &h)
-			}
-		case "history":
-			var h events.HistorySync
-			if err = json.Unmarshal(e.Data, &h); err == nil {
-				err = p.History(ctx, &h)
-			}
-		case "receipt":
-			var r events.Receipt
-			if err = json.Unmarshal(e.Data, &r); err == nil {
-				snaps, err = p.Receipt(ctx, &r)
+		err = decodeErr
+		if err == nil {
+			switch e := event.(type) {
+			case *events.Message:
+				snaps, err = p.Message(ctx, e)
+			case *historyChat:
+				snaps, err = p.HistoryChat(ctx, e)
+			case *events.HistorySync:
+				err = p.History(ctx, e)
+			case *events.Receipt:
+				snaps, err = p.Receipt(ctx, e)
 			}
 		}
 		if errors.Is(err, provider.ErrUnavailable) {
 			continue
 		}
 		if err != nil {
-			return err
+			var storage *storageError
+			if errors.As(err, &storage) || ctx.Err() != nil {
+				return err
+			}
+			if err = p.quarantine(ctx, id, rows[id]); err != nil {
+				return err
+			}
+			continue
 		}
 		for _, snap := range snaps {
 			if err = persist(snap); err != nil {
@@ -383,7 +374,7 @@ func (p *Provider) MessagePage(ctx context.Context, conversation string, cursor 
 	if err != nil {
 		return nil, nil, err
 	}
-	var oldest types.MessageInfo
+	var oldest historyBoundary
 	if len(cursor) > 0 {
 		if json.Unmarshal(cursor, &oldest) != nil {
 			return nil, nil, provider.ErrInvalidCursor
@@ -405,7 +396,7 @@ func (p *Provider) MessagePage(ctx context.Context, conversation string, cursor 
 				if e != nil {
 					return nil, nil, e
 				}
-				oldest = types.MessageInfo{ID: messageRemoteID(m.ID), Timestamp: m.Time, MessageSource: types.MessageSource{Chat: chat, IsFromMe: m.Direction == "outgoing"}}
+				oldest = historyBoundary{ID: messageRemoteID(m.ID), Timestamp: m.Time, Chat: chat, IsFromMe: m.Direction == "outgoing"}
 			}
 		}
 	}
@@ -441,7 +432,7 @@ func (p *Provider) MessagePage(ctx context.Context, conversation string, cursor 
 	if err = p.Keys.put(ctx, "history-request", conversation, requested); err != nil {
 		return nil, nil, err
 	}
-	msg := (&whatsmeowHistory{}).request(&oldest)
+	msg := (&whatsmeowHistory{}).request(oldest.info())
 	_, err = p.Client.SendMessage(ctx, p.Device.GetJID().ToNonAD(), msg, whatsmeowPeer())
 	if err != nil {
 		return nil, nil, provider.ErrUnavailable
@@ -450,12 +441,24 @@ func (p *Provider) MessagePage(ctx context.Context, conversation string, cursor 
 }
 
 type historyRequest struct {
-	Oldest types.MessageInfo
+	Oldest historyBoundary
 	Time   time.Time
 }
 
 type historyResponse struct {
 	Pending   []string
 	RequestID string
-	Oldest    types.MessageInfo
+	Oldest    historyBoundary
+}
+
+// History boundaries need only the fields used by BuildHistorySyncRequest.
+type historyBoundary struct {
+	Chat      types.JID
+	ID        string
+	Timestamp time.Time
+	IsFromMe  bool
+}
+
+func (h historyBoundary) info() *types.MessageInfo {
+	return &types.MessageInfo{ID: h.ID, Timestamp: h.Timestamp, MessageSource: types.MessageSource{Chat: h.Chat, IsFromMe: h.IsFromMe}}
 }
