@@ -43,7 +43,7 @@ commit time. Unknown normalized Google status strings must remain displayable.
 | `GET /v1/outbox/{idempotency_key}`                                  | One durable operation record                                                                   |
 | `POST /v1/messages`                                                 | Queue a durable text and/or attachment message                                                 |
 | `POST /v1/outbox/{idempotency_key}/cancel`                          | Cancel only while queued; returns 409 after an attempt starts                                  |
-| `POST /v1/sync`                                                     | Request bounded recent reconciliation; requires a connected phone and returns 202              |
+| `POST /v1/sync`                                                     | Request bounded recent reconciliation; requires a connected or degraded session; returns 202   |
 | `POST /v1/history`                                                  | Queue, resume, or restart a durable folder/conversation history job; returns 202               |
 | `GET /v1/history`                                                   | Durable history jobs and snapshot `cursor`                                                     |
 | `POST /v1/history/{id}/pause`                                       | Pause a job; an in-flight page may finish but cannot advance the paused checkpoint             |
