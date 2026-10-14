@@ -194,11 +194,40 @@
           />
           <button type="submit" class="filled">Continue</button>
         </form>
-        <p id="connect-error" class="hint" role="alert"></p>
+        <p id="connect-error" class="hint error" role="alert"></p>
       </div>
     </section>
 
-    <section id="login" class="lock">
+    <section id="loading" class="lock" aria-busy="true">
+      <div class="lock-card">
+        <div class="lock-brand">
+          <svg class="logo"><use href="#i-logo" /></svg>
+          <span>Messages</span>
+        </div>
+        <h1 id="loading-title" role="status">Starting Messages</h1>
+        <p id="loading-target"></p>
+        <div
+          id="loading-bar"
+          class="load-bar active"
+          role="progressbar"
+          aria-label="Loading progress"
+        >
+          <span></span>
+        </div>
+        <ol id="loading-steps" class="load-steps"></ol>
+        <div id="loading-actions" class="button-row" hidden>
+          <button id="loading-bridge" type="button" class="text-button" hidden>
+            Change bridge
+          </button>
+          <button id="loading-token" type="button" class="text-button">
+            Enter token
+          </button>
+          <button id="loading-retry" type="button" class="filled">Retry</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="login" class="lock" hidden>
       <div class="lock-card">
         <div class="lock-brand">
           <svg class="logo"><use href="#i-logo" /></svg>
@@ -220,6 +249,7 @@
           />
           <button type="submit" class="filled">Unlock</button>
         </form>
+        <p id="login-error" class="hint error" role="alert"></p>
         <p class="hint">
           The token stays in this tab’s memory. Use a private network or HTTPS.
         </p>

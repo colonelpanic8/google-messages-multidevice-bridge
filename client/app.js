@@ -203,7 +203,8 @@ function render() {
 
 // --- API --------------------------------------------------------------------
 
-async function request(path, options = {}) {
+// onProgress hears 0 once headers arrive, then the running byte count.
+async function request(path, { onProgress, ...options } = {}) {
   const headers = { Authorization: `Bearer ${token}`, ...options.headers };
   if (
     typeof options.body === "string" &&
@@ -212,9 +213,10 @@ async function request(path, options = {}) {
     headers["Content-Type"] = "application/json";
   const response = await fetch(api(path), {
     ...options,
-    signal: abort?.signal,
+    signal: options.signal || abort?.signal,
     headers,
   });
+  onProgress?.(0);
   if (!response.ok) {
     const detail = (await response.text()).trim();
     const error = new Error(
@@ -226,8 +228,25 @@ async function request(path, options = {}) {
     throw error;
   }
   if (response.status === 204) return null;
-  const body = await response.text();
+  const body =
+    onProgress && response.body
+      ? await readText(response.body, onProgress)
+      : await response.text();
   return body ? JSON.parse(body) : null;
+}
+
+async function readText(stream, onProgress) {
+  const reader = stream.getReader(),
+    decoder = new TextDecoder();
+  let text = "",
+    bytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return text + decoder.decode();
+    bytes += value.length;
+    onProgress(bytes);
+    text += decoder.decode(value, { stream: true });
+  }
 }
 
 function thread(id) {
@@ -284,17 +303,21 @@ function loadThread(id, before = "", { limit = 100, quiet = false } = {}) {
   return entry.loading;
 }
 
-let loadingAll;
-function loadAll() {
-  if (loadingAll) return loadingAll;
-  const requestGeneration = generation;
-  loadingAll = (async () => {
+let loadingAll, loadingAllGeneration;
+// track wraps each request so the loading screen can report on it; it hands
+// the request its abort signal and progress callback.
+function loadAll({ track = (key, work) => work({}) } = {}) {
+  if (loadingAll && loadingAllGeneration === generation) return loadingAll;
+  const requestGeneration = (loadingAllGeneration = generation);
+  const fetchStep = (key, path) =>
+    track(key, (options) => request(path, options));
+  const pending = (async () => {
     stopFullHistory();
     const [st, cs, os, hs] = await Promise.all([
-      request("/v1/status"),
-      request("/v1/conversations"),
-      request("/v1/outbox"),
-      request("/v1/history").catch((error) => ({ error })),
+      fetchStep("status", "/v1/status"),
+      fetchStep("conversations", "/v1/conversations"),
+      fetchStep("outbox", "/v1/outbox"),
+      fetchStep("history", "/v1/history").catch((error) => ({ error })),
     ]);
     if (requestGeneration !== generation) return;
     conversations.clear();
@@ -339,9 +362,10 @@ function loadAll() {
     invalidate("status", "list", "thread", "compose", "history");
     maybeSelectCreatedConversation();
   })().finally(() => {
-    loadingAll = undefined;
+    if (loadingAll === pending) loadingAll = undefined;
   });
-  return loadingAll;
+  loadingAll = pending;
+  return pending;
 }
 
 function applyStatus(next) {
@@ -2426,33 +2450,330 @@ function clearPrivateUI() {
   renderList();
   renderThread();
 }
-$("login-form").onsubmit = async (event) => {
-  event.preventDefault();
-  token = $("token").value.trim();
+// --- Loading screen ---------------------------------------------------------
+
+// A step that goes this long without any sign of life is abandoned, and one
+// quiet for SLOW_STEP says so and counts down. The keyring gets longer because
+// it may be waiting on the user to unlock it.
+const STALL_TIMEOUT = 20000;
+const KEYRING_TIMEOUT = 90000;
+const SLOW_STEP = 4000;
+const BRIDGE_SLOW = "The bridge has not answered yet.";
+const plural = (n, noun) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+const LOAD_STEPS = {
+  bridge: {
+    label: "Read saved bridge address",
+    slow: "The desktop app has not answered yet.",
+    done: (url) => (url ? normalizeBase(url) : "None saved"),
+  },
+  token: {
+    label: "Read saved token",
+    slow: "Waiting on the system keyring. It may be asking you to unlock it.",
+    timeout: KEYRING_TIMEOUT,
+    done: (saved) => (saved ? "Found" : "None saved"),
+  },
+  status: {
+    label: "Check bridge and phone status",
+    slow: BRIDGE_SLOW,
+    done: (st) => `Phone ${(st?.state || "offline").replaceAll("_", " ")}`,
+  },
+  conversations: {
+    label: "Download conversation list",
+    slow: BRIDGE_SLOW,
+    done: (cs) => plural(cs?.conversations?.length || 0, "conversation"),
+  },
+  outbox: {
+    label: "Download unsent messages",
+    slow: BRIDGE_SLOW,
+    done: (os) =>
+      os?.outbox?.length ? `${os.outbox.length} queued` : "Nothing queued",
+  },
+  history: {
+    label: "Check history imports",
+    slow: BRIDGE_SLOW,
+    optional: true,
+    done: (hs) => plural(hs?.jobs?.length || 0, "import job"),
+  },
+};
+const FETCH_STEPS = ["status", "conversations", "outbox", "history"];
+const SCREENS = ["connect", "login", "loading", "app"];
+
+let loading, loadingTicker;
+function showScreen(id) {
+  for (const screen of SCREENS) $(screen).hidden = screen !== id;
+  if (id !== "loading") {
+    clearInterval(loadingTicker);
+    loadingTicker = undefined;
+  }
+}
+
+function bridgeLabel() {
+  return apiBase || location.origin;
+}
+
+function beginLoading(keys) {
+  loading = {
+    failed: false,
+    steps: keys.map((key) => ({ key, ...LOAD_STEPS[key], state: "pending" })),
+  };
+  $("loading-steps").replaceChildren(
+    ...loading.steps.map((step) => {
+      const node = el("li", undefined, "load-step");
+      node.append(
+        el("span", undefined, "load-mark"),
+        el("span", step.label, "load-label"),
+        el("span", "", "load-time"),
+        el("span", "", "load-detail"),
+      );
+      step.node = node;
+      return node;
+    }),
+  );
+  $("loading-actions").hidden = true;
+  showScreen("loading");
+  clearInterval(loadingTicker);
+  loadingTicker = setInterval(renderLoading, 200);
+  renderLoading();
+}
+
+const STEP_MARKS = { done: "check", failed: "close", skipped: "info" };
+function seconds(ms) {
+  return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`;
+}
+function renderLoading() {
+  if (!loading) return;
+  const now = performance.now();
+  const { steps, failed } = loading;
+  const finished = steps.filter((step) =>
+    ["done", "skipped"].includes(step.state),
+  ).length;
+  const active = steps.some((step) => step.state === "active");
+  for (const step of steps) {
+    const node = step.node;
+    const quiet = now - step.lastActivity;
+    const slow = step.state === "active" && quiet > SLOW_STEP;
+    node.className = `load-step ${step.state}${slow ? " slow" : ""}`;
+    const mark = node.querySelector(".load-mark");
+    if (mark.dataset.icon !== (STEP_MARKS[step.state] || "")) {
+      mark.dataset.icon = STEP_MARKS[step.state] || "";
+      mark.replaceChildren(
+        ...(STEP_MARKS[step.state] ? [icon(STEP_MARKS[step.state])] : []),
+      );
+    }
+    node.querySelector(".load-time").textContent = step.started
+      ? seconds((step.finished || now) - step.started)
+      : "";
+    node.querySelector(".load-detail").textContent =
+      step.state !== "active"
+        ? step.detail || ""
+        : slow
+          ? `${step.slow} Giving up in ${Math.max(
+              1,
+              Math.ceil((step.timeout - quiet) / 1000),
+            )} s.`
+          : step.activity;
+  }
+  const bar = $("loading-bar");
+  bar.className = `load-bar${active ? " active" : ""}${failed ? " failed" : ""}`;
+  bar.style.setProperty("--progress", `${(finished / steps.length) * 100}%`);
+  bar.setAttribute("aria-valuemax", steps.length);
+  bar.setAttribute("aria-valuenow", finished);
+  $("loading-target").textContent =
+    apiBase || !desktop ? `Bridge: ${bridgeLabel()}` : "";
+  const title = failed
+    ? "Couldn't load your messages"
+    : `Loading your messages (${finished} of ${steps.length})`;
+  if ($("loading-title").textContent !== title)
+    $("loading-title").textContent = title;
+  $("loading").setAttribute("aria-busy", String(!failed));
+}
+
+// Runs one step of the current load, aborting it when it shows no sign of life
+// for its timeout. Desktop calls cannot be aborted, so the step stops
+// waiting on them instead.
+async function runStep(key, work) {
+  const step = loading?.steps.find((candidate) => candidate.key === key);
+  if (!step) return work({});
+  step.timeout ??= STALL_TIMEOUT;
+  const parent = abort;
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  parent.signal.addEventListener("abort", cancel, { once: true });
+  let stalled = false,
+    received = -1,
+    timer;
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      stalled = true;
+      controller.abort();
+    }, step.timeout);
+  };
+  const stopped = new Promise((_, reject) =>
+    controller.signal.addEventListener("abort", () =>
+      reject(new DOMException("Aborted", "AbortError")),
+    ),
+  );
+  step.state = "active";
+  step.started = step.lastActivity = performance.now();
+  step.activity = FETCH_STEPS.includes(key) ? "Waiting for the bridge…" : "";
+  arm();
+  renderLoading();
+  try {
+    const result = await Promise.race([
+      work({
+        signal: controller.signal,
+        onProgress: (bytes) => {
+          arm();
+          received = bytes;
+          step.lastActivity = performance.now();
+          step.activity = bytes
+            ? `Receiving… ${formatSize(bytes)}`
+            : "Receiving…";
+        },
+      }),
+      stopped,
+    ]);
+    step.state = "done";
+    step.detail = [step.done(result), received >= 1024 && formatSize(received)]
+      .filter(Boolean)
+      .join(" · ");
+    return result;
+  } catch (error) {
+    if (stalled) {
+      const waited = seconds(step.timeout);
+      error = new Error(
+        received >= 0
+          ? `The bridge stopped sending data for ${waited}.`
+          : FETCH_STEPS.includes(key)
+            ? `No response from the bridge after ${waited}.`
+            : `No answer after ${waited}.`,
+      );
+    } else if (error.name === "AbortError" && parent.signal.aborted) {
+      step.state = "cancelled";
+      step.detail = "Stopped";
+      throw error;
+    } else if (error instanceof TypeError)
+      error = new Error(
+        `Couldn't reach ${bridgeLabel()}. Check the address and your network.`,
+      );
+    else if (typeof error === "string") error = new Error(error);
+    step.state = step.optional ? "skipped" : "failed";
+    step.detail = step.optional ? `Skipped: ${error.message}` : error.message;
+    throw error;
+  } finally {
+    step.finished = performance.now();
+    clearTimeout(timer);
+    parent.signal.removeEventListener("abort", cancel);
+    controller.abort();
+    renderLoading();
+  }
+}
+
+function failLoading() {
+  // Stops whatever the failed step's siblings are still waiting on.
+  abort?.abort();
+  loading.failed = true;
+  for (const step of loading.steps)
+    if (step.state === "pending") {
+      step.state = "cancelled";
+      step.detail = "Not started";
+    }
+  $("loading-actions").hidden = false;
+  $("loading-bridge").hidden = !desktop;
+  $("loading-token").hidden = desktop && !apiBase;
+  renderLoading();
+  $("loading-retry").focus();
+}
+
+// --- Unlock flow ------------------------------------------------------------
+
+function showLogin(error = "") {
+  showScreen("login");
+  $("login-error").textContent = error;
+  $("token").focus();
+}
+
+function lock() {
+  abort?.abort();
+  generation++;
+  token = "";
+  lastAttempt = undefined;
+  loading = undefined;
+  clearPrivateUI();
+}
+
+// attempt.token is a token the user typed or a link carried (source "link").
+// Without one the desktop app's saved token is used, and readBridge also reads
+// its saved bridge address.
+let lastAttempt;
+async function unlock(attempt) {
+  lastAttempt = attempt;
   abort?.abort();
   abort = new AbortController();
-  generation++;
+  const attemptGeneration = ++generation;
+  const current = () => attemptGeneration === generation;
+  token = "";
+  beginLoading([
+    ...(attempt.readBridge ? ["bridge"] : []),
+    ...(attempt.token ? [] : ["token"]),
+    ...FETCH_STEPS,
+  ]);
   try {
-    await loadAll();
-    $("token").value = "";
-    $("login").hidden = true;
-    $("app").hidden = false;
+    if (attempt.readBridge) {
+      const saved = await runStep("bridge", () => desktop("get_bridge_url"));
+      if (!current()) return;
+      if (!saved) return showConnect();
+      apiBase = normalizeBase(saved);
+    }
+    let candidate = attempt.token;
+    if (!candidate) {
+      candidate = await runStep("token", () => desktop("get_token"));
+      if (!current()) return;
+      if (!candidate) return showLogin();
+    }
+    token = candidate;
+    await loadAll({ track: runStep });
+    if (!current()) return;
+    lastAttempt = loading = undefined;
+    showScreen("app");
     notice("");
     if (desktop) void desktop("save_token", { token }).catch(() => {});
     void stream(generation);
   } catch (error) {
+    if (!current()) return;
     token = "";
-    alert(error.message);
+    if (error.status === 401) {
+      abort.abort();
+      lastAttempt = loading = undefined;
+      return showLogin(
+        attempt.source === "link"
+          ? "The bridge rejected the token from the link. Enter the current one."
+          : attempt.token
+            ? "The bridge rejected that token."
+            : "The bridge rejected the saved token. Enter the current one.",
+      );
+    }
+    failLoading();
   }
+}
+
+$("login-form").onsubmit = (event) => {
+  event.preventDefault();
+  const typed = $("token").value.trim();
+  $("token").value = "";
+  void unlock({ token: typed });
 };
+$("loading-retry").onclick = () => void unlock(lastAttempt || {});
+$("loading-token").onclick = () => {
+  lock();
+  showLogin();
+};
+$("loading-bridge").onclick = () => showConnect(apiBase);
 $("logout").onclick = () => {
   if (desktop) void desktop("clear_token").catch(() => {});
-  abort?.abort();
-  generation++;
-  token = "";
-  clearPrivateUI();
-  $("app").hidden = true;
-  $("login").hidden = false;
+  lock();
+  showLogin();
 };
 
 // --- Wiring -----------------------------------------------------------------
@@ -3044,12 +3365,12 @@ if (!desktop && "serviceWorker" in navigator) {
 // A browser loaded this client from the bridge it talks to. The desktop app
 // bundles the client and starts with no bridge at all, so it has to ask for one
 // before the token screen means anything.
+// Switching bridges locks first: anything loaded came from the old one.
 function showConnect(prefill = "") {
+  lock();
   $("connect-url").value = prefill;
   $("connect-error").textContent = "";
-  $("app").hidden = true;
-  $("login").hidden = true;
-  $("connect").hidden = false;
+  showScreen("connect");
   $("connect-url").focus();
 }
 
@@ -3073,21 +3394,6 @@ function takeTokenFromURL() {
   return fromURL;
 }
 
-async function unlockWithURLToken() {
-  const fromURL = takeTokenFromURL();
-  if (!fromURL || token) return false;
-  $("token").value = fromURL;
-  $("login-form").requestSubmit();
-  return true;
-}
-
-async function unlockWithSavedToken() {
-  const saved = await desktop("get_token").catch(() => null);
-  if (!saved || token) return;
-  $("token").value = saved;
-  $("login-form").requestSubmit();
-}
-
 if (desktop) {
   $("connect-form").onsubmit = async (event) => {
     event.preventDefault();
@@ -3100,25 +3406,17 @@ if (desktop) {
       return;
     }
     apiBase = url;
-    $("connect").hidden = true;
-    $("login").hidden = false;
-    await unlockWithSavedToken();
+    void unlock({});
   };
-  // Hidden until the bridge is known, so the token screen never asks for a
+  // The token screen waits until the bridge is known, so it never asks for a
   // token against nothing.
-  $("login").hidden = true;
-  desktop("get_bridge_url")
-    .then(async (saved) => {
-      if (!saved) return showConnect();
-      apiBase = normalizeBase(saved);
-      $("login").hidden = false;
-      await unlockWithSavedToken();
-    })
-    .catch(() => showConnect());
+  void unlock({ readBridge: true });
   // The tray's "Change bridge URL…" item.
   void window.__TAURI__?.event
     ?.listen("show-connect", () => showConnect(apiBase))
     .catch(() => {});
 } else {
-  void unlockWithURLToken();
+  const fromURL = takeTokenFromURL();
+  if (fromURL) void unlock({ token: fromURL, source: "link" });
+  else showLogin();
 }
