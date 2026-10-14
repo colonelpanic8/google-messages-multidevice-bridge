@@ -19,3 +19,6 @@ tauri-plugin-single-instance = "2"
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 serde = { version = "1", features = ["derive"] }
 url = "2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0"

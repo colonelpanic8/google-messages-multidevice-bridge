@@ -593,3 +593,35 @@ func TestHistoryBootstrapsPhoneWithoutClientReady(t *testing.T) {
 		})
 	}
 }
+
+func TestPhoneNotRespondingProbesWithoutWaitingForPeriodicSync(t *testing.T) {
+	b := testBridge(t)
+	var calls atomic.Int32
+	b.provider = &fakeProvider{conversations: func(context.Context) ([]provider.Snapshot, error) {
+		// The first sync overlaps the alert, so it cannot vouch for the phone.
+		if calls.Add(1) == 1 {
+			if err := b.Handle(&events.PhoneNotResponding{}); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	}}
+	if err := b.Handle(&events.ClientReady{}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); b.syncLoop(ctx) }()
+	defer func() { cancel(); <-done }()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		status := b.Status()
+		if calls.Load() >= 2 && status.State == "connected" && status.Phone {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("calls=%d status=%+v", calls.Load(), status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

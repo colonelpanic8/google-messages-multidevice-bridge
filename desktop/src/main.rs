@@ -224,6 +224,23 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+// When WebKit's web process dies the window stays open but blank, and since
+// closing only hides the window the app may sit like that for days.
+#[cfg(target_os = "linux")]
+fn reload_when_renderer_dies(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    use webkit2gtk::{WebProcessTerminationReason, WebViewExt};
+    window.with_webview(|webview| {
+        webview
+            .inner()
+            .connect_web_process_terminated(|view, reason| {
+                eprintln!("Messages: web process terminated ({reason:?}); reloading");
+                if reason != WebProcessTerminationReason::TerminatedByApi {
+                    view.reload();
+                }
+            });
+    })
+}
+
 fn main() {
     tauri::Builder::default()
         // Closing the window only hides it, so an instance outlives its window.
@@ -263,6 +280,11 @@ fn main() {
                     }
                 })
                 .build(app)?;
+
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                reload_when_renderer_dies(&window)?;
+            }
 
             Ok(())
         })

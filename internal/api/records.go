@@ -262,7 +262,7 @@ func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /v1/sync", func(w http.ResponseWriter, r *http.Request) {
-		if b.Status().State != "connected" {
+		if st := b.Status(); !st.Transport || (st.State != "connected" && st.State != "degraded") {
 			apiError(w, provider.ErrUnavailable)
 			return
 		}

@@ -1459,14 +1459,16 @@ function renderStatus() {
   const needsAction = ["connection_failed", "authentication_required"].includes(
     providerState,
   );
-  $("connection-actions").hidden = !needsAction;
+  $("connection-actions").hidden = !needsAction && providerState !== "degraded";
   $("retry-connection").hidden = providerState === "authentication_required";
   $("connection-recovery").textContent =
     providerState === "authentication_required"
       ? status.reason === "session_expired"
         ? "Your phone session expired or was revoked. Pair again and confirm the emoji on your phone."
         : "Pair with your phone and confirm the emoji it shows."
-      : "Retry the connection. If credentials changed, pair again.";
+      : providerState === "degraded"
+        ? "Your phone isn't answering. Reconnecting starts a fresh session with it."
+        : "Retry the connection. If credentials changed, pair again.";
   const banner = $("banner");
   banner.hidden = !token || providerState === "connected";
   banner.className = `banner${needsAction ? " error" : ""}`;
@@ -1493,6 +1495,10 @@ function renderStatus() {
     $("banner-text").textContent = `Phone connection ${state}.${
       status.detail ? ` ${status.detail}` : " Messages queue until it connects."
     }`;
+    if (providerState === "degraded") {
+      action.textContent = "Reconnect";
+      action.onclick = retryConnection;
+    }
   }
 }
 
@@ -2485,8 +2491,12 @@ const LOAD_STEPS = {
   outbox: {
     label: "Download unsent messages",
     slow: BRIDGE_SLOW,
-    done: (os) =>
-      os?.outbox?.length ? `${os.outbox.length} queued` : "Nothing queued",
+    done: (os) => {
+      const unsent = (os?.outbox || []).filter((item) =>
+        ["queued", "sending"].includes(item.state),
+      ).length;
+      return unsent ? `${unsent} queued` : "Nothing queued";
+    },
   },
   history: {
     label: "Check history imports",
