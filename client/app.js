@@ -14,6 +14,7 @@ import {
 } from "/stream.mjs";
 import {
   avatarColor,
+  clockTime,
   composeHint,
   contactDetail,
   contactKey,
@@ -1427,6 +1428,40 @@ function renderCompose() {
 
 // --- Status, banner, settings ----------------------------------------------
 
+const CONNECTION_EVENTS = {
+  client_ready: "Connected to Google and your phone",
+  connected: "Connected",
+  listen_temporary_error: "Connection to Google dropped",
+  listen_recovered: "Connection to Google restored",
+  phone_not_responding: "Phone stopped answering pings",
+  phone_ping_failed: "Could not send a ping to the phone",
+  no_data_received: "Nothing received from Google recently",
+  phone_responding_again: "Phone answering again",
+  sync_reached_phone: "History check reached the phone",
+  reconnect_requested: "Reconnect requested",
+  connection_stopped: "Connection stopped; retrying",
+  logged_out: "Signed out by Google",
+  listen_fatal_error: "Connection failed",
+};
+
+function renderConnectionEvents() {
+  const events = status.connection_events || [];
+  $("connection-history").hidden = !token || !events.length;
+  $("connection-events").replaceChildren(
+    ...events
+      .toReversed()
+      .map((event) =>
+        el(
+          "li",
+          `${clockTime(new Date(event.at))} · ${
+            CONNECTION_EVENTS[event.event] || event.event.replaceAll("_", " ")
+          }`,
+          "hint",
+        ),
+      ),
+  );
+}
+
 function renderStatus() {
   if (status.network === "whatsapp") {
     $("add-people-hint").textContent =
@@ -1439,6 +1474,7 @@ function renderStatus() {
   const state = providerState.replaceAll("_", " ");
   $("status").textContent = token ? state : "Locked";
   $("provider-detail").textContent = status.detail || "";
+  renderConnectionEvents();
   $("sync-status").textContent = status.last_sync
     ? `Recent history checked ${new Date(status.last_sync).toLocaleTimeString()}.${
         status.sync_state === "failed" ? " Latest check failed." : ""
@@ -1492,7 +1528,11 @@ function renderStatus() {
   } else if (providerState === "connecting") {
     $("banner-text").textContent = "Connecting to your phone…";
   } else {
-    $("banner-text").textContent = `Phone connection ${state}.${
+    const since =
+      providerState === "degraded" && status.state_since
+        ? ` since ${clockTime(new Date(status.state_since))}`
+        : "";
+    $("banner-text").textContent = `Phone connection ${state}${since}.${
       status.detail ? ` ${status.detail}` : " Messages queue until it connects."
     }`;
     if (providerState === "degraded") {

@@ -83,6 +83,14 @@ accompany retryable connection failures. Both status and pairing responses inclu
 `session_epoch`, `previous_session_conversations`, and
 `previous_session_messages` so clients can disclose the stored account boundary.
 
+`degraded` means the upstream session exists but something is not answering, and
+`reason` says which: `transport_interrupted` (the Google connection dropped),
+`phone_not_responding`, `phone_ping_failed`, `no_data_received`, or
+`awaiting_phone` (nothing has confirmed the phone since the connection started).
+`detail` carries a sentence for display. `state_since` is when the current `state`
+began. `connection_events` lists up to 20 recent connection events, oldest first,
+as `{"at", "event"}`; it is kept in memory and starts empty when the bridge restarts.
+
 Authenticated pairing control uses these states:
 
 - `waiting_for_login`: a ticket is available for the helper.

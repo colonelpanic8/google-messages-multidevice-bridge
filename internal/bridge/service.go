@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdlog "log"
 	"regexp"
 	"sort"
 	"time"
@@ -17,19 +18,73 @@ import (
 var ErrInvalid = errors.New("invalid request")
 var validKey = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 
-func (b *Bridge) connection(transport, phone bool) {
+const maxConnectionEvents = 20
+
+// Degraded reasons. A phone cause is the event that last marked the phone
+// unresponsive; awaiting_phone means nothing has confirmed it yet.
+var degradedDetail = map[string]string{
+	"transport_interrupted": "The connection to Google dropped; reconnecting automatically.",
+	"phone_not_responding":  "Your phone stopped answering the bridge's pings.",
+	"phone_ping_failed":     "The bridge could not send pings to your phone.",
+	"no_data_received":      "Nothing has arrived from Google recently.",
+	"awaiting_phone":        "Waiting for your phone to answer.",
+}
+
+func (b *Bridge) setStateLocked(state string) {
+	now := time.Now().UTC()
+	if state != b.status.State {
+		b.status.StateSince = now
+	}
+	b.status.State, b.status.Updated = state, now
+}
+
+func (b *Bridge) recordConnectionEventLocked(event string) {
+	events := b.status.ConnectionEvents
+	if len(events) >= maxConnectionEvents {
+		events = events[len(events)-maxConnectionEvents+1:]
+	}
+	// A fresh slice keeps copies already handed out by Status unchanged.
+	b.status.ConnectionEvents = append(append([]ConnectionEvent(nil), events...), ConnectionEvent{At: time.Now().UTC(), Event: event})
+}
+
+func (b *Bridge) recordConnectionEvent(event string) {
+	stdlog.Printf("%s connection event=%s", b.Network(), event)
 	b.mu.Lock()
+	b.recordConnectionEventLocked(event)
+	b.mu.Unlock()
+}
+
+// connection applies the liveness implied by a provider event. phoneCause names
+// the event when it is what marked the phone unresponsive.
+func (b *Bridge) connection(event string, transport, phone bool, phoneCause string) {
+	stdlog.Printf("%s connection event=%s", b.Network(), event)
+	b.mu.Lock()
+	b.recordConnectionEventLocked(event)
 	if b.status.State == "storage_failed" || b.status.State == "authentication_required" || b.status.State == "connection_failed" {
 		b.mu.Unlock()
 		return
 	}
-	b.status.Reason, b.status.Detail = "", ""
-	b.status.Transport, b.status.Phone = transport, phone
-	b.status.State = "degraded"
-	if transport && phone {
-		b.status.State = "connected"
+	if phone {
+		b.phoneCause = ""
+	} else if phoneCause != "" {
+		b.phoneCause = phoneCause
 	}
-	b.status.Updated = time.Now().UTC()
+	b.status.Transport, b.status.Phone = transport, phone
+	b.status.Reason = ""
+	switch {
+	case !transport:
+		b.status.Reason = "transport_interrupted"
+	case !phone && b.phoneCause != "":
+		b.status.Reason = b.phoneCause
+	case !phone:
+		b.status.Reason = "awaiting_phone"
+	}
+	b.status.Detail = degradedDetail[b.status.Reason]
+	if transport && phone {
+		b.setStateLocked("connected")
+	} else {
+		b.setStateLocked("degraded")
+	}
 	b.mu.Unlock()
 	wake(b.sendWake)
 }
@@ -359,9 +414,13 @@ func (b *Bridge) syncLoop(ctx context.Context) {
 			}
 			b.status.LastSync = &now
 			if b.status.Updated.Equal(before.Updated) && ctx.Err() == nil {
-				b.status.State = "connected"
+				if !b.status.Phone || b.status.State != "connected" {
+					b.recordConnectionEventLocked("sync_reached_phone")
+				}
+				b.setStateLocked("connected")
 				b.status.Phone = true
-				b.status.Detail = ""
+				b.phoneCause = ""
+				b.status.Reason, b.status.Detail = "", ""
 				b.status.Updated = now
 			}
 		}

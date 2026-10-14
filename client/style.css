@@ -1769,3 +1769,12 @@ button.reaction:hover {
     margin: 0 12px;
   }
 }
+
+.connection-history ul {
+  margin: 0;
+  padding: 0 0 0 16px;
+  list-style: none;
+}
+.connection-history summary {
+  cursor: pointer;
+}
