@@ -6,6 +6,7 @@
 }:
 let
   cfg = config.services.google-messages-multidevice-bridge;
+  cli = import ./cli.nix { inherit lib pkgs; };
   serverOptions = database: import ./server-options.nix { inherit lib database; };
   instances = lib.filterAttrs (_: instance: instance.enable) (
     cfg.instances // lib.optionalAttrs cfg.enable { default = cfg; }
@@ -60,8 +61,15 @@ in
         example = "/run/secrets/bridge-api-token";
         description = "File holding the API bearer token (for agenix/sops-nix users). The pass lookup is skipped when this is set, and an explicit GOOGLE_MESSAGES_BRIDGE_TOKEN still wins over both.";
       };
+      cli = cli.options;
     };
   config = lib.mkMerge [
+    { services.google-messages-multidevice-bridge.cli.profiles = cli.clientProfile cfg; }
+    (lib.mkIf cfg.cli.enable {
+      assertions = cli.assertions cfg.cli;
+      environment.systemPackages = lib.mkIf (cfg.cli.package != null) [ cfg.cli.package ];
+      environment.etc."gmessages/config.json".text = cli.configJSON cfg.cli;
+    })
     {
       assertions = [
         {

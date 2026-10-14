@@ -210,6 +210,29 @@ process environment while running (visible to the same user, as with any env
 secret). Prefer the keyring entry the client saves on first manual unlock only
 if you would rather type the token once per host and never involve `pass`.
 
+### Command line and MCP for scripts and agents
+
+`cli.enable` installs `gmessages` and writes its profiles to
+`/etc/gmessages/config.json` (NixOS) or `~/.config/gmessages/config.json`
+(Home Manager). A `default` profile is derived from `client.bridgeUrl` and the
+client's token option; add others for further bridge instances:
+
+```nix
+{
+  services.google-messages-multidevice-bridge.cli = {
+    enable = true;
+    profiles.whatsapp = {
+      url = "https://bridge.example.ts.net:8444";
+      tokenFile = config.age.secrets.whatsapp-bridge-api-token.path;
+    };
+  };
+}
+```
+
+Register `gmessages mcp` (read-only) or `gmessages mcp --allow-send` as a stdio
+MCP server in your agent. The token file must be readable by the user the agent
+runs as.
+
 ## Network exposure
 
 The default listener is loopback with an OS-selected port. For a stable local

@@ -252,6 +252,45 @@ and opening a conversation does not itself send a read receipt.
 See [the schema-1 API contract](docs/api.md) for routes, request limits, outbox and
 history states, pagination, pairing, and SSE replay.
 
+## Command line and MCP
+
+`gmessages`, shipped in the same package, is a client for a running bridge meant
+for scripts and agents. It reads the bridge URL and token the same way the desktop
+client does (`GOOGLE_MESSAGES_BRIDGE_URL`, `GOOGLE_MESSAGES_BRIDGE_TOKEN_FILE`), or
+from named profiles in `~/.config/gmessages/config.json` or
+`/etc/gmessages/config.json`, which the Nix modules write from `cli.profiles`:
+
+```json
+{
+  "default_profile": "default",
+  "profiles": {
+    "default": {
+      "url": "https://bridge.example.ts.net:8443",
+      "token_file": "/run/agenix/bridge-token"
+    },
+    "whatsapp": {
+      "url": "https://bridge.example.ts.net:8444",
+      "token_pass_entry": "bridge/whatsapp"
+    }
+  }
+}
+```
+
+```sh
+gmessages conversations --query bank
+gmessages messages "Lisa"                     # ID, part of a name, or a number
+gmessages search --query code --since 15m
+gmessages wait --query code --timeout 2m      # exits 2 if nothing arrives
+gmessages send --to +15125550111 "On my way"
+gmessages --profile whatsapp --json search --since 1h
+```
+
+`gmessages mcp` serves the same operations as MCP tools over stdio:
+`bridge_status`, `list_conversations`, `read_messages`, `search_messages`,
+`wait_for_message`, and `list_contacts`. `send_message` is offered only under
+`gmessages mcp --allow-send`, so registering the server never by itself lets an
+agent text people.
+
 ## Desktop app
 
 `desktop/` is a small [Tauri](https://tauri.app) shell that bundles the same
