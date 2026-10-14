@@ -204,3 +204,52 @@ func TestPublicClientAssetsAndCrossOriginMutation(t *testing.T) {
 		t.Fatal(resp.StatusCode)
 	}
 }
+
+func TestMessageSearchAcrossConversations(t *testing.T) {
+	b, server := fixture(t)
+	now := time.Now().UTC()
+	appendRecord := func(kind, id string, value any) {
+		t.Helper()
+		data, _ := json.Marshal(value)
+		if _, err := b.Store.Append(store.Event{Type: kind, EntityID: id, Data: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendRecord("conversation", "old", model.Conversation{Schema: 1, ID: "old", Updated: now.Add(-2 * time.Hour)})
+	appendRecord("conversation", "new", model.Conversation{Schema: 1, ID: "new", Updated: now})
+	appendRecord("message", "m1", model.Message{Schema: 1, ID: "m1", ConversationID: "old", Time: now.Add(-2 * time.Hour), Direction: "incoming", Text: "Your code is 111111"})
+	appendRecord("message", "m2", model.Message{Schema: 1, ID: "m2", ConversationID: "new", Time: now.Add(-time.Minute), Direction: "incoming", Text: "Your CODE is 222222"})
+	appendRecord("message", "m3", model.Message{Schema: 1, ID: "m3", ConversationID: "new", Time: now, Direction: "outgoing", Text: "thanks, code received"})
+	appendRecord("message", "m4", model.Message{Schema: 1, ID: "m4", ConversationID: "new", Time: now, Direction: "incoming", Text: "unrelated"})
+
+	search := func(query string) []string {
+		t.Helper()
+		req, _ := http.NewRequest("GET", server.URL+"/v1/messages?"+query, nil)
+		req.Header.Set("Authorization", "Bearer test-token")
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out struct{ Messages []model.Message }
+		if resp.StatusCode != 200 || json.NewDecoder(resp.Body).Decode(&out) != nil {
+			t.Fatalf("%s: status %d", query, resp.StatusCode)
+		}
+		ids := []string{}
+		for _, m := range out.Messages {
+			ids = append(ids, m.ID)
+		}
+		return ids
+	}
+	since := now.Add(-10 * time.Minute).Format(time.RFC3339)
+	for query, want := range map[string]string{
+		"q=code":                    "m3,m2,m1",
+		"q=code&direction=incoming": "m2,m1",
+		"q=code&direction=incoming&since=" + since: "m2",
+		"since=" + since + "&limit=1":              "m4",
+	} {
+		if got := strings.Join(search(query), ","); got != want {
+			t.Errorf("%s: got %s want %s", query, got, want)
+		}
+	}
+}

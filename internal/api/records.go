@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/bridge"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
@@ -132,25 +133,11 @@ func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 			apiError(w, err)
 			return
 		}
-		messages := make([]model.Message, 0, len(raw))
-		for _, record := range raw {
-			var m model.Message
-			if err = json.Unmarshal(record.Data, &m); err != nil {
-				apiError(w, err)
-				return
-			}
-			m.ReadOnly = !record.Current
-			if b.Network() == "whatsapp" && !m.Deleted && m.Text == "" && len(m.Attachments) == 0 {
-				continue
-			}
-			messages = append(messages, m)
+		messages, err := newestMessages(b, raw)
+		if err != nil {
+			apiError(w, err)
+			return
 		}
-		sort.Slice(messages, func(i, j int) bool {
-			if messages[i].Time.Equal(messages[j].Time) {
-				return messages[i].ID > messages[j].ID
-			}
-			return messages[i].Time.After(messages[j].Time)
-		})
 		if before := r.URL.Query().Get("before"); before != "" {
 			found := -1
 			for i, m := range messages {
@@ -174,6 +161,51 @@ func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 			next = messages[len(messages)-1].ID
 		}
 		writeJSON(w, map[string]any{"messages": messages, "cursor": cursor, "next_before": next})
+	})
+	mux.HandleFunc("GET /v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		limit, ok := pageLimit(w, r)
+		if !ok {
+			return
+		}
+		query := r.URL.Query()
+		var since time.Time
+		if value := query.Get("since"); value != "" {
+			var err error
+			if since, err = time.Parse(time.RFC3339, value); err != nil {
+				http.Error(w, "since must be an RFC 3339 time", http.StatusBadRequest)
+				return
+			}
+		}
+		direction := query.Get("direction")
+		if direction != "" && direction != "incoming" && direction != "outgoing" {
+			http.Error(w, "direction must be incoming or outgoing", http.StatusBadRequest)
+			return
+		}
+		q := strings.ToLower(strings.TrimSpace(query.Get("q")))
+		raw, cursor, err := recentMessageRecords(b.Store, since)
+		if err != nil {
+			apiError(w, err)
+			return
+		}
+		all, err := newestMessages(b, raw)
+		if err != nil {
+			apiError(w, err)
+			return
+		}
+		messages := make([]model.Message, 0, limit)
+		for _, m := range all {
+			if m.Time.Before(since) || m.Deleted || direction != "" && m.Direction != direction {
+				continue
+			}
+			if q != "" && !strings.Contains(strings.ToLower(m.Text), q) && !strings.Contains(strings.ToLower(m.Subject), q) {
+				continue
+			}
+			if len(messages) == limit {
+				break
+			}
+			messages = append(messages, m)
+		}
+		writeJSON(w, map[string]any{"messages": messages, "cursor": cursor})
 	})
 	mux.HandleFunc("GET /v1/outbox", func(w http.ResponseWriter, r *http.Request) {
 		records, cursor, err := b.Store.Snapshot("outbox")
@@ -253,4 +285,56 @@ func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		_, _ = w.Write(data)
 	})
+}
+
+// recentMessageRecords narrows the scan to conversations updated since since,
+// because a conversation's updated time never precedes its newest message.
+func recentMessageRecords(s *store.Store, since time.Time) ([]store.SnapshotRecord, uint64, error) {
+	if since.IsZero() {
+		return s.SnapshotCurrent("message")
+	}
+	conversations, cursor, err := s.SnapshotCurrent("conversation")
+	if err != nil {
+		return nil, 0, err
+	}
+	var result []store.SnapshotRecord
+	for _, record := range conversations {
+		var c model.Conversation
+		if err := json.Unmarshal(record.Data, &c); err != nil {
+			return nil, 0, err
+		}
+		if c.Updated.Before(since) {
+			continue
+		}
+		raw, _, err := s.ConversationMessages(c.ID)
+		if err != nil {
+			return nil, 0, err
+		}
+		result = append(result, raw...)
+	}
+	return result, cursor, nil
+}
+
+// newestMessages decodes stored messages newest first, leaving out the empty
+// protocol records WhatsApp stores alongside real messages.
+func newestMessages(b *bridge.Bridge, raw []store.SnapshotRecord) ([]model.Message, error) {
+	messages := make([]model.Message, 0, len(raw))
+	for _, record := range raw {
+		var m model.Message
+		if err := json.Unmarshal(record.Data, &m); err != nil {
+			return nil, err
+		}
+		m.ReadOnly = !record.Current
+		if b.Network() == "whatsapp" && !m.Deleted && m.Text == "" && len(m.Attachments) == 0 {
+			continue
+		}
+		messages = append(messages, m)
+	}
+	sort.Slice(messages, func(i, j int) bool {
+		if messages[i].Time.Equal(messages[j].Time) {
+			return messages[i].ID > messages[j].ID
+		}
+		return messages[i].Time.After(messages[j].Time)
+	})
+	return messages, nil
 }

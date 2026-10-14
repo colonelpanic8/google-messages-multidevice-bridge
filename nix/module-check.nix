@@ -17,6 +17,10 @@ let
           type = lib.types.str;
           default = "/test/data";
         };
+        xdg.configFile = lib.mkOption {
+          type = lib.types.attrsOf lib.types.anything;
+          default = { };
+        };
         systemd.user.services = lib.mkOption {
           type = lib.types.attrsOf lib.types.anything;
           default = { };
@@ -112,6 +116,26 @@ let
       }
     ];
   };
+  cliEvaluated = lib.evalModules {
+    specialArgs = { inherit pkgs; };
+    modules = [
+      ./home-manager.nix
+      stubOptions
+      {
+        config.services.google-messages-multidevice-bridge = {
+          client.bridgeUrl = "https://bridge.example.ts.net:8443";
+          client.apiTokenFile = "/run/agenix/api-token";
+          cli.enable = true;
+          cli.package = bridgePackage;
+          cli.profiles.whatsapp = {
+            url = "https://bridge.example.ts.net:8444";
+            tokenPassEntry = "tokens/whatsapp";
+          };
+        };
+      }
+    ];
+  };
+  cliConfig = builtins.fromJSON cliEvaluated.config.xdg.configFile."gmessages/config.json".text;
   nixosEvaluated = lib.evalModules {
     specialArgs = { inherit pkgs; };
     modules = [
@@ -121,6 +145,10 @@ let
         {
           options = {
             systemd.services = lib.mkOption {
+              type = lib.types.attrsOf lib.types.anything;
+              default = { };
+            };
+            environment.etc = lib.mkOption {
               type = lib.types.attrsOf lib.types.anything;
               default = { };
             };
@@ -171,7 +199,24 @@ assert builtins.all (a: a.assertion) clientEvaluated.config.assertions;
 assert builtins.length clientPreseeded.config.home.packages == 1;
 assert builtins.head clientPreseeded.config.home.packages != bridgePackage;
 assert builtins.all (a: a.assertion) clientPreseeded.config.assertions;
+# The default profile follows the client's preseeded bridge; tokens stay out.
+assert
+  cliConfig == {
+    default_profile = "default";
+    profiles = {
+      default = {
+        url = "https://bridge.example.ts.net:8443";
+        token_file = "/run/agenix/api-token";
+      };
+      whatsapp = {
+        url = "https://bridge.example.ts.net:8444";
+        token_pass_entry = "tokens/whatsapp";
+      };
+    };
+  };
+assert cliEvaluated.config.home.packages == [ bridgePackage ];
 assert nixosEvaluated.config.environment.systemPackages == [ bridgePackage ];
+assert nixosEvaluated.config.environment.etc == { };
 assert builtins.all (a: a.assertion) nixosEvaluated.config.assertions;
 assert
   nixosEvaluated.config.systemd.services.google-messages-multidevice-bridge-whatsapp.serviceConfig.DynamicUser;

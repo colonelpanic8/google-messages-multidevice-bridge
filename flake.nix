@@ -26,7 +26,10 @@
             src = ./.;
 
             go = pkgs.go_1_26;
-            subPackages = [ "cmd/google-messages-multidevice-bridge" ];
+            subPackages = [
+              "cmd/google-messages-multidevice-bridge"
+              "cmd/gmessages"
+            ];
             checkPhase = ''
               runHook preCheck
               go test ./...
