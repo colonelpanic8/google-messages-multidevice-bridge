@@ -19,7 +19,7 @@ func TestContactsAreCachedAndSurviveAnUnreachablePhone(t *testing.T) {
 			{ID: "p1", Name: "Ada Lovelace", Address: "+14155550100", Frequent: true},
 		}, nil
 	}})
-	b.connection(true, true)
+	b.connection("client_ready", true, true, "")
 
 	book, err := b.Contacts(context.Background(), false)
 	if err != nil {
@@ -49,7 +49,7 @@ func TestContactsAreCachedAndSurviveAnUnreachablePhone(t *testing.T) {
 func TestContactsWithoutAStoredCopyReportThePhoneIsUnavailable(t *testing.T) {
 	b := testBridge(t)
 	b.setProvider(&fakeProvider{})
-	b.connection(true, true)
+	b.connection("client_ready", true, true, "")
 	if _, err := b.Contacts(context.Background(), false); !errors.Is(err, provider.ErrUnavailable) {
 		t.Fatalf("first read without a phone: %v", err)
 	}

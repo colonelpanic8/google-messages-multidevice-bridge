@@ -21,6 +21,7 @@ type Status struct {
 	Reason                string     `json:"reason,omitempty"`
 	Detail                string     `json:"detail,omitempty"`
 	Updated               time.Time  `json:"updated"`
+	StateSince            time.Time  `json:"state_since"`
 	Transport             bool       `json:"transport_connected"`
 	Phone                 bool       `json:"phone_responsive"`
 	SyncState             string     `json:"sync_state"`
@@ -28,6 +29,13 @@ type Status struct {
 	SessionEpoch          uint64     `json:"session_epoch"`
 	PreviousConversations int        `json:"previous_session_conversations"`
 	PreviousMessages      int        `json:"previous_session_messages"`
+	// Oldest first, so a client can tell a flapping connection from a stuck one.
+	ConnectionEvents []ConnectionEvent `json:"connection_events,omitempty"`
+}
+
+type ConnectionEvent struct {
+	At    time.Time `json:"at"`
+	Event string    `json:"event"`
 }
 
 type Bridge struct {
@@ -55,6 +63,7 @@ type Bridge struct {
 	fatal            chan error
 	mu               sync.RWMutex
 	status           Status
+	phoneCause       string
 	provider         provider.Provider
 	providerCtx      context.Context
 	providerOps      sync.WaitGroup
@@ -101,7 +110,8 @@ func (b *Bridge) setStatus(state, detail string) {
 func (b *Bridge) setStatusReason(state, reason, detail string) {
 	defer b.Hub.Notify()
 	b.mu.Lock()
-	b.status.State, b.status.Reason, b.status.Detail, b.status.Updated = state, reason, detail, time.Now().UTC()
+	b.setStateLocked(state)
+	b.status.Reason, b.status.Detail = reason, detail
 	if state != "connected" && state != "degraded" {
 		b.status.Transport, b.status.Phone = false, false
 	}

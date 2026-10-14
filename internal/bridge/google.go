@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	stdlog "log"
 	"sync"
 	"time"
 
@@ -89,8 +88,7 @@ func (g *googleConnection) Handle(b *Bridge, event any) error {
 		}
 		b.Hub.Publish(out.Event)
 	case *events.ClientReady:
-		stdlog.Printf("google event=%T", e)
-		b.connection(true, true)
+		b.connection("client_ready", true, true, "")
 		for _, conv := range e.Conversations {
 			if err := g.ingest(b, conv); err != nil {
 				return err
@@ -104,28 +102,25 @@ func (g *googleConnection) Handle(b *Bridge, event any) error {
 			}
 		}
 	case *events.ListenTemporaryError:
-		stdlog.Printf("google event=%T", e)
-		b.connection(false, b.Status().Phone)
-	case *events.PingFailed, *events.PhoneNotResponding, *events.NoDataReceived:
-		stdlog.Printf("google event=%T", e)
-		b.connection(b.Status().Transport, false)
-		// A history request is a direct phone round trip; without one the
-		// degraded state lasts until the next periodic sync.
-		b.RequestSync()
+		b.connection("listen_temporary_error", false, b.Status().Phone, "")
+	case *events.PingFailed:
+		g.phoneUnresponsive(b, "phone_ping_failed")
+	case *events.PhoneNotResponding:
+		g.phoneUnresponsive(b, "phone_not_responding")
+	case *events.NoDataReceived:
+		g.phoneUnresponsive(b, "no_data_received")
 	case *events.ListenRecovered:
-		stdlog.Printf("google event=%T", e)
-		b.connection(true, b.Status().Phone)
+		b.connection("listen_recovered", true, b.Status().Phone, "")
 		b.RequestSync()
 	case *events.PhoneRespondingAgain:
-		stdlog.Printf("google event=%T", e)
-		b.connection(b.Status().Transport, true)
+		b.connection("phone_responding_again", b.Status().Transport, true, "")
 		b.RequestSync()
 	case *events.GaiaLoggedOut:
-		stdlog.Printf("google event=%T", e)
+		b.recordConnectionEvent("logged_out")
 		b.setStatusReason("authentication_required", "session_expired", "Your Google Messages phone session expired or was revoked; re-pair to reconnect")
 		b.fail(errors.New("google session expired; pair again"))
 	case *events.ListenFatalError:
-		stdlog.Printf("google event=%T", e)
+		b.recordConnectionEvent("listen_fatal_error")
 		if libgm.IsAuthFailure(e.Error) {
 			b.setStatusReason("authentication_required", "session_expired", "Your Google Messages phone session expired or was revoked; re-pair to reconnect")
 		} else {
@@ -138,6 +133,13 @@ func (g *googleConnection) Handle(b *Bridge, event any) error {
 	return b.storageErr
 }
 
+func (g *googleConnection) phoneUnresponsive(b *Bridge, cause string) {
+	b.connection(cause, b.Status().Transport, false, cause)
+	// A history request is a direct phone round trip; without one the
+	// degraded state lasts until the next periodic sync.
+	b.RequestSync()
+}
+
 // Run owns the provider connection until ctx ends or the provider fails. It
 // returns only after every goroutine it started has exited and the event
 // handler is closed. Stored history stays readable afterwards unless the
@@ -148,7 +150,7 @@ func (g *googleConnection) Run(b *Bridge, ctx context.Context, offline bool, coo
 		b.mu.Lock()
 		if b.storageErr != nil {
 			result = b.storageErr
-			b.status.State = "storage_failed"
+			b.setStateLocked("storage_failed")
 			b.status.Transport, b.status.Phone = false, false
 		}
 		b.mu.Unlock()

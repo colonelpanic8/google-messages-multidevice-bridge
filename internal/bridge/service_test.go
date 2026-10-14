@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -471,7 +472,7 @@ func TestShutdownDuringAttemptRecordsAmbiguityAndStopsWorker(t *testing.T) {
 	}
 	started := make(chan struct{})
 	b.setProvider(&fakeProvider{send: func(ctx context.Context, o model.Outbox) error { close(started); <-ctx.Done(); return ctx.Err() }})
-	b.connection(true, true)
+	b.connection("client_ready", true, true, "")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
@@ -623,5 +624,47 @@ func TestPhoneNotRespondingProbesWithoutWaitingForPeriodicSync(t *testing.T) {
 			t.Fatalf("calls=%d status=%+v", calls.Load(), status)
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestDegradedStatusNamesTheCause(t *testing.T) {
+	b := testBridge(t)
+	check := func(state, reason string) Status {
+		t.Helper()
+		status := b.Status()
+		if status.State != state || status.Reason != reason || (reason != "") != (status.Detail != "") {
+			t.Fatalf("want %s/%s, got %+v", state, reason, status)
+		}
+		return status
+	}
+	b.Handle(&events.ClientReady{})
+	connectedSince := check("connected", "").StateSince
+	b.Handle(&events.PhoneNotResponding{})
+	degradedSince := check("degraded", "phone_not_responding").StateSince
+	if !degradedSince.After(connectedSince) {
+		t.Fatalf("state_since did not advance: %v then %v", connectedSince, degradedSince)
+	}
+	b.Handle(&events.ListenTemporaryError{})
+	if check("degraded", "transport_interrupted").StateSince != degradedSince {
+		t.Fatal("state_since moved without a state change")
+	}
+	// The transport is back but nothing has vouched for the phone.
+	b.Handle(&events.ListenRecovered{})
+	check("degraded", "phone_not_responding")
+	b.Handle(&events.PhoneRespondingAgain{})
+	check("connected", "")
+	var got []string
+	for _, event := range b.Status().ConnectionEvents {
+		got = append(got, event.Event)
+	}
+	want := []string{"client_ready", "phone_not_responding", "listen_temporary_error", "listen_recovered", "phone_responding_again"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("events %v", got)
+	}
+	for range maxConnectionEvents + 5 {
+		b.Handle(&events.PingFailed{})
+	}
+	if events := b.Status().ConnectionEvents; len(events) != maxConnectionEvents || events[0].Event != "phone_ping_failed" {
+		t.Fatalf("history not bounded: %d", len(events))
 	}
 }

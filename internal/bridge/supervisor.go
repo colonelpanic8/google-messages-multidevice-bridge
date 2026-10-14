@@ -7,6 +7,7 @@ import (
 )
 
 func (b *Bridge) RequestReconnect() {
+	b.recordConnectionEvent("reconnect_requested")
 	b.mu.Lock()
 	cancel := b.connectionCancel
 	b.mu.Unlock()
@@ -75,6 +76,7 @@ func (b *Bridge) supervise(ctx context.Context, offline bool, run func(context.C
 			if time.Since(started) > time.Minute {
 				delay = b.reconnectDelay
 			}
+			b.recordConnectionEvent("connection_stopped")
 			b.setStatusReason("connection_failed", "transient_connection_failure", "Upstream connection stopped; reconnecting automatically")
 			timer := time.NewTimer(delay)
 			select {

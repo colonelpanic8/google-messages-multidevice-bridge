@@ -361,7 +361,7 @@ func (w *whatsappConnection) Handle(b *Bridge, event any) error {
 	}
 	switch e := event.(type) {
 	case *events.Connected:
-		b.connection(true, true)
+		b.connection("connected", true, true, "")
 		b.RequestSync()
 	case *events.ManualLoginReconnect, *events.StreamError, *events.KeepAliveTimeout:
 		b.fail(errors.New("WhatsApp connection interrupted"))
