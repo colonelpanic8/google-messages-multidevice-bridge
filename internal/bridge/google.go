@@ -108,7 +108,8 @@ func (g *googleConnection) Handle(b *Bridge, event any) error {
 	case *events.PhoneNotResponding:
 		g.phoneUnresponsive(b, "phone_not_responding")
 	case *events.NoDataReceived:
-		g.phoneUnresponsive(b, "no_data_received")
+		b.recordConnectionEvent("no_data_received")
+		b.RequestSync()
 	case *events.ListenRecovered:
 		b.connection("listen_recovered", true, b.Status().Phone, "")
 		b.RequestSync()
