@@ -178,9 +178,7 @@ function notice(message) {
   if (message) noticeTimer = setTimeout(() => notice(""), 6000);
 }
 function autogrow() {
-  const text = $("text");
-  text.style.height = "auto";
-  text.style.height = `${Math.min(text.scrollHeight, 160)}px`;
+  $("compose-size").textContent = $("text").value + " ";
 }
 
 // Rendering is batched per animation frame; state changes mark parts dirty.
@@ -2479,6 +2477,7 @@ function clearPrivateUI() {
     "wa-phone",
   ])
     $(id).value = "";
+  autogrow();
   contactBook = { contacts: [], stale: false };
   peopleConversation = "";
   addPicker.clear();

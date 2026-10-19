@@ -1272,8 +1272,14 @@ button.reaction:hover {
 .compose-row .attach input {
   display: none;
 }
-.compose-row textarea {
+.compose-input {
   flex: 1;
+  min-width: 0;
+  position: relative;
+}
+/* The hidden copy sizes the composer without measuring or collapsing the input. */
+.compose-input textarea,
+#compose-size {
   min-width: 0;
   min-height: 48px;
   max-height: 160px;
@@ -1284,6 +1290,18 @@ button.reaction:hover {
   resize: none;
   line-height: 22px;
   font-size: 15px;
+}
+#compose-size {
+  visibility: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  overflow: hidden;
+}
+.compose-input textarea {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   transition: background-color var(--motion-short) var(--ease-standard);
 }
 .compose-row textarea:focus {
