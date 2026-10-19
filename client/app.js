@@ -66,7 +66,10 @@ let token = "",
 let selected = "",
   composing = false;
 const conversations = new Map();
+let conversationOrder,
+  lastListQuery = "";
 const outbox = new Map();
+let outboxVersion = 0;
 const historyJobs = new Map();
 const threads = new Map();
 let conversationCursor = 0,
@@ -195,6 +198,7 @@ function render() {
   if (parts.has("status")) renderStatus();
   if (parts.has("list")) renderList();
   if (parts.has("thread")) renderThread();
+  else if (parts.has("thread-status")) renderThreadStatus();
   if (parts.has("compose")) renderCompose();
   if (parts.has("newchat")) renderNewChat();
   if (parts.has("history")) renderHistory();
@@ -291,6 +295,7 @@ function loadThread(id, before = "", { limit = 100, quiet = false } = {}) {
         entry.updates,
       );
       entry.messages = new Map(merged.map((message) => [message.id, message]));
+      entry.layout = undefined;
       entry.cursor = Math.max(entry.cursor, page.cursor || 0);
       if (before || !entry.fetched) entry.before = page.next_before || "";
       entry.fetched = true;
@@ -320,10 +325,12 @@ function loadAll({ track = (key, work) => work({}) } = {}) {
     ]);
     if (requestGeneration !== generation) return;
     conversations.clear();
+    conversationOrder = undefined;
     for (const conversation of cs.conversations || [])
       conversations.set(conversation.id, conversation);
     conversationCursor = cs.cursor || 0;
     outbox.clear();
+    outboxVersion++;
     for (const item of os.outbox || []) outbox.set(item.id, item);
     outboxCursor = os.cursor || 0;
     if (!hs.error) {
@@ -369,10 +376,12 @@ function loadAll({ track = (key, work) => work({}) } = {}) {
 
 function applyStatus(next) {
   const previousEpoch = currentSessionEpoch;
+  const previousState = providerState;
   status = next || {};
   providerState = status.state || "offline";
   currentSessionEpoch = status.session_epoch || 0;
   invalidate("status", "compose");
+  if (previousState !== providerState) invalidate("thread");
   scheduleReadReceipt();
   if (previousEpoch && currentSessionEpoch !== previousEpoch)
     void loadAll().catch((error) => notice(error.message));
@@ -396,6 +405,7 @@ function applyEvent(event) {
     case "conversation":
       if (id > conversationCursor) {
         conversations.set(event.entity_id, data);
+        conversationOrder = undefined;
         invalidate("list");
         if (event.entity_id === selected) {
           invalidate("thread", "compose");
@@ -411,6 +421,7 @@ function applyEvent(event) {
         entry.updates.set(event.entity_id, event);
       else if (id > entry.cursor) {
         entry.messages.set(event.entity_id, data);
+        entry.layout = undefined;
         if (data.conversation_id === selected) {
           invalidate("thread", "compose");
           scheduleReadReceipt();
@@ -420,15 +431,25 @@ function applyEvent(event) {
     }
     case "outbox":
       if (id > outboxCursor) {
+        const previous = outbox.get(event.entity_id);
         outbox.set(event.entity_id, data);
-        invalidate("thread");
+        outboxVersion++;
+        if (
+          [previous, data].some(
+            (item) =>
+              item &&
+              (item.request?.conversation_id || item.conversation_id) ===
+                selected,
+          )
+        )
+          invalidate("thread");
         maybeSelectCreatedConversation();
       }
       break;
     case "history":
       if (id > historyCursor) {
         historyJobs.set(event.entity_id, data);
-        invalidate("history", "thread");
+        invalidate("history", "thread-status");
       }
       break;
     case "typing":
@@ -514,7 +535,7 @@ function fillConversationNode(node, conversation) {
 }
 function renderList() {
   const items = filterConversations(
-    sortConversations(conversations.values()),
+    (conversationOrder ??= sortConversations(conversations.values())),
     $("search").value,
   );
   const container = $("conversations");
@@ -551,12 +572,18 @@ function renderList() {
   for (const [id, entry] of listNodes)
     if (!seen.has(id)) {
       entry.node.remove();
-      listNodes.delete(id);
+      if (!conversations.has(id)) listNodes.delete(id);
     }
   reportUnread();
-  const placed = measureRows(
-    order.filter((node) => node.parentNode === container),
+  const reordered = order.some(
+    (node, index) => container.children[index] !== node,
   );
+  const query = $("search").value;
+  const placed =
+    reordered && query === lastListQuery
+      ? measureRows(order.filter((node) => node.parentNode === container))
+      : undefined;
+  lastListQuery = query;
   let child = container.firstElementChild;
   for (const node of order) {
     if (child === node) {
@@ -604,22 +631,36 @@ function reportUnread() {
 // --- Thread -----------------------------------------------------------------
 
 const previewCache = new Map();
+let previewAbort = new AbortController();
 const previewObserver =
   typeof IntersectionObserver === "function"
     ? new IntersectionObserver((entries) => {
         for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
+          if (!entry.isIntersecting || !entry.target.isConnected) continue;
           previewObserver.unobserve(entry.target);
           loadPreview(entry.target);
         }
       })
     : null;
+function clearPreviews() {
+  previewObserver?.disconnect();
+  previewAbort.abort();
+  previewAbort = new AbortController();
+  for (const pending of previewCache.values())
+    pending.then((url) => URL.revokeObjectURL(url)).catch(() => {});
+  previewCache.clear();
+}
+function unobservePreviews(node) {
+  for (const img of node.querySelectorAll("img.preview"))
+    previewObserver?.unobserve(img);
+}
 async function loadPreview(img) {
   const id = img.dataset.attachmentId;
+  const signal = previewAbort.signal;
   let pending = previewCache.get(id);
   if (!pending) {
     pending = fetch(api(`/v1/attachments/${encodeURIComponent(id)}`), {
-      signal: abort.signal,
+      signal,
       headers: { Authorization: `Bearer ${token}` },
     }).then((response) => {
       if (!response.ok) throw new Error("preview unavailable");
@@ -632,10 +673,11 @@ async function loadPreview(img) {
     previewCache.set(id, pending);
   }
   try {
-    img.src = await pending;
+    const url = await pending;
+    if (!signal.aborted && img.isConnected) img.src = url;
   } catch {
-    previewCache.delete(id);
-    img.closest(".bubble")?.remove();
+    if (previewCache.get(id) === pending) previewCache.delete(id);
+    if (!signal.aborted && img.isConnected) img.closest(".bubble")?.remove();
   }
 }
 async function downloadAttachment(attachment) {
@@ -748,7 +790,7 @@ function textBubble(text, extraClass = "") {
 function reactionKey(conversationID, messageID, emoji, remove = false) {
   return [conversationID, messageID, emoji, remove].join("|");
 }
-function recentReactions() {
+function readRecentReactions() {
   try {
     const stored = JSON.parse(localStorage.getItem(RECENT_REACTIONS) || "[]");
     return Array.isArray(stored)
@@ -758,11 +800,24 @@ function recentReactions() {
     return [];
   }
 }
+let savedReactions = readRecentReactions();
+let quickReactionEmojis;
+function recentReactions() {
+  return savedReactions;
+}
+window.addEventListener("storage", (event) => {
+  if (event.key !== RECENT_REACTIONS && event.key !== null) return;
+  savedReactions = readRecentReactions();
+  quickReactionEmojis = undefined;
+  invalidate("thread");
+});
 function rememberReaction(emoji) {
   const recents = [
     emoji,
     ...recentReactions().filter((recent) => recent !== emoji),
   ].slice(0, 24);
+  savedReactions = recents;
+  quickReactionEmojis = undefined;
   try {
     localStorage.setItem(RECENT_REACTIONS, JSON.stringify(recents));
   } catch {
@@ -771,34 +826,37 @@ function rememberReaction(emoji) {
 }
 // The quick row keeps what this browser reaches for, padded with the defaults.
 function quickReactions() {
-  return [...new Set([...recentReactions(), ...DEFAULT_REACTIONS])].slice(
-    0,
-    QUICK_REACTIONS,
-  );
+  return (quickReactionEmojis ??= [
+    ...new Set([...recentReactions(), ...DEFAULT_REACTIONS]),
+  ].slice(0, QUICK_REACTIONS));
 }
 function reactionPicker(message) {
   const picker = el("details", undefined, "react");
   const summary = el("summary");
   summary.setAttribute("aria-label", "Add reaction");
   summary.append(icon("emoji"));
-  const choices = el("div", undefined, "react-choices");
-  for (const emoji of quickReactions()) {
-    const choice = button(emoji, undefined, () => {
+  picker.append(summary);
+  picker.addEventListener("toggle", () => {
+    if (!picker.open || picker.childElementCount > 1) return;
+    const choices = el("div", undefined, "react-choices");
+    for (const emoji of quickReactions()) {
+      const choice = button(emoji, undefined, () => {
+        picker.open = false;
+        void startReaction(message.id, emoji);
+      });
+      choice.setAttribute("aria-label", `React ${emoji}`);
+      choices.append(choice);
+    }
+    const more = button(undefined, "react-more", () => {
       picker.open = false;
-      void startReaction(message.id, emoji);
+      void openEmojiPicker(message.id);
     });
-    choice.setAttribute("aria-label", `React ${emoji}`);
-    choices.append(choice);
-  }
-  const more = button(undefined, "react-more", () => {
-    picker.open = false;
-    void openEmojiPicker(message.id);
+    more.append(icon("search"));
+    more.title = "Search all emoji";
+    more.setAttribute("aria-label", "Search all emoji");
+    choices.append(more);
+    picker.append(choices);
   });
-  more.append(icon("search"));
-  more.title = "Search all emoji";
-  more.setAttribute("aria-label", "Search all emoji");
-  choices.append(more);
-  picker.append(summary, choices);
   return picker;
 }
 function pendingReactionRows(message) {
@@ -828,22 +886,6 @@ function pendingReactionRows(message) {
     rows.push(row);
   }
   return rows;
-}
-function messageSignature(row, conversation) {
-  const message = row.message;
-  const pending = [...pendingReactions.entries()]
-    .filter(([, item]) => item.request.body.message_id === message.id)
-    .map(([key, item]) => `${key}:${item.sending}`)
-    .join(",");
-  return JSON.stringify([
-    message,
-    row.first,
-    row.last,
-    pending,
-    conversation.read_only,
-    conversation.participants,
-    quickReactions(),
-  ]);
 }
 function buildMessageRow(row, conversation) {
   const message = row.message;
@@ -974,6 +1016,7 @@ function buildOutboxRow(row) {
 
 const threadNodes = new Map();
 let threadNodesFor = "";
+let threadHeaderSignature, renderedLayout, renderedContext;
 let preserveScroll = false;
 let threadSwitching = false;
 let fullHistory;
@@ -988,29 +1031,83 @@ function renderThread() {
   document.body.classList.toggle("thread-open", !!conversation || composing);
   if ($("people-dialog").open) renderPeople();
   if (!conversation) return;
-  fillAvatar($("thread-avatar"), conversation);
-  $("thread-title").textContent = displayName(conversation);
-  $("thread-info").textContent = `${
-    others(conversation)
-      .map((participant) => participant.address || participant.name)
-      .join(", ") || (conversation.protocol || "message").toUpperCase()
-  }${conversation.read_only ? " · Previous pairing · read only" : ""}`;
+  const headerSignature = JSON.stringify([
+    conversation.id,
+    conversation.name,
+    conversation.protocol,
+    conversation.read_only,
+    conversation.participants,
+  ]);
+  if (headerSignature !== threadHeaderSignature) {
+    fillAvatar($("thread-avatar"), conversation);
+    $("thread-title").textContent = displayName(conversation);
+    $("thread-info").textContent = `${
+      others(conversation)
+        .map((participant) => participant.address || participant.name)
+        .join(", ") || (conversation.protocol || "message").toUpperCase()
+    }${conversation.read_only ? " · Previous pairing · read only" : ""}`;
+    threadHeaderSignature = headerSignature;
+  }
   const entry = thread(selected);
-  const messages = [...entry.messages.values()];
-  const rows = layoutThread(
-    messages,
-    threadOutbox(
-      [...outbox.values()],
-      selected,
-      new Set(messages.map((message) => message.id)),
-    ),
-  );
+  const day = new Date().toDateString();
+  if (
+    !entry.layout ||
+    entry.layout.outboxVersion !== outboxVersion ||
+    entry.layout.day !== day
+  ) {
+    const messages = [...entry.messages.values()];
+    entry.layout = {
+      day,
+      outboxVersion,
+      messages,
+      rows: layoutThread(
+        messages,
+        threadOutbox(
+          [...outbox.values()],
+          selected,
+          new Set(messages.map((message) => message.id)),
+        ),
+      ),
+    };
+  }
+  const { rows } = entry.layout;
+  const context = JSON.stringify([
+    conversation.read_only,
+    conversation.participants,
+    quickReactions(),
+  ]);
+  const pending = new Map();
+  for (const [key, item] of pendingReactions) {
+    const id = item.request.body.message_id;
+    pending.set(
+      id,
+      (pending.get(id) || "") + JSON.stringify([key, item.sending, item.error]),
+    );
+  }
+  const renderContext = JSON.stringify([
+    context,
+    [...pending],
+    currentSessionEpoch,
+    providerState,
+  ]);
+  if (
+    threadNodesFor === selected &&
+    renderedLayout === entry.layout &&
+    renderedContext === renderContext &&
+    !entry.scrollToTop &&
+    !entry.scrollToBottom &&
+    !preserveScroll
+  ) {
+    renderThreadStatus();
+    return;
+  }
   const container = $("messages");
   const rowsNode = $("rows");
   // Messages for a newly selected conversation usually land a render after the
   // switch, so the thread animates once as a whole instead of row by row.
   const switched = threadNodesFor !== selected;
   if (switched) {
+    clearPreviews();
     threadNodes.clear();
     rowsNode.replaceChildren();
     threadNodesFor = selected;
@@ -1034,7 +1131,7 @@ function renderThread() {
       row.kind === "divider"
         ? row.label
         : row.kind === "message"
-          ? messageSignature(row, conversation)
+          ? `${row.first}:${row.last}:${pending.get(row.message.id) || ""}:${context}`
           : JSON.stringify([
               row.item,
               row.first,
@@ -1044,15 +1141,22 @@ function renderThread() {
             ]);
     let cached = threadNodes.get(row.key);
     const fresh = !cached;
-    if (!cached || cached.signature !== signature) {
+    if (
+      !cached ||
+      cached.signature !== signature ||
+      (row.kind === "message" && cached.message !== row.message)
+    ) {
       const node =
         row.kind === "divider"
           ? el("div", row.label, "divider")
           : row.kind === "message"
             ? buildMessageRow(row, conversation)
             : buildOutboxRow(row);
-      if (cached) cached.node.replaceWith(node);
-      cached = { node, signature };
+      if (cached) {
+        unobservePreviews(cached.node);
+        cached.node.replaceWith(node);
+      }
+      cached = { node, signature, message: row.message };
       threadNodes.set(row.key, cached);
       if (
         fresh &&
@@ -1066,6 +1170,7 @@ function renderThread() {
   }
   for (const [key, cached] of threadNodes)
     if (!seen.has(key)) {
+      unobservePreviews(cached.node);
       cached.node.remove();
       threadNodes.delete(key);
     }
@@ -1086,18 +1191,9 @@ function renderThread() {
     threadSwitching = false;
     animateIn(rowsNode);
   }
-  const importState = renderImportStatus(conversation);
-  const arriving =
-    importState?.state === "active" || importState?.state === "waiting";
-  if (!rows.length && (!entry.fetched || arriving))
-    rowsNode.append(skeletonThread());
-  else if (!rows.length)
-    rowsNode.append(
-      el("p", "No messages in stored history yet.", "thread-empty"),
-    );
-  $("older").hidden = !entry.before && !fullHistory && !importState;
-  $("load-older").hidden = !!fullHistory || !entry.before;
-  $("older-progress").hidden = !fullHistory;
+  renderedLayout = entry.layout;
+  renderedContext = renderContext;
+  renderThreadStatus();
   if (entry.scrollToTop) {
     container.scrollTop = 0;
     entry.scrollToTop = false;
@@ -1109,8 +1205,31 @@ function renderThread() {
     container.scrollTop = container.scrollHeight;
     if (entry.fetched) entry.scrollToBottom = false;
   }
+}
+
+function renderThreadStatus() {
+  const conversation = conversations.get(selected);
+  if (!conversation) return;
+  const entry = thread(selected);
+  const rowsNode = $("rows");
+  const importState = renderImportStatus(conversation);
+  const arriving =
+    importState?.state === "active" || importState?.state === "waiting";
+  const empty =
+    !entry.messages.size &&
+    !threadOutbox([...outbox.values()], selected, new Set()).length;
+  if (empty)
+    rowsNode.replaceChildren(
+      !entry.fetched || arriving
+        ? skeletonThread()
+        : el("p", "No messages in stored history yet.", "thread-empty"),
+    );
+  $("older").hidden = !entry.before && !fullHistory && !importState;
+  $("load-older").hidden = !!fullHistory || !entry.before;
+  $("older-progress").hidden = !fullHistory;
   $("mark-read").disabled =
-    conversation.read_only || !messages.some((message) => !message.read_only);
+    conversation.read_only ||
+    ![...entry.messages.values()].some((message) => !message.read_only);
   $("import-conversation").disabled = conversation.read_only || importing > 0;
   $("load-full-history").disabled = !!fullHistory;
 }
@@ -1151,7 +1270,8 @@ function renderImportStatus(conversation) {
   node.hidden = !state;
   if (state) {
     node.className = `import-status ${state.state}`;
-    $("import-status-text").textContent = state.label;
+    if ($("import-status-text").textContent !== state.label)
+      $("import-status-text").textContent = state.label;
   }
   const action = $("import-status-action");
   action.hidden = !state?.action;
@@ -1896,7 +2016,7 @@ async function select(id) {
   invalidate("list", "thread", "compose");
   receiptAttempts.delete(id);
   try {
-    await loadThread(id);
+    if (!entry.fetched) await loadThread(id);
   } catch (error) {
     notice(error.message);
   }
@@ -2410,15 +2530,14 @@ renderNotifyControls();
 
 function clearPrivateUI() {
   pushSynced = false;
-  for (const pending of previewCache.values())
-    pending.then((url) => URL.revokeObjectURL(url)).catch(() => {});
-  previewCache.clear();
+  clearPreviews();
   notified.clear();
   receiptAttempts.clear();
   clearTimeout(receiptTimer);
   pendingSend = pendingConversation = createdConversation = undefined;
   selectedFiles = [];
   conversations.clear();
+  conversationOrder = undefined;
   outbox.clear();
   historyJobs.clear();
   threads.clear();
@@ -2426,6 +2545,7 @@ function clearPrivateUI() {
   listRendered = false;
   threadNodes.clear();
   threadNodesFor = "";
+  threadHeaderSignature = renderedLayout = renderedContext = undefined;
   selected = "";
   composing = false;
   cursor = conversationCursor = outboxCursor = historyCursor = 0;

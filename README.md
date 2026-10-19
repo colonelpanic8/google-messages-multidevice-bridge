@@ -397,6 +397,21 @@ draft restoration, and clearing on lock. It reports input-handler timing without
 a machine-dependent pass threshold. Run with `--browser webkit` as well when that
 browser is installed to cover the desktop app's rendering engine.
 
+`tools/check-performance.mjs` runs against the same fixture. It checks live
+message updates, lazy reaction menus, background import updates, cached navigation,
+pending sends in empty threads, and attachment cleanup. It also measures redraws
+with 1,500 messages and search with 2,000 synthetic conversations:
+
+```sh
+playwright-cli -s=performance open http://127.0.0.1:PORT --browser chrome
+playwright-cli -s=performance run-code "$(node --input-type=module -e 'import check from "./tools/check-performance.mjs"; console.log(check.toString())')"
+playwright-cli -s=performance close
+```
+
+Use a dedicated browser session: this check disables the fixture's service worker
+and injects measurement hooks into its client. These hooks are not part of the
+shipped application. Timings are diagnostic, without hardware-dependent thresholds.
+
 ## License
 
 AGPL-3.0-or-later. This project depends on mautrix-gmessages; retain its source and

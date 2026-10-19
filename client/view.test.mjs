@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  clockTime,
+  dayLabel,
+  dividerLabel,
   contactDetail,
   contactKey,
   contactName,
@@ -27,6 +30,47 @@ import {
 const at = (minutes) =>
   new Date(Date.UTC(2026, 8, 13, 12, minutes)).toISOString();
 const now = new Date(Date.UTC(2026, 8, 13, 13, 0));
+
+test("cached date formatters preserve local date labels and invalid dates", () => {
+  const date = new Date(2024, 4, 12, 16, 30);
+  assert.equal(
+    clockTime(date),
+    date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+  );
+  assert.equal(
+    dayLabel(date, now),
+    date.toLocaleDateString([], {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    }),
+  );
+  assert.equal(
+    dividerLabel(date, now),
+    `${dayLabel(date, now)} • ${clockTime(date)}`,
+  );
+  assert.equal(clockTime(new Date(NaN)), "Invalid Date");
+  assert.equal(dayLabel(new Date(NaN)), "Invalid Date");
+});
+
+test("thread layout orders messages and outbox together without mutating inputs", () => {
+  const messages = [
+    { id: "b", time: at(2), direction: "incoming" },
+    { id: "a", time: at(2), direction: "outgoing" },
+    { id: "early", time: at(0), direction: "incoming" },
+  ];
+  const rows = layoutThread(messages, [{ id: "send", created: at(1) }], {
+    now,
+  });
+  assert.deepEqual(
+    rows.filter((row) => row.kind !== "divider").map((row) => row.key),
+    ["m:early", "o:send", "m:a", "m:b"],
+  );
+  assert.deepEqual(
+    messages.map((message) => message.id),
+    ["b", "a", "early"],
+  );
+});
 
 test("thread layout groups consecutive senders and inserts time dividers", () => {
   const rows = layoutThread(

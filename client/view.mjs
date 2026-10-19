@@ -94,8 +94,31 @@ const dayDistance = (date, now) => {
   return Math.round((start(now) - start(date)) / 86400000);
 };
 
+const clockFormat = new Intl.DateTimeFormat([], {
+  hour: "numeric",
+  minute: "2-digit",
+});
+const shortWeekdayFormat = new Intl.DateTimeFormat([], { weekday: "short" });
+const longWeekdayFormat = new Intl.DateTimeFormat([], { weekday: "long" });
+const shortDateFormat = new Intl.DateTimeFormat([], {
+  month: "short",
+  day: "numeric",
+});
+const weekdayDateFormat = new Intl.DateTimeFormat([], {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+});
+const fullDateFormat = new Intl.DateTimeFormat([], {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+});
+
 export function clockTime(date) {
-  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return Number.isNaN(date.getTime())
+    ? "Invalid Date"
+    : clockFormat.format(date);
 }
 
 // Conversation list stamp: time today, weekday this week, otherwise a date.
@@ -105,34 +128,21 @@ export function listTime(value, now = new Date()) {
   if (Number.isNaN(date.getTime())) return "";
   if (sameDay(date, now)) return clockTime(date);
   const distance = dayDistance(date, now);
-  if (distance > 0 && distance < 7)
-    return date.toLocaleDateString([], { weekday: "short" });
+  if (distance > 0 && distance < 7) return shortWeekdayFormat.format(date);
   if (date.getFullYear() === now.getFullYear())
-    return date.toLocaleDateString([], { month: "short", day: "numeric" });
-  return date.toLocaleDateString([], {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+    return shortDateFormat.format(date);
+  return fullDateFormat.format(date);
 }
 
 export function dayLabel(date, now = new Date()) {
+  if (Number.isNaN(date.getTime())) return "Invalid Date";
   if (sameDay(date, now)) return "Today";
   const distance = dayDistance(date, now);
   if (distance === 1) return "Yesterday";
-  if (distance > 0 && distance < 7)
-    return date.toLocaleDateString([], { weekday: "long" });
+  if (distance > 0 && distance < 7) return longWeekdayFormat.format(date);
   if (date.getFullYear() === now.getFullYear())
-    return date.toLocaleDateString([], {
-      weekday: "short",
-      month: "short",
-      day: "numeric",
-    });
-  return date.toLocaleDateString([], {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+    return weekdayDateFormat.format(date);
+  return fullDateFormat.format(date);
 }
 
 export function dividerLabel(date, now = new Date()) {
@@ -248,7 +258,7 @@ const GROUP_GAP = 10 * 60 * 1000;
 export function layoutThread(messages, outbox, options = {}) {
   const now = options.now || new Date();
   const items = [
-    ...sortMessages(messages).map((message) => ({
+    ...messages.map((message) => ({
       kind: "message",
       key: `m:${message.id}`,
       time: messageTime(message),

@@ -2,11 +2,16 @@ package api
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"io/fs"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/client"
 )
@@ -38,24 +43,23 @@ func fingerprint() string {
 
 type asset struct {
 	file, contentType string
-	revalidate        bool
 }
 
 var assets = map[string]asset{
-	"/":                            {"index.html", "text/html; charset=utf-8", false},
-	"/style.css":                   {"style.css", "text/css; charset=utf-8", false},
-	"/app.js":                      {"app.js", "text/javascript; charset=utf-8", false},
-	"/stream.mjs":                  {"stream.mjs", "text/javascript; charset=utf-8", false},
-	"/view.mjs":                    {"view.mjs", "text/javascript; charset=utf-8", false},
-	"/emoji.mjs":                   {"emoji.mjs", "text/javascript; charset=utf-8", false},
-	"/emoji-data.mjs":              {"emoji-data.mjs", "text/javascript; charset=utf-8", false},
-	"/manifest.webmanifest":        {"manifest.webmanifest", "application/manifest+json; charset=utf-8", false},
-	"/favicon.svg":                 {"favicon.svg", "image/svg+xml", false},
-	"/sw.js":                       {"sw.js", "text/javascript; charset=utf-8", true},
-	"/icons/icon-192.png":          {"icons/icon-192.png", "image/png", false},
-	"/icons/icon-512.png":          {"icons/icon-512.png", "image/png", false},
-	"/icons/favicon-32.png":        {"icons/favicon-32.png", "image/png", false},
-	"/icons/icon-maskable-512.png": {"icons/icon-maskable-512.png", "image/png", false},
+	"/":                            {"index.html", "text/html; charset=utf-8"},
+	"/style.css":                   {"style.css", "text/css; charset=utf-8"},
+	"/app.js":                      {"app.js", "text/javascript; charset=utf-8"},
+	"/stream.mjs":                  {"stream.mjs", "text/javascript; charset=utf-8"},
+	"/view.mjs":                    {"view.mjs", "text/javascript; charset=utf-8"},
+	"/emoji.mjs":                   {"emoji.mjs", "text/javascript; charset=utf-8"},
+	"/emoji-data.mjs":              {"emoji-data.mjs", "text/javascript; charset=utf-8"},
+	"/manifest.webmanifest":        {"manifest.webmanifest", "application/manifest+json; charset=utf-8"},
+	"/favicon.svg":                 {"favicon.svg", "image/svg+xml"},
+	"/sw.js":                       {"sw.js", "text/javascript; charset=utf-8"},
+	"/icons/icon-192.png":          {"icons/icon-192.png", "image/png"},
+	"/icons/icon-512.png":          {"icons/icon-512.png", "image/png"},
+	"/icons/favicon-32.png":        {"icons/favicon-32.png", "image/png"},
+	"/icons/icon-maskable-512.png": {"icons/icon-maskable-512.png", "image/png"},
 }
 
 func serveAsset(w http.ResponseWriter, r *http.Request, networks ...string) bool {
@@ -70,14 +74,53 @@ func serveAsset(w http.ResponseWriter, r *http.Request, networks ...string) bool
 	if !ok {
 		return false
 	}
-	data, err := client.Files.ReadFile(entry.file)
+	network := "google-messages"
+	if len(networks) > 0 && networks[0] == "whatsapp" {
+		network = "whatsapp"
+	}
+	key := network + ":" + entry.file
+	cached, _ := assetBodies.LoadOrStore(key, sync.OnceValues(func() (*assetBody, error) {
+		return prepareAsset(entry, network)
+	}))
+	body, err := cached.(func() (*assetBody, error))()
 	if err != nil {
 		http.Error(w, "client unavailable", http.StatusInternalServerError)
 		return true
 	}
-	network := "google-messages"
-	if len(networks) > 0 {
-		network = networks[0]
+	data := body.plain
+	etag := body.etag
+	if len(body.gzip) > 0 {
+		w.Header().Set("Vary", "Accept-Encoding")
+		if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+			data = body.gzip
+			etag += "-gzip"
+			w.Header().Set("Content-Encoding", "gzip")
+		}
+	}
+	w.Header().Set("ETag", `"`+etag+`"`)
+	w.Header().Set("Content-Type", entry.contentType)
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	http.ServeContent(w, r, entry.file, time.Time{}, bytes.NewReader(data))
+	return true
+}
+
+// AssetVersion identifies the embedded client build.
+func AssetVersion() string { return assetVersion }
+
+var assetBodies sync.Map
+
+type assetBody struct {
+	plain, gzip []byte
+	etag        string
+}
+
+func prepareAsset(entry asset, network string) (*assetBody, error) {
+	data, err := client.Files.ReadFile(entry.file)
+	if err != nil {
+		return nil, err
 	}
 	if network == "whatsapp" && (entry.file == "index.html" || entry.file == "manifest.webmanifest") {
 		data = bytes.ReplaceAll(data, []byte("Google Messages Multi-Device Bridge"), []byte("WhatsApp Multi-Device Bridge"))
@@ -91,19 +134,48 @@ func serveAsset(w http.ResponseWriter, r *http.Request, networks ...string) bool
 	if entry.file == "sw.js" {
 		data = bytes.ReplaceAll(data, []byte("__ASSET_VERSION__"), []byte(assetVersion+"-"+network))
 	}
-	w.Header().Set("Content-Type", entry.contentType)
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-	if entry.revalidate {
-		// The worker decides when the rest of the shell is replaced, so it must
-		// never be served from a stale browser cache.
-		w.Header().Set("Cache-Control", "no-cache")
+	sum := sha256.Sum256(data)
+	body := &assetBody{plain: data, etag: hex.EncodeToString(sum[:])}
+	if len(data) >= 1024 && (strings.HasPrefix(entry.contentType, "text/") || strings.Contains(entry.contentType, "json") || strings.Contains(entry.contentType, "svg")) {
+		var compressed bytes.Buffer
+		writer, err := gzip.NewWriterLevel(&compressed, gzip.BestSpeed)
+		if err != nil {
+			return nil, err
+		}
+		if _, err = writer.Write(data); err != nil {
+			return nil, err
+		}
+		if err = writer.Close(); err != nil {
+			return nil, err
+		}
+		body.gzip = compressed.Bytes()
 	}
-	if r.Method != "HEAD" {
-		_, _ = w.Write(data)
-	}
-	return true
+	return body, nil
 }
 
-// AssetVersion identifies the embedded client build.
-func AssetVersion() string { return assetVersion }
+func acceptsGzip(header string) bool {
+	wildcard := false
+	for _, coding := range strings.Split(header, ",") {
+		parts := strings.Split(coding, ";")
+		name := strings.ToLower(strings.TrimSpace(parts[0]))
+		quality := 1.0
+		for _, parameter := range parts[1:] {
+			key, value, ok := strings.Cut(parameter, "=")
+			if ok && strings.EqualFold(strings.TrimSpace(key), "q") {
+				var err error
+				quality, err = strconv.ParseFloat(strings.TrimSpace(value), 64)
+				if err != nil {
+					quality = 0
+				}
+			}
+		}
+		accepted := quality > 0 && quality <= 1
+		if name == "gzip" {
+			return accepted
+		}
+		if name == "*" {
+			wildcard = accepted
+		}
+	}
+	return wildcard
+}
