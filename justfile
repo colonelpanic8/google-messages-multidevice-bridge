@@ -17,6 +17,7 @@ lint:
     node --check client/view.mjs
     node --check client/emoji.mjs
     node --check client/emoji-data.mjs
+    node --check tools/check-compose.mjs
     node --check internal/api/pairinghelper/setup.mjs
     node --check internal/api/pairinghelper/service-worker.js
 

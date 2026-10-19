@@ -486,12 +486,15 @@
                 <input id="attachments" type="file" multiple />
               </label>
               <label class="sr-only" for="text">Message</label>
-              <textarea
-                id="text"
-                rows="1"
-                maxlength="16000"
-                placeholder="Text message"
-              ></textarea>
+              <div class="compose-input">
+                <div id="compose-size" aria-hidden="true"></div>
+                <textarea
+                  id="text"
+                  rows="1"
+                  maxlength="16000"
+                  placeholder="Text message"
+                ></textarea>
+              </div>
               <button id="send" type="submit" class="send" aria-label="Send">
                 <svg><use href="#i-send" /></svg>
               </button>

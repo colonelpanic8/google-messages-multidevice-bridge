@@ -383,6 +383,20 @@ messages. Sends only enter its temporary local queue. Normal tests skip it.
 Set `BRIDGE_BROWSER_RECOVERY_TEST=1` as well to render an expired-session state
 with synthetic previous-pairing records for recovery UI review.
 
+To check composer sizing and typing with the 1,500-message fixture, open its
+printed port in a fresh Playwright CLI session and run:
+
+```sh
+playwright-cli -s=compose open http://127.0.0.1:PORT --browser chrome
+playwright-cli -s=compose run-code "$(node --input-type=module -e 'import check from "./tools/check-compose.mjs"; console.log(check.toString())')"
+playwright-cli -s=compose close
+```
+
+The check covers wrapping, trailing newlines, the height limit, window resizing,
+draft restoration, and clearing on lock. It reports input-handler timing without
+a machine-dependent pass threshold. Run with `--browser webkit` as well when that
+browser is installed to cover the desktop app's rendering engine.
+
 ## License
 
 AGPL-3.0-or-later. This project depends on mautrix-gmessages; retain its source and
