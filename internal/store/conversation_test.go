@@ -153,7 +153,7 @@ func TestUnreadFollowsLiveMessages(t *testing.T) {
 	}
 
 	// An explicit read receipt clears the badge without waiting for Google.
-	if changed, err := s.ReadConversation("c1"); err != nil || !changed {
+	if changed, err := s.ReadConversation("c1", arrived.Time); err != nil || !changed {
 		t.Fatalf("read receipt: %v %v", changed, err)
 	}
 	if c := storedConversation(t, s, "c1"); c.Unread {
@@ -196,5 +196,159 @@ func TestUnreadFollowsLiveMessages(t *testing.T) {
 	}
 	if c := storedConversation(t, s, "c1"); c.Unread || c.Preview != "on my way" {
 		t.Fatalf("send did not clear the badge: %+v", c)
+	}
+}
+
+func TestConversationPreviewDoesNotRegressWithoutStoredMessage(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "preview.db"), bytes.Repeat([]byte{6}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UTC()
+	newer := model.Conversation{Schema: 1, ID: "c", Preview: "newer phone preview", Updated: now, Unread: true}
+	if _, err = s.Append(conversationEvent(t, newer)); err != nil {
+		t.Fatal(err)
+	}
+	older := newer
+	older.Name, older.Preview, older.Updated, older.Unread = "Updated name", "stale", now.Add(-time.Hour), false
+	if _, err = s.Append(conversationEvent(t, older)); err != nil {
+		t.Fatal(err)
+	}
+	got := storedConversation(t, s, "c")
+	if got.Preview != newer.Preview || !got.Updated.Equal(now) || !got.Unread || got.Name != older.Name {
+		t.Fatalf("stale snapshot changed preview: %+v", got)
+	}
+	if err = s.SavePairedSession([]byte(`{}`), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Append(conversationEvent(t, older)); err != nil {
+		t.Fatal(err)
+	}
+	if got = storedConversation(t, s, "c"); got.Preview != "stale" || !got.Updated.Equal(older.Updated) {
+		t.Fatalf("previous session leaked: %+v", got)
+	}
+}
+
+func TestEqualTimestampPreviewIsIndependentOfArrivalOrder(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "ties.db"), bytes.Repeat([]byte{7}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UTC()
+	if _, err = s.Append(conversationEvent(t, model.Conversation{Schema: 1, ID: "c"})); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"m2", "m1", "m2", "m1"} {
+		m := model.Message{Schema: 1, ID: id, ConversationID: "c", Time: now, Text: id, Direction: "incoming"}
+		if _, err = s.Append(messageEvent(t, m)); err != nil {
+			t.Fatal(err)
+		}
+		if c := storedConversation(t, s, "c"); c.Preview != "m2" {
+			t.Fatalf("preview depends on arrival order: %+v", c)
+		}
+	}
+}
+
+func TestConversationHistoryCannotUndoMessageOrReadObservation(t *testing.T) {
+	for _, read := range []bool{false, true} {
+		t.Run(map[bool]string{false: "message", true: "read"}[read], func(t *testing.T) {
+			s, err := Open(filepath.Join(t.TempDir(), "fence.db"), bytes.Repeat([]byte{8}, 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			now := time.Now().UTC()
+			c := model.Conversation{Schema: 1, ID: "c", Unread: read}
+			if _, err = s.Append(conversationEvent(t, c)); err != nil {
+				t.Fatal(err)
+			}
+			mark, err := s.HistoryWatermark()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if read {
+				_, err = s.ReadConversation("c", now)
+			} else {
+				_, err = s.Append(messageEvent(t, model.Message{Schema: 1, ID: "m", ConversationID: "c", Time: now, Text: "new", Direction: "incoming"}))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if changed, err := s.AppendIfUnchanged(conversationEvent(t, c), mark); err != nil || changed {
+				t.Fatalf("stale history was applied: %v %v", changed, err)
+			}
+			if got := storedConversation(t, s, "c"); got.Unread == read {
+				t.Fatalf("history reversed unread: %+v", got)
+			}
+		})
+	}
+}
+
+func TestReadReceiptDoesNotClearNewerMessage(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "read.db"), bytes.Repeat([]byte{9}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UTC()
+	if _, err = s.Append(conversationEvent(t, model.Conversation{Schema: 1, ID: "c", Updated: now, Unread: true})); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := s.ReadConversation("c", now.Add(-time.Second)); err != nil || changed {
+		t.Fatalf("older receipt cleared newer message: %v %v", changed, err)
+	}
+	if !storedConversation(t, s, "c").Unread {
+		t.Fatal("newer message was marked read")
+	}
+}
+
+func TestDisplayedMessageClearsUnreadAndHistoricalMessagesDoNotRaiseIt(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "displayed.db"), bytes.Repeat([]byte{10}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err = s.Append(conversationEvent(t, model.Conversation{Schema: 1, ID: "c"})); err != nil {
+		t.Fatal(err)
+	}
+	m := model.Message{Schema: 1, ID: "m", ConversationID: "c", Time: time.Now().UTC(), Text: "hello", Direction: "incoming", Status: "incoming_complete"}
+	if _, err = s.Append(messageEvent(t, m)); err != nil {
+		t.Fatal(err)
+	}
+	if !storedConversation(t, s, "c").Unread {
+		t.Fatal("missing unread")
+	}
+	m.Status = "incoming_displayed"
+	if _, err = s.Append(messageEvent(t, m)); err != nil {
+		t.Fatal(err)
+	}
+	if storedConversation(t, s, "c").Unread {
+		t.Fatal("phone read did not clear unread")
+	}
+	manualUnread := storedConversation(t, s, "c")
+	manualUnread.Unread = true
+	if _, err = s.Append(conversationEvent(t, manualUnread)); err != nil {
+		t.Fatal(err)
+	}
+	m.Reactions = []model.Reaction{{Emoji: "👍"}}
+	if _, err = s.Append(messageEvent(t, m)); err != nil {
+		t.Fatal(err)
+	}
+	if !storedConversation(t, s, "c").Unread {
+		t.Fatal("re-observing displayed status undid manual unread")
+	}
+	if _, err = s.ReadConversation("c", m.Time); err != nil {
+		t.Fatal(err)
+	}
+	m.ID, m.Time, m.Status = "m2", m.Time.Add(time.Second), "incoming_complete"
+	e := messageEvent(t, m)
+	e.Historical = true
+	if _, err = s.Append(e); err != nil {
+		t.Fatal(err)
+	}
+	if storedConversation(t, s, "c").Unread {
+		t.Fatal("history raised unread")
 	}
 }

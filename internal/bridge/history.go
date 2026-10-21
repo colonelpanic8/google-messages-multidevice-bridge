@@ -114,6 +114,7 @@ func (b *Bridge) historyOne(ctx context.Context) error {
 		return err
 	}
 	for _, snap := range snapshots {
+		snap.Event.Historical = true
 		if err = b.apply(snap, mark); err != nil {
 			return err
 		}

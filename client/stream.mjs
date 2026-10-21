@@ -145,17 +145,34 @@ export function pastedImageName(file, index = 0) {
   return `pasted-image${suffix}.${extensions[file.type] || "img"}`;
 }
 
-// Preserve fetched pages while applying live updates newer than a snapshot.
-export function mergeMessages(existing, page, cursor, updates) {
-  const records = new Map(existing.map((m) => [m.id, m]));
-  const fetched = new Set(page.map((m) => m.id));
-  for (const m of page) records.set(m.id, m);
-  for (const event of updates.values()) {
-    if (!fetched.has(event.entity_id) || event.id > cursor)
-      records.set(event.entity_id, event.data);
-    else updates.delete(event.entity_id);
+// A page cursor covers only the messages on that page. Advancing a thread-wide
+// cursor would discard delayed receipts for messages on previously loaded pages.
+export function applyMessageEvent(entry, event) {
+  const version = entry.versions.get(event.entity_id) ?? entry.cursor;
+  if (event.id <= version) return false;
+  entry.messages.set(event.entity_id, event.data);
+  entry.versions.set(event.entity_id, event.id);
+  return true;
+}
+
+export function mergeMessagePage(entry, page) {
+  const cursor = page.cursor || 0;
+  for (const message of page.messages || []) {
+    if ((entry.versions.get(message.id) || 0) > cursor) continue;
+    entry.messages.set(message.id, message);
+    entry.versions.set(message.id, cursor);
   }
-  return [...records.values()];
+  if (!entry.fetched) entry.cursor = cursor;
+}
+
+// Heartbeats arrive every 15 seconds, including when no messages change.
+export async function readStreamChunk(reader, controller, timeout = 45000) {
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    return await reader.read();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Pages backwards until there is nothing older, `cancelled` says to stop, or a

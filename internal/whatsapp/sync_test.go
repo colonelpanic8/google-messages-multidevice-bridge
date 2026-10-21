@@ -108,7 +108,7 @@ func TestHistoryConversationMetadataAndLivePreview(t *testing.T) {
 	if got.Updated.Unix() != 300 || got.Preview != time.Unix(300, 0).String() || got.PreviewDirection != "outgoing" || got.PreviewSenderID == "" || got.UnreadCount != 3 || !got.Unread {
 		t.Fatal(got)
 	}
-	if _, err := p.DB.ReadConversation("123@lid"); err != nil {
+	if _, err := p.DB.ReadConversation("123@lid", conversationFixture(t, p).Updated); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Ingest(ctx, "history", h); err != nil {
@@ -357,7 +357,7 @@ func TestMutationsDoNotCreateMessagesOrIncrementUnread(t *testing.T) {
 	if c.UnreadCount != 1 || c.Preview != "Message deleted" {
 		t.Fatal(c)
 	}
-	if _, err := p.DB.ReadConversation("123@lid"); err != nil {
+	if _, err := p.DB.ReadConversation("123@lid", conversationFixture(t, p).Updated); err != nil {
 		t.Fatal(err)
 	}
 	if c = conversationFixture(t, p); c.Unread || c.UnreadCount != 0 {

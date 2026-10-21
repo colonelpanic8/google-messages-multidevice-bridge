@@ -64,6 +64,7 @@ func (g *googleConnection) Handle(b *Bridge, event any) error {
 			if err != nil {
 				return err
 			}
+			snap.Event.Historical = true
 			if err = b.apply(snap, 0); err != nil {
 				return err
 			}
