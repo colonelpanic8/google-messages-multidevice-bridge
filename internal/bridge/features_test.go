@@ -311,3 +311,40 @@ func TestMarkReadClearsTheBadgeBeforeGoogleResendsTheConversation(t *testing.T) 
 		t.Fatalf("badge outlived the read receipt: %+v", c)
 	}
 }
+
+func TestRecentHistoryImportDoesNotRaiseUnread(t *testing.T) {
+	b := testBridge(t)
+	if err := b.persist(snapshot(t, "conversation", "c", model.Conversation{Schema: 1, ID: "c"})); err != nil {
+		t.Fatal(err)
+	}
+	m := model.Message{Schema: 1, ID: "historical", ConversationID: "c", Time: time.Now().UTC(), Text: "recent history", Direction: "incoming", Status: "incoming_complete"}
+	b.setProvider(&fakeProvider{messagePage: func(context.Context, string, []byte) ([]provider.Snapshot, []byte, error) {
+		return []provider.Snapshot{snapshot(t, "message", m.ID, m)}, nil, nil
+	}})
+	if _, err := b.QueueHistory("c", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.historyOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	check := func(wantUnread bool) {
+		t.Helper()
+		raw, err := b.Store.Record("conversation", "c")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var c model.Conversation
+		if err = json.Unmarshal(raw, &c); err != nil {
+			t.Fatal(err)
+		}
+		if c.Unread != wantUnread || c.Preview != m.Text {
+			t.Fatalf("unexpected conversation: %+v", c)
+		}
+	}
+	check(false)
+	m.ID, m.Time, m.Text = "live", m.Time.Add(time.Second), "new live message"
+	if err := b.persist(snapshot(t, "message", m.ID, m)); err != nil {
+		t.Fatal(err)
+	}
+	check(true)
+}
