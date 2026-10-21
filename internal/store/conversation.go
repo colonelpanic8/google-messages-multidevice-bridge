@@ -50,11 +50,14 @@ func previewSource(data []byte) (model.Message, latestMessage, bool) {
 // store can move it: reconciliation re-observing what it already holds must not
 // light a badge the phone has since cleared. A message the phone already
 // displayed, or one sent from any of the owner's devices, clears it instead.
-func unreadAfter(m model.Message, fresh bool) *bool {
+func unreadAfter(m model.Message, fresh bool, previousStatus string) *bool {
+	read, unread := false, true
+	if m.Direction == "incoming" && strings.Contains(m.Status, "displayed") && !strings.Contains(previousStatus, "displayed") {
+		return &read
+	}
 	if !fresh {
 		return nil
 	}
-	read, unread := false, true
 	if m.Direction == "outgoing" {
 		return &read
 	}
@@ -108,10 +111,11 @@ func mergeLatestMessage(c *model.Conversation, l latestMessage, unread *bool) bo
 	if unread != nil && c.Protocol == "whatsapp" {
 		if *unread {
 			c.UnreadCount++
-		} else {
+			changed = true
+		} else if c.UnreadCount != 0 {
 			c.UnreadCount = 0
+			changed = true
 		}
-		changed = true
 	}
 	if unread != nil && c.Unread != *unread {
 		c.Unread = *unread
@@ -128,9 +132,33 @@ func (s *Store) previewConversation(tx *bolt.Tx, data json.RawMessage) (json.Raw
 	if json.Unmarshal(data, &c) != nil || c.Schema != model.Schema || c.ID == "" {
 		return data, nil
 	}
+	key := "conversation:" + c.ID
+	changed := false
+	if previous := tx.Bucket([]byte("latest")).Get([]byte(key)); previous != nil && entityCurrentTx(tx, "conversation", c.ID) {
+		plain, err := s.decrypt(previous, key)
+		if err != nil {
+			return nil, err
+		}
+		var stored model.Conversation
+		if err = json.Unmarshal(plain, &stored); err != nil {
+			return nil, err
+		}
+		if stored.Updated.After(c.Updated) {
+			changed = true
+			c.Updated, c.Preview = stored.Updated, stored.Preview
+			c.PreviewSenderID, c.PreviewDirection = stored.PreviewSenderID, stored.PreviewDirection
+			c.Unread, c.UnreadCount = stored.Unread, stored.UnreadCount
+		}
+	}
 	l, ok, err := s.latestMessageTx(tx, c.ID)
-	if err != nil || !ok || !mergeLatestMessage(&c, l, nil) {
-		return data, err
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		changed = mergeLatestMessage(&c, l, nil) || changed
+	}
+	if !changed {
+		return data, nil
 	}
 	return json.Marshal(c)
 }
@@ -151,6 +179,9 @@ func (s *Store) updateConversationTx(tx *bolt.Tx, conversationID string, mutate 
 	if json.Unmarshal(plain, &c) != nil || c.Schema != model.Schema {
 		return false, nil
 	}
+	if err = observeTx(tx, key); err != nil {
+		return false, err
+	}
 	if !mutate(&c) {
 		return false, nil
 	}
@@ -163,12 +194,12 @@ func (s *Store) updateConversationTx(tx *bolt.Tx, conversationID string, mutate 
 
 // ReadConversation clears the unread badge as soon as the phone accepts a read
 // receipt, rather than leaving it lit until Google resends the conversation.
-func (s *Store) ReadConversation(conversationID string) (bool, error) {
+func (s *Store) ReadConversation(conversationID string, through time.Time) (bool, error) {
 	changed := false
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		var err error
 		changed, err = s.updateConversationTx(tx, conversationID, func(c *model.Conversation) bool {
-			if !c.Unread {
+			if c.Updated.After(through) || (!c.Unread && c.UnreadCount == 0) {
 				return false
 			}
 			c.Unread = false
@@ -183,7 +214,7 @@ func (s *Store) ReadConversation(conversationID string) (bool, error) {
 // refreshConversationTx records a just-applied message as its conversation's
 // newest and updates the conversation snapshot when that changes what a list
 // row shows. fresh reports whether the message snapshot was new to the store.
-func (s *Store) refreshConversationTx(tx *bolt.Tx, data []byte, fresh bool) (bool, error) {
+func (s *Store) refreshConversationTx(tx *bolt.Tx, data []byte, fresh bool, previousStatus string) (bool, error) {
 	m, l, ok := previewSource(data)
 	if !ok {
 		return false, nil
@@ -192,13 +223,13 @@ func (s *Store) refreshConversationTx(tx *bolt.Tx, data []byte, fresh bool) (boo
 	if err != nil {
 		return false, err
 	}
-	if found && previous.Time.After(l.Time) {
+	if found && (previous.Time.After(l.Time) || (previous.Time.Equal(l.Time) && previous.MessageID > l.MessageID)) {
 		return false, nil
 	}
 	if err = s.putLatestMessageTx(tx, m.ConversationID, l); err != nil {
 		return false, err
 	}
-	unread := unreadAfter(m, fresh)
+	unread := unreadAfter(m, fresh, previousStatus)
 	return s.updateConversationTx(tx, m.ConversationID, func(c *model.Conversation) bool {
 		return mergeLatestMessage(c, l, unread)
 	})
@@ -227,7 +258,7 @@ func (s *Store) ensureConversationPreviews(tx *bolt.Tx) error {
 		if !ok {
 			continue
 		}
-		if best, seen := newest[m.ConversationID]; seen && best.Time.After(l.Time) {
+		if best, seen := newest[m.ConversationID]; seen && (best.Time.After(l.Time) || (best.Time.Equal(l.Time) && best.MessageID > l.MessageID)) {
 			continue
 		}
 		newest[m.ConversationID] = l

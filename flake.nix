@@ -22,7 +22,7 @@
         {
           default = pkgs.buildGoModule {
             pname = "google-messages-multidevice-bridge";
-            version = "0.1.0-dev";
+            version = "0.1.2";
             src = ./.;
 
             go = pkgs.go_1_26;

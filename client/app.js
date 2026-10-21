@@ -1,6 +1,8 @@
 import {
   createParser,
-  mergeMessages,
+  applyMessageEvent,
+  mergeMessagePage,
+  readStreamChunk,
   walkOlder,
   newConversationRequest,
   addParticipantsRequest,
@@ -62,6 +64,7 @@ const THREAD_CACHE = 16;
 
 let token = "",
   abort,
+  streamAbort,
   generation = 0;
 let selected = "",
   composing = false;
@@ -257,7 +260,7 @@ function thread(id) {
   if (!entry) {
     entry = {
       messages: new Map(),
-      updates: new Map(),
+      versions: new Map(),
       cursor: 0,
       before: "",
       fetched: false,
@@ -288,18 +291,14 @@ function loadThread(id, before = "", { limit = 100, quiet = false } = {}) {
         }`,
       );
       if (requestGeneration !== generation || threads.get(id) !== entry) return;
-      const merged = mergeMessages(
-        [...entry.messages.values()],
-        page.messages || [],
-        page.cursor || 0,
-        entry.updates,
-      );
-      entry.messages = new Map(merged.map((message) => [message.id, message]));
+      mergeMessagePage(entry, page);
       entry.layout = undefined;
-      entry.cursor = Math.max(entry.cursor, page.cursor || 0);
       if (before || !entry.fetched) entry.before = page.next_before || "";
       entry.fetched = true;
-      if (id === selected && !quiet) invalidate("thread", "compose");
+      if (id === selected) {
+        if (!quiet) invalidate("thread", "compose");
+        scheduleReadReceipt();
+      }
     } finally {
       entry.loading = undefined;
     }
@@ -313,6 +312,7 @@ let loadingAll, loadingAllGeneration;
 function loadAll({ track = (key, work) => work({}) } = {}) {
   if (loadingAll && loadingAllGeneration === generation) return loadingAll;
   const requestGeneration = (loadingAllGeneration = generation);
+  streamAbort?.abort();
   const fetchStep = (key, path) =>
     track(key, (options) => request(path, options));
   const pending = (async () => {
@@ -340,9 +340,8 @@ function loadAll({ track = (key, work) => work({}) } = {}) {
     }
     const cursors = [conversationCursor, outboxCursor];
     if (!hs.error) cursors.push(historyCursor);
-    cursor = Math.min(cursor || Infinity, ...cursors);
-    for (const [id, entry] of threads)
-      if (id !== selected || entry.loading) threads.delete(id);
+    cursor = Math.min(...cursors);
+    threads.clear();
     if (selected) {
       thread(selected).fetched = false;
       void loadThread(selected).catch((error) => notice(error.message));
@@ -417,10 +416,7 @@ function applyEvent(event) {
     case "message": {
       const entry = threads.get(data.conversation_id);
       if (!entry) break;
-      if (entry.loading || !entry.fetched)
-        entry.updates.set(event.entity_id, event);
-      else if (id > entry.cursor) {
-        entry.messages.set(event.entity_id, data);
+      if (applyMessageEvent(entry, event)) {
         entry.layout = undefined;
         if (data.conversation_id === selected) {
           invalidate("thread", "compose");
@@ -465,18 +461,27 @@ function applyEvent(event) {
 }
 
 async function stream(currentGeneration) {
-  while (generation === currentGeneration && token) {
-    let failed = false;
+  const current = () => generation === currentGeneration && !!token;
+  while (current()) {
+    if (loadingAll) await loadingAll.catch(() => {});
+    if (!current()) return;
+    const controller = (streamAbort = new AbortController());
+    const signal = AbortSignal.any([abort.signal, controller.signal]);
     try {
       const response = await fetch(api(`/v1/stream?after=${cursor}`), {
-        signal: abort.signal,
+        signal,
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (response.status === 400) {
+        await loadAll();
+        continue;
+      }
       if (!response.ok) throw new Error("Live updates unavailable");
       const reader = response.body.getReader(),
         decoder = new TextDecoder();
       let live = false;
       const parse = createParser((event) => {
+        if (!current() || signal.aborted) return;
         if (event.type === "live") {
           live = true;
           return;
@@ -486,22 +491,19 @@ async function stream(currentGeneration) {
       });
       try {
         for (;;) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
+          const chunk = await readStreamChunk(reader, controller);
+          if (chunk.done) throw new Error("Live connection closed");
           parse(decoder.decode(chunk.value, { stream: true }));
         }
       } finally {
         await reader.cancel().catch(() => {});
       }
     } catch {
-      failed = true;
-      if (generation === currentGeneration && !abort.signal.aborted)
+      if (current() && !loadingAll)
         notice("Live connection interrupted. Reconnecting…");
     }
-    if (generation !== currentGeneration || !token) return;
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    if (generation !== currentGeneration || !token) return;
-    if (failed) await loadAll().catch(() => {});
+    if (!current()) return;
+    if (!loadingAll) await new Promise((resolve) => setTimeout(resolve, 2000));
   }
 }
 
@@ -554,9 +556,7 @@ function renderList() {
     }
     const signature = [
       displayName(conversation),
-      conversation.preview,
-      conversation.preview_direction,
-      conversation.preview_sender_id,
+      previewLine(conversation),
       conversation.updated,
       conversation.unread,
       conversation.read_only,
@@ -3472,7 +3472,11 @@ async function markSelectedRead() {
   }
 }
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) scheduleReadReceipt();
+  if (!document.hidden) {
+    streamAbort?.abort();
+    scheduleReadReceipt();
+    void pollStatus();
+  }
 });
 $("mark-read").onclick = async () => {
   const latest = newestReadable(selected);

@@ -412,6 +412,17 @@ Use a dedicated browser session: this check disables the fixture's service worke
 and injects measurement hooks into its client. These hooks are not part of the
 shipped application. Timings are diagnostic, without hardware-dependent thresholds.
 
+`tools/check-sync.mjs` checks interrupted history fetches, live events arriving
+while snapshots reload, renamed preview senders, stream reconnection, and recovery
+from a restored database whose event cursor moved backward. It uses synthetic
+stream events and never sends upstream messages:
+
+```sh
+playwright-cli -s=sync open http://127.0.0.1:PORT --browser chrome
+playwright-cli -s=sync run-code "$(node --input-type=module -e 'import check from "./tools/check-sync.mjs"; console.log(check.toString())')"
+playwright-cli -s=sync close
+```
+
 ## License
 
 AGPL-3.0-or-later. This project depends on mautrix-gmessages; retain its source and

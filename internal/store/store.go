@@ -173,9 +173,6 @@ func (s *Store) Apply(event Event, private map[string][]byte, watermark *uint64)
 			stale = len(v) == 8 && binary.BigEndian.Uint64(v) > *watermark
 		}
 		if !stale {
-			if err := stampEpoch(tx, event.Type, event.EntityID); err != nil {
-				return err
-			}
 			applied := event
 			if event.Type == "conversation" {
 				var err error
@@ -183,17 +180,29 @@ func (s *Store) Apply(event Event, private map[string][]byte, watermark *uint64)
 					return err
 				}
 			}
+			if err := stampEpoch(tx, event.Type, event.EntityID); err != nil {
+				return err
+			}
 			var err error
-			fresh := tx.Bucket([]byte("latest")).Get([]byte(key)) == nil
+			previous := tx.Bucket([]byte("latest")).Get([]byte(key))
+			fresh := previous == nil
+			previousStatus := ""
+			if event.Type == "message" && previous != nil {
+				plain, err := s.decrypt(previous, key)
+				if err != nil {
+					return err
+				}
+				var message model.Message
+				if err = json.Unmarshal(plain, &message); err != nil {
+					return err
+				}
+				previousStatus = message.Status
+			}
 			changed, err = s.appendTx(tx, applied)
 			if err != nil {
 				return err
 			}
-			revision, err := tx.Bucket([]byte("versions")).NextSequence()
-			if err != nil {
-				return err
-			}
-			if err = tx.Bucket([]byte("versions")).Put([]byte(key), sequence(revision)); err != nil {
+			if err = observeTx(tx, key); err != nil {
 				return err
 			}
 			for id, data := range private {
@@ -202,7 +211,7 @@ func (s *Store) Apply(event Event, private map[string][]byte, watermark *uint64)
 				}
 			}
 			if event.Type == "message" {
-				refreshed, err := s.refreshConversationTx(tx, event.Data, fresh && !event.Historical)
+				refreshed, err := s.refreshConversationTx(tx, event.Data, fresh && !event.Historical, previousStatus)
 				if err != nil {
 					return err
 				}
@@ -293,4 +302,13 @@ func (s *Store) Events(after uint64, limit int) ([]Event, error) {
 		return nil
 	})
 	return result, err
+}
+
+func observeTx(tx *bolt.Tx, key string) error {
+	versions := tx.Bucket([]byte("versions"))
+	revision, err := versions.NextSequence()
+	if err != nil {
+		return err
+	}
+	return versions.Put([]byte(key), sequence(revision))
 }

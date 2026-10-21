@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import {
   splitRequests,
   createParser,
+  applyMessageEvent,
+  mergeMessagePage,
+  readStreamChunk,
   newConversationRequest,
   newReactionRequest,
   newRequest,
@@ -31,25 +34,84 @@ test("unfinished frames are never applied", () => {
   assert.deepEqual(events, [{ id: 2 }]);
 });
 
-test("live receipt updates survive stale snapshots and refreshes of newer pages", async () => {
-  const { mergeMessages } = await import("./stream.mjs");
-  const old = { id: "old", status: "sent" };
-  const recent = { id: "recent", status: "sent" };
-  const receipt = { ...old, status: "read" };
-  const updates = new Map([
-    ["old", { id: 9, entity_id: "old", data: receipt }],
-  ]);
-  assert.deepEqual(mergeMessages([old], [recent], 10, updates), [
-    receipt,
-    recent,
-  ]);
-  assert.deepEqual(mergeMessages([], [old], 8, updates), [receipt]);
-  const newer = { ...old, status: "deleted" };
-  assert.deepEqual(mergeMessages([old], [newer], 10, updates), [newer]);
-  assert.deepEqual(mergeMessages([newer], [recent], 11, updates), [
-    newer,
-    recent,
-  ]);
+function messageCache() {
+  return {
+    messages: new Map(),
+    versions: new Map(),
+    cursor: 0,
+    fetched: false,
+  };
+}
+function loadPage(entry, messages, cursor) {
+  mergeMessagePage(entry, { messages, cursor });
+  entry.fetched = true;
+}
+function update(entry, data, id) {
+  return applyMessageEvent(entry, { id, entity_id: data.id, data });
+}
+
+test("updates remain visible even when an in-flight page fails", () => {
+  const entry = messageCache();
+  loadPage(entry, [{ id: "m", status: "sent" }], 10);
+  entry.loading = true;
+  const receipt = { id: "m", status: "read" };
+  assert.equal(update(entry, receipt, 12), true);
+  assert.deepEqual(entry.messages.get("m"), receipt);
+  entry.loading = false;
+  assert.deepEqual(entry.messages.get("m"), receipt);
+  loadPage(entry, [{ id: "m", status: "sent" }], 11);
+  assert.deepEqual(entry.messages.get("m"), receipt);
+});
+
+test("a newer page does not suppress a delayed update for another page", () => {
+  const entry = messageCache();
+  loadPage(entry, [{ id: "old", status: "sent" }], 10);
+  loadPage(entry, [{ id: "recent", status: "sent" }], 20);
+  const receipt = { id: "old", status: "read" };
+  assert.equal(update(entry, receipt, 15), true);
+  assert.deepEqual(entry.messages.get("old"), receipt);
+  assert.equal(update(entry, { id: "recent", status: "pending" }, 19), false);
+  assert.equal(update(entry, { id: "unseen" }, 9), false);
+});
+
+test("pages and duplicate events cannot roll back newer edits or receipts", () => {
+  const entry = messageCache();
+  update(entry, { id: "m", text: "edited" }, 12);
+  loadPage(entry, [{ id: "m", text: "original" }], 11);
+  assert.equal(entry.messages.get("m").text, "edited");
+  update(entry, { id: "m", text: "edited again" }, 15);
+  loadPage(entry, [{ id: "other" }], 20);
+  assert.equal(update(entry, { id: "m", text: "edited" }, 12), false);
+  loadPage(entry, [{ id: "m", text: "deleted" }], 21);
+  assert.equal(entry.messages.get("m").text, "deleted");
+  assert.equal(update(entry, { id: "m", text: "old" }, 18), false);
+});
+
+test("a missing heartbeat aborts a stalled stream read", async () => {
+  const controller = new AbortController();
+  const reader = {
+    read: () =>
+      new Promise((_, reject) => {
+        controller.signal.addEventListener(
+          "abort",
+          () => reject(new Error("aborted")),
+          { once: true },
+        );
+      }),
+  };
+  await assert.rejects(readStreamChunk(reader, controller, 10), /aborted/);
+  assert.equal(controller.signal.aborted, true);
+});
+
+test("stream heartbeats clear their deadline", async () => {
+  const controller = new AbortController();
+  const chunk = { done: false, value: new Uint8Array([10]) };
+  assert.equal(
+    await readStreamChunk({ read: async () => chunk }, controller, 10),
+    chunk,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(controller.signal.aborted, false);
 });
 
 test("outgoing request helpers snapshot bodies for idempotent retries", () => {

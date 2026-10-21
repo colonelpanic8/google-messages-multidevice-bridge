@@ -52,19 +52,9 @@ func stampEpoch(tx *bolt.Tx, kind, id string) error {
 	return b.Put(key, sequence(current))
 }
 func (s *Store) EntityCurrent(kind, id string) (bool, error) {
-	current := true
+	var current bool
 	err := s.db.View(func(tx *bolt.Tx) error {
-		currentEpoch := epoch(tx)
-		if currentEpoch == 0 {
-			return nil
-		}
-		b := tx.Bucket([]byte("entity-epochs"))
-		if b == nil {
-			current = false
-			return nil
-		}
-		v := b.Get([]byte(kind + ":" + id))
-		current = len(v) == 8 && binary.BigEndian.Uint64(v) == currentEpoch
+		current = entityCurrentTx(tx, kind, id)
 		return nil
 	})
 	return current, err
