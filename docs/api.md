@@ -34,7 +34,7 @@ commit time. Unknown normalized Google status strings must remain displayable.
 | `POST /v1/conversations/{id}/participants`                          | Queue a conversation addressed to everyone already in `{id}` plus the named recipients         |
 | `GET /v1/contacts?refresh=1`                                        | The phone's address book, read again only when the stored copy has aged out or `refresh=1`     |
 | `GET /v1/conversations/{id}/messages?limit=100&before={message_id}` | Latest locally stored message snapshots, newest first; limit 1–500                             |
-| `GET /v1/messages?q=&since=&direction=&limit=100`                   | Stored messages across every conversation, newest first; see [Message search](#message-search) |
+| `GET /v1/messages?q=&conversation_id=&since=&direction=&limit=100`  | Stored messages, newest first, across every conversation or one; see [Message search](#message-search) |
 | `POST /v1/conversations/{id}/reactions`                             | Queue a durable reaction add/remove                                                            |
 | `POST /v1/conversations/{id}/typing`                                | Send an immediate, non-durable typing update; returns 204                                      |
 | `POST /v1/conversations/{id}/read`                                  | Send an immediate, explicit read receipt; returns 204                                          |
@@ -348,10 +348,12 @@ messages per conversation after recovery, every five minutes, and on explicit sy
 `GET /v1/messages` filters stored, non-deleted messages from every conversation and
 returns `{"messages":[…],"cursor":N}`, newest first. `q` is a case-insensitive
 substring of the text or subject, `since` an RFC 3339 time, `direction` `incoming`
-or `outgoing`, and `limit` 1–500 (default 100). With `since`, only conversations
-updated since then are read, so polling a recent window stays cheap. Every event
-after `cursor` covers what the response may have missed, which lets a client wait
-for a new match by replaying `/v1/events` from it.
+or `outgoing`, and `limit` 1–500 (default 100). `conversation_id` restricts the
+search to one conversation's whole stored history and returns 404 for an unknown
+conversation. Otherwise, with `since`, only conversations updated since then are
+read, so polling a recent window stays cheap. Every event after `cursor` covers
+what the response may have missed, which lets a client wait for a new match by
+replaying `/v1/events` from it.
 
 ## Snapshots, events, and SSE
 

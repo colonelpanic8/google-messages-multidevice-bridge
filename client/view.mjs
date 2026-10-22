@@ -329,6 +329,48 @@ export function linkify(text) {
   return segments;
 }
 
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// Splits text into runs, flagging every case-insensitive occurrence of query.
+export function highlightRuns(text, query) {
+  const source = text || "";
+  const needle = (query || "").trim();
+  if (!needle) return source ? [{ text: source }] : [];
+  const runs = [];
+  let index = 0;
+  for (const match of source.matchAll(
+    new RegExp(escapeRegExp(needle), "giu"),
+  )) {
+    if (match.index > index)
+      runs.push({ text: source.slice(index, match.index) });
+    runs.push({ text: match[0], match: true });
+    index = match.index + match[0].length;
+  }
+  if (index < source.length) runs.push({ text: source.slice(index) });
+  return runs;
+}
+
+// The bridge's message search rule, so loaded messages can join its results.
+export function messageMatches(message, query) {
+  const needle = (query || "").trim().toLowerCase();
+  if (!needle || message.deleted) return false;
+  return [message.text, message.subject].some((value) =>
+    (value || "").toLowerCase().includes(needle),
+  );
+}
+
+// Matching message IDs, newest first. Loaded copies replace search results,
+// so an edit or deletion since the search wins and new arrivals join in.
+export function searchMatches(results, loaded, query) {
+  const messages = new Map(results.map((message) => [message.id, message]));
+  for (const message of loaded) messages.set(message.id, message);
+  return sortMessages(
+    [...messages.values()].filter((message) => messageMatches(message, query)),
+  )
+    .reverse()
+    .map((message) => message.id);
+}
+
 export function formatSize(size) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${Math.ceil(size / 1024)} KB`;

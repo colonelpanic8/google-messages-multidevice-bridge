@@ -24,6 +24,7 @@ import {
   displayName,
   filterConversations,
   formatSize,
+  highlightRuns,
   importStatus,
   initials,
   isGroup,
@@ -31,6 +32,7 @@ import {
   linkify,
   listTime,
   matchContacts,
+  messageMatches,
   messageStatus,
   others,
   participantList,
@@ -41,6 +43,7 @@ import {
   queuePosition,
   reactedByMe,
   reactionTitle,
+  searchMatches,
   sortConversations,
   summarizeHistory,
   threadOutbox,
@@ -770,15 +773,20 @@ function openExternal(url) {
   }
   window.open(url, "_blank", "noopener");
 }
-function textBubble(text, extraClass = "") {
+function appendHighlighted(parent, text, query) {
+  for (const run of highlightRuns(text, query))
+    parent.append(run.match ? el("mark", run.text) : run.text);
+}
+function textBubble(text, extraClass = "", highlight = "") {
   const bubble = el("div", undefined, `bubble ${extraClass}`.trim());
   const paragraph = el("p");
   for (const segment of linkify(text)) {
     if (!segment.href) {
-      paragraph.append(segment.text);
+      appendHighlighted(paragraph, segment.text, highlight);
       continue;
     }
-    const link = el("a", segment.text);
+    const link = el("a");
+    appendHighlighted(link, segment.text, highlight);
     link.href = segment.href;
     link.target = "_blank";
     link.rel = "noreferrer noopener";
@@ -913,12 +921,17 @@ function buildMessageRow(row, conversation) {
   if (message.deleted)
     bubbles.append(textBubble("Message deleted", bubbleClass));
   else if (message.text || message.subject || !attachments.length) {
+    const highlight = findHighlight(message);
     const bubble = textBubble(
       message.text || (attachments.length ? "" : "Message content unavailable"),
       bubbleClass,
+      highlight,
     );
-    if (message.subject)
-      bubble.prepend(el("strong", message.subject, "subject"));
+    if (message.subject) {
+      const subject = el("strong", undefined, "subject");
+      appendHighlighted(subject, message.subject, highlight);
+      bubble.prepend(subject);
+    }
     bubbles.append(bubble);
   }
   for (const attachment of attachments)
@@ -1089,6 +1102,7 @@ function renderThread() {
     [...pending],
     currentSessionEpoch,
     providerState,
+    finder.open && finder.query,
   ]);
   if (
     threadNodesFor === selected &&
@@ -1099,6 +1113,7 @@ function renderThread() {
     !preserveScroll
   ) {
     renderThreadStatus();
+    renderFind();
     return;
   }
   const container = $("messages");
@@ -1131,7 +1146,7 @@ function renderThread() {
       row.kind === "divider"
         ? row.label
         : row.kind === "message"
-          ? `${row.first}:${row.last}:${pending.get(row.message.id) || ""}:${context}`
+          ? `${row.first}:${row.last}:${pending.get(row.message.id) || ""}:${context}:${findHighlight(row.message)}`
           : JSON.stringify([
               row.item,
               row.first,
@@ -1205,6 +1220,7 @@ function renderThread() {
     container.scrollTop = container.scrollHeight;
     if (entry.fetched) entry.scrollToBottom = false;
   }
+  renderFind();
 }
 
 function renderThreadStatus() {
@@ -1731,6 +1747,16 @@ document.addEventListener("click", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeMenus();
+  if (
+    (event.ctrlKey || event.metaKey) &&
+    !event.altKey &&
+    event.key.toLowerCase() === "f" &&
+    !$("thread").hidden &&
+    !document.querySelector("dialog[open]")
+  ) {
+    event.preventDefault();
+    openFind();
+  }
 });
 
 // --- Pairing ----------------------------------------------------------------
@@ -2005,6 +2031,7 @@ async function select(id) {
   }
   stashDraft();
   stopFullHistory();
+  if (id !== selected) closeFind();
   selected = id;
   composing = false;
   selectedFiles = draftFiles.get(id) || [];
@@ -2025,6 +2052,7 @@ async function select(id) {
 function deselect() {
   stashDraft();
   stopFullHistory();
+  closeFind();
   selected = "";
   composing = false;
   invalidate("list", "thread");
@@ -2571,6 +2599,7 @@ function clearPrivateUI() {
   drafts.clear();
   draftFiles.clear();
   pendingReactions.clear();
+  closeFind();
   for (const dialog of document.querySelectorAll("dialog")) dialog.close();
   closeMenus();
   notice("");
@@ -3420,6 +3449,193 @@ function showFullHistoryProgress(loaded) {
 }
 $("load-full-history").onclick = () => void loadFullHistory();
 $("stop-full-history").onclick = stopFullHistory;
+
+// --- Search in conversation -------------------------------------------------
+
+// Results come from the conversation's whole stored history; a match outside
+// the loaded pages is revealed by paging older history in until it arrives.
+const FIND_LIMIT = 500;
+const finder = {
+  open: false,
+  query: "",
+  results: [],
+  matches: [],
+  current: "",
+  truncated: false,
+  searching: false,
+  revealing: false,
+  scroll: false,
+  generation: 0,
+  timer: undefined,
+};
+function findHighlight(message) {
+  return finder.open && messageMatches(message, finder.query)
+    ? finder.query
+    : "";
+}
+function openFind() {
+  if (!conversations.has(selected) || composing) return;
+  finder.open = true;
+  $("find-bar").hidden = false;
+  $("find-input").focus();
+  $("find-input").select();
+  invalidate("thread");
+}
+function closeFind() {
+  clearTimeout(finder.timer);
+  finder.generation++;
+  Object.assign(finder, {
+    open: false,
+    query: "",
+    results: [],
+    matches: [],
+    current: "",
+    truncated: false,
+    searching: false,
+    revealing: false,
+    scroll: false,
+  });
+  $("find-input").value = "";
+  $("find-bar").hidden = true;
+  invalidate("thread");
+}
+async function runFind() {
+  const id = selected;
+  const query = $("find-input").value.trim();
+  const run = ++finder.generation;
+  Object.assign(finder, {
+    query,
+    results: [],
+    current: "",
+    truncated: false,
+    searching: !!query,
+    revealing: false,
+  });
+  invalidate("thread");
+  if (!query) return;
+  try {
+    const page = await request(
+      `/v1/messages?conversation_id=${encodeURIComponent(id)}&q=${encodeURIComponent(query)}&limit=${FIND_LIMIT}`,
+    );
+    if (run !== finder.generation) return;
+    finder.results = page.messages || [];
+    finder.truncated = finder.results.length === FIND_LIMIT;
+  } catch (error) {
+    if (run !== finder.generation) return;
+    notice(error.message);
+  }
+  finder.searching = false;
+  const entry = threads.get(id);
+  const newest = searchMatches(
+    finder.results,
+    entry ? [...entry.messages.values()] : [],
+    query,
+  )[0];
+  if (newest) await revealMatch(newest);
+  else invalidate("thread");
+}
+async function revealMatch(id) {
+  const conversationID = selected;
+  const entry = thread(conversationID);
+  const run = finder.generation;
+  finder.current = id;
+  if (!entry.messages.has(id) && entry.before) {
+    finder.revealing = true;
+    invalidate("thread");
+    try {
+      await entry.loading?.catch(() => {});
+      await walkOlder(
+        async (before) => {
+          await loadThread(conversationID, before, {
+            limit: FULL_HISTORY_PAGE,
+            quiet: true,
+          });
+          return entry.before;
+        },
+        {
+          before: entry.before,
+          cancelled: () =>
+            entry.messages.has(id) ||
+            run !== finder.generation ||
+            selected !== conversationID ||
+            threads.get(conversationID) !== entry,
+        },
+      );
+    } catch (error) {
+      notice(error.message);
+    }
+    if (run !== finder.generation) return;
+    finder.revealing = false;
+    bulkRows = true;
+  }
+  finder.scroll = true;
+  invalidate("thread", "compose");
+}
+function stepFind(delta) {
+  const index = finder.matches.indexOf(finder.current);
+  const next = finder.matches[index < 0 ? 0 : index + delta];
+  if (next) void revealMatch(next);
+}
+function renderFind() {
+  const current = finder.open && threadNodes.get(`m:${finder.current}`)?.node;
+  for (const node of $("rows").querySelectorAll(".find-current"))
+    if (node !== current) node.classList.remove("find-current");
+  if (current) {
+    current.classList.add("find-current");
+    if (finder.scroll)
+      current.scrollIntoView({
+        block: "center",
+        behavior: stillMotion.matches ? "auto" : "smooth",
+      });
+  }
+  finder.scroll = false;
+  if (!finder.open) return;
+  const entry = threads.get(selected);
+  finder.matches = finder.query
+    ? searchMatches(
+        finder.results,
+        entry ? [...entry.messages.values()] : [],
+        finder.query,
+      )
+    : [];
+  const index = finder.matches.indexOf(finder.current);
+  const total = `${finder.matches.length}${finder.truncated ? "+" : ""}`;
+  $("find-count").textContent = !finder.query
+    ? ""
+    : finder.searching
+      ? "Searching…"
+      : finder.revealing
+        ? "Loading older messages…"
+        : !finder.matches.length
+          ? "No results"
+          : index < 0
+            ? total
+            : `${index + 1} of ${total}`;
+  $("find-older").disabled =
+    finder.revealing || index + 1 >= finder.matches.length;
+  $("find-newer").disabled = finder.revealing || index <= 0;
+}
+$("find-button").onclick = openFind;
+$("find-close").onclick = closeFind;
+$("find-older").onclick = () => stepFind(1);
+$("find-newer").onclick = () => stepFind(-1);
+$("find-input").oninput = () => {
+  clearTimeout(finder.timer);
+  finder.timer = setTimeout(runFind, 200);
+};
+$("find-input").onkeydown = (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeFind();
+    $("text").focus();
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    if (finder.query !== $("find-input").value.trim()) {
+      clearTimeout(finder.timer);
+      void runFind();
+    } else stepFind(event.shiftKey ? -1 : 1);
+  }
+};
 
 // --- Read receipts ----------------------------------------------------------
 
