@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"go.mau.fi/mautrix-gmessages/pkg/libgm"
 	"google.golang.org/protobuf/proto"
 	"io"
 	"reflect"
@@ -652,5 +654,39 @@ func TestContactsKeepOnlyAddressableNumbersAndMarkFrequentOnes(t *testing.T) {
 	fake.contacts = nil
 	if _, err = newGoogle(fake).Contacts(context.Background()); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("unreachable phone: %v", err)
+	}
+}
+
+func TestHistoryErrorsPreserveCause(t *testing.T) {
+	for _, failure := range []struct {
+		err      error
+		category string
+	}{
+		{fmt.Errorf("private payload: %w", context.DeadlineExceeded), "deadline_exceeded"},
+		{context.Canceled, "canceled"},
+		{libgm.ErrPhoneNotResponding, "phone_not_responding"},
+		{libgm.ErrConnectionClosed, "connection_closed"},
+		{errors.New("private payload"), "unavailable"},
+	} {
+		g := &Google{Client: &fakeGoogleClient{
+			list: func(context.Context, *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
+				return nil, failure.err
+			},
+			fetch: func(context.Context, string, int64, *gmproto.Cursor) (*gmproto.ListMessagesResponse, error) {
+				return nil, failure.err
+			},
+		}}
+		for _, read := range []func() error{
+			func() error { _, err := g.Conversations(context.Background()); return err },
+			func() error { _, err := g.Messages(context.Background(), "c1"); return err },
+		} {
+			err := read()
+			if !errors.Is(err, ErrUnavailable) || !errors.Is(err, failure.err) {
+				t.Fatalf("lost error classification or cause: %v", err)
+			}
+			if category := ErrorCategory(err); category != failure.category {
+				t.Fatalf("category = %q, want %q", category, failure.category)
+			}
+		}
 	}
 }

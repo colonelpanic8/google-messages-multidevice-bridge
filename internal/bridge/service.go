@@ -26,7 +26,6 @@ var degradedDetail = map[string]string{
 	"transport_interrupted": "The connection to Google dropped; reconnecting automatically.",
 	"phone_not_responding":  "Your phone stopped answering the bridge's pings.",
 	"phone_ping_failed":     "The bridge could not send pings to your phone.",
-	"no_data_received":      "Nothing has arrived from Google recently.",
 	"awaiting_phone":        "Waiting for your phone to answer.",
 }
 
@@ -413,24 +412,36 @@ func (b *Bridge) syncLoop(ctx context.Context) {
 				b.status.SyncState = "metadata_refreshed"
 			}
 			b.status.LastSync = &now
-			if b.status.Updated.Equal(before.Updated) && ctx.Err() == nil {
-				if !b.status.Phone || b.status.State != "connected" {
-					b.recordConnectionEventLocked("sync_reached_phone")
-				}
-				b.setStateLocked("connected")
-				b.status.Phone = true
-				b.phoneCause = ""
-				b.status.Reason, b.status.Detail = "", ""
-				b.status.Updated = now
-			}
 		}
 		b.mu.Unlock()
 		if err == nil {
+			if b.Network() == "whatsapp" {
+				b.confirmPhone(ctx, before.Updated)
+			}
 			wake(b.sendWake)
 			wake(b.historyWake)
 		}
 	}
 }
+
+// Only a request started after the latest connection change can restore liveness.
+func (b *Bridge) confirmPhone(ctx context.Context, started time.Time) {
+	b.mu.Lock()
+	if ctx.Err() != nil || !b.status.Updated.Equal(started) || !b.status.Transport || b.status.State != "degraded" {
+		b.mu.Unlock()
+		return
+	}
+	b.recordConnectionEventLocked("sync_reached_phone")
+	b.setStateLocked("connected")
+	b.status.Phone = true
+	b.phoneCause = ""
+	b.status.Reason, b.status.Detail = "", ""
+	b.mu.Unlock()
+	b.Hub.Notify()
+	wake(b.sendWake)
+	wake(b.historyWake)
+}
+
 func (b *Bridge) apply(snap provider.Snapshot, watermark uint64) error {
 	added, err := b.Store.Apply(snap.Event, snap.Private, &watermark)
 	if added {
@@ -454,13 +465,22 @@ func (b *Bridge) reconcile(ctx context.Context) error {
 		b.storageFailure(err)
 		return err
 	}
+	before := b.Status()
 	callCtx, done := context.WithTimeout(ctx, 30*time.Second)
 	convs, err := p.Conversations(callCtx)
 	done()
 	if err != nil {
+		stdlog.Printf("%s sync step=conversations error=%s", b.Network(), provider.ErrorCategory(err))
 		return err
 	}
+	if b.Network() == "google-messages" {
+		b.confirmPhone(ctx, before.Updated)
+	}
+	var failures []error
 	for _, c := range convs {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(failures, err)...)
+		}
 		if err = b.apply(c, watermark); err != nil {
 			return err
 		}
@@ -473,7 +493,9 @@ func (b *Bridge) reconcile(ctx context.Context) error {
 		messages, err := p.Messages(callCtx, c.Event.EntityID)
 		done()
 		if err != nil {
-			return err
+			stdlog.Printf("%s sync step=messages conversation=%q error=%s", b.Network(), c.Event.EntityID, provider.ErrorCategory(err))
+			failures = append(failures, fmt.Errorf("conversation %s: %w", c.Event.EntityID, err))
+			continue
 		}
 		for _, m := range messages {
 			if err = b.apply(m, mark); err != nil {
@@ -481,7 +503,7 @@ func (b *Bridge) reconcile(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 func (b *Bridge) MarkRead(ctx context.Context, conv, id string) error {
 	b.mutationMu.Lock()

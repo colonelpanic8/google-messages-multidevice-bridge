@@ -668,3 +668,89 @@ func TestDegradedStatusNamesTheCause(t *testing.T) {
 		t.Fatalf("history not bounded: %d", len(events))
 	}
 }
+
+func TestNoDataReceivedPreservesLiveness(t *testing.T) {
+	for _, recovering := range []bool{false, true} {
+		b := testBridge(t)
+		b.Handle(&events.ClientReady{})
+		if recovering {
+			b.Handle(&events.PhoneNotResponding{})
+			b.Handle(&events.PhoneRespondingAgain{})
+		}
+		before := b.Status()
+		b.Handle(&events.NoDataReceived{})
+		after := b.Status()
+		if after.State != "connected" || !after.Phone || after.Reason != "" || after.Updated != before.Updated {
+			t.Fatalf("routine refresh changed liveness: %+v", after)
+		}
+		if after.ConnectionEvents[len(after.ConnectionEvents)-1].Event != "no_data_received" {
+			t.Fatal("refresh was not recorded")
+		}
+		b.Handle(&events.PhoneNotResponding{})
+		b.Handle(&events.NoDataReceived{})
+		if status := b.Status(); status.Phone || status.Reason != "phone_not_responding" {
+			t.Fatalf("refresh hid real degradation: %+v", status)
+		}
+	}
+}
+
+func TestSyncReachesPhoneBeforeContinuingPastFailedConversation(t *testing.T) {
+	b := testBridge(t)
+	b.Handle(&events.ListenRecovered{})
+	var fetched []string
+	b.provider = &fakeProvider{
+		conversations: func(context.Context) ([]provider.Snapshot, error) {
+			return []provider.Snapshot{
+				snapshot(t, "conversation", "bad", model.Conversation{Schema: 1, ID: "bad"}),
+				snapshot(t, "conversation", "good", model.Conversation{Schema: 1, ID: "good"}),
+			}, nil
+		},
+		messages: func(_ context.Context, id string) ([]provider.Snapshot, error) {
+			if status := b.Status(); status.State != "connected" || !status.Phone {
+				t.Errorf("successful list did not establish liveness: %+v", status)
+			}
+			fetched = append(fetched, id)
+			if id == "bad" {
+				return nil, context.DeadlineExceeded
+			}
+			return []provider.Snapshot{snapshot(t, "message", "m1", model.Message{Schema: 1, ID: "m1", ConversationID: id})}, nil
+		},
+	}
+	if err := b.reconcile(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("incomplete sync must report its failure: %v", err)
+	}
+	if strings.Join(fetched, ",") != "bad,good" {
+		t.Fatalf("did not continue past failed conversation: %v", fetched)
+	}
+	if _, err := b.Store.Record("message", "m1"); err != nil {
+		t.Fatal("later conversation was not synced", err)
+	}
+}
+
+func TestSyncDoesNotUndoLaterConnectionFailure(t *testing.T) {
+	for _, event := range []any{&events.PhoneNotResponding{}, &events.ListenTemporaryError{}, &events.GaiaLoggedOut{}} {
+		b := testBridge(t)
+		b.Handle(&events.ListenRecovered{})
+		b.provider = &fakeProvider{
+			conversations: func(context.Context) ([]provider.Snapshot, error) {
+				return []provider.Snapshot{snapshot(t, "conversation", "c1", model.Conversation{Schema: 1, ID: "c1"})}, nil
+			},
+			messages: func(context.Context, string) ([]provider.Snapshot, error) {
+				b.Handle(event)
+				return nil, nil
+			},
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { defer close(done); b.syncLoop(ctx) }()
+		deadline := time.Now().Add(2 * time.Second)
+		for b.Status().LastSync == nil && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+		<-done
+		if status := b.Status(); status.LastSync == nil || status.State == "connected" {
+			t.Fatalf("sync hid %T: %+v", event, status)
+		}
+	}
+}

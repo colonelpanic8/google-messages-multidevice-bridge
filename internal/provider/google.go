@@ -220,7 +220,10 @@ func (g *Google) MessagePage(ctx context.Context, conversationID string, cursorD
 		return nil, nil, err
 	}
 	res, err := g.Client.FetchMessages(ctx, conversationID, RecentMessages, cursor)
-	if err != nil || res == nil {
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	if res == nil {
 		return nil, nil, ErrUnavailable
 	}
 	out, err := snapshotsOf(res.GetMessages())
@@ -260,7 +263,10 @@ func (g *Google) ConversationPage(ctx context.Context, folder string, cursorData
 	g.listMu.Lock()
 	defer g.listMu.Unlock()
 	res, err := g.Client.ListConversations(ctx, &gmproto.ListConversationsRequest{Count: RecentConversations, Folder: protocolFolder, Cursor: cursor})
-	if err != nil || res == nil {
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	if res == nil {
 		return nil, nil, ErrUnavailable
 	}
 	if res.GetCursor() == nil && len(res.GetCursorBytes()) > 0 {
@@ -610,4 +616,24 @@ func ReadBounded(ctx context.Context, r io.ReadCloser) ([]byte, error) {
 func marshalPrivate(media *gmproto.MediaContent) ([]byte, error) { return protojson.Marshal(media) }
 func unmarshalPrivate(data []byte, media *gmproto.MediaContent) error {
 	return protojson.Unmarshal(data, media)
+}
+
+// ErrorCategory excludes provider error text, which may contain private payloads.
+func ErrorCategory(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, libgm.ErrPhoneNotResponding):
+		return "phone_not_responding"
+	case errors.Is(err, libgm.ErrConnectionClosed):
+		return "connection_closed"
+	case errors.Is(err, ErrUnsupportedCursor):
+		return "unsupported_cursor"
+	case errors.Is(err, ErrUnavailable):
+		return "unavailable"
+	default:
+		return fmt.Sprintf("%T", err)
+	}
 }
