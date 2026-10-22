@@ -9,6 +9,7 @@ import {
   contactName,
   displayName,
   filterConversations,
+  highlightRuns,
   importStatus,
   initials,
   layoutThread,
@@ -24,6 +25,7 @@ import {
   reactionTitle,
   messageStatus,
   outboxStatus,
+  searchMatches,
   threadOutbox,
 } from "./view.mjs";
 
@@ -433,4 +435,26 @@ test("a group lists everyone with the owner last", () => {
       ["You", "+15550000000", true],
     ],
   );
+});
+
+test("highlight runs mark every match regardless of case or regex syntax", () => {
+  assert.deepEqual(highlightRuns("Code? code! CODE?", "code?"), [
+    { text: "Code?", match: true },
+    { text: " code! " },
+    { text: "CODE?", match: true },
+  ]);
+  assert.deepEqual(highlightRuns("plain", " "), [{ text: "plain" }]);
+});
+
+test("search matches merge loaded messages over results, newest first", () => {
+  const results = [
+    { id: "b", time: at(2), text: "pizza tonight?" },
+    { id: "a", time: at(1), text: "Pizza place" },
+  ];
+  const loaded = [
+    { id: "a", time: at(1), text: "Pizza place", deleted: true },
+    { id: "c", time: at(3), text: "no", subject: "PIZZA" },
+    { id: "d", time: at(4), text: "unrelated" },
+  ];
+  assert.deepEqual(searchMatches(results, loaded, "pizza"), ["c", "b"]);
 });

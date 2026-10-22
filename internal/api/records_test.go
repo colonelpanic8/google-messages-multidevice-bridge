@@ -247,9 +247,21 @@ func TestMessageSearchAcrossConversations(t *testing.T) {
 		"q=code&direction=incoming": "m2,m1",
 		"q=code&direction=incoming&since=" + since: "m2",
 		"since=" + since + "&limit=1":              "m4",
+		"q=code&conversation_id=new":               "m3,m2",
+		"q=CODE&conversation_id=old":               "m1",
 	} {
 		if got := strings.Join(search(query), ","); got != want {
 			t.Errorf("%s: got %s want %s", query, got, want)
 		}
+	}
+	req, _ := http.NewRequest("GET", server.URL+"/v1/messages?conversation_id=missing", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Fatalf("unknown conversation: status %d", resp.StatusCode)
 	}
 }

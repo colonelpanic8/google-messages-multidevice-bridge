@@ -714,6 +714,34 @@ svg {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.find-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 8px 8px 16px;
+  border-bottom: 1px solid var(--outline-variant);
+  flex-shrink: 0;
+}
+.find-bar .search {
+  height: 40px;
+  margin-right: 4px;
+}
+.find-count {
+  font-size: 13px;
+  white-space: nowrap;
+}
+.bubble mark {
+  border-radius: 3px;
+  background: #fde293;
+  color: #1f1f1f;
+}
+.row.find-current .bubble mark {
+  background: #f9ab00;
+}
+.row.find-current .bubble {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
 #messages {
   flex: 1;
   min-height: 0;

@@ -182,7 +182,16 @@ func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 			return
 		}
 		q := strings.ToLower(strings.TrimSpace(query.Get("q")))
-		raw, cursor, err := recentMessageRecords(b.Store, since)
+		var raw []store.SnapshotRecord
+		var cursor uint64
+		var err error
+		if id := query.Get("conversation_id"); id != "" {
+			if _, err = b.Store.Record("conversation", id); err == nil {
+				raw, cursor, err = b.Store.ConversationMessages(id)
+			}
+		} else {
+			raw, cursor, err = recentMessageRecords(b.Store, since)
+		}
 		if err != nil {
 			apiError(w, err)
 			return
