@@ -402,7 +402,10 @@ func (b *Bridge) syncLoop(ctx context.Context) {
 		b.mu.Lock()
 		b.status.SyncState = "running"
 		b.mu.Unlock()
-		err := b.reconcile(ctx)
+		err := b.reconcile(ctx, before)
+		if err != nil && ctx.Err() == nil {
+			stdlog.Printf("%s sync failed: %v", b.Network(), err)
+		}
 		b.mu.Lock()
 		if err != nil {
 			b.status.SyncState = "failed"
@@ -413,23 +416,28 @@ func (b *Bridge) syncLoop(ctx context.Context) {
 				b.status.SyncState = "metadata_refreshed"
 			}
 			b.status.LastSync = &now
-			if b.status.Updated.Equal(before.Updated) && ctx.Err() == nil {
-				if !b.status.Phone || b.status.State != "connected" {
-					b.recordConnectionEventLocked("sync_reached_phone")
-				}
-				b.setStateLocked("connected")
-				b.status.Phone = true
-				b.phoneCause = ""
-				b.status.Reason, b.status.Detail = "", ""
-				b.status.Updated = now
-			}
 		}
 		b.mu.Unlock()
-		if err == nil {
-			wake(b.sendWake)
-			wake(b.historyWake)
-		}
 	}
+}
+
+// phoneAnswered marks the phone reachable after a sync request round trip,
+// unless a connection event arrived since the sync began.
+func (b *Bridge) phoneAnswered(ctx context.Context, before Status) {
+	b.mu.Lock()
+	if b.status.Updated.Equal(before.Updated) && ctx.Err() == nil {
+		if !b.status.Phone || b.status.State != "connected" {
+			b.recordConnectionEventLocked("sync_reached_phone")
+		}
+		b.setStateLocked("connected")
+		b.status.Phone = true
+		b.phoneCause = ""
+		b.status.Reason, b.status.Detail = "", ""
+		b.status.Updated = time.Now().UTC()
+	}
+	b.mu.Unlock()
+	wake(b.sendWake)
+	wake(b.historyWake)
 }
 func (b *Bridge) apply(snap provider.Snapshot, watermark uint64) error {
 	added, err := b.Store.Apply(snap.Event, snap.Private, &watermark)
@@ -442,7 +450,7 @@ func (b *Bridge) apply(snap provider.Snapshot, watermark uint64) error {
 	}
 	return nil
 }
-func (b *Bridge) reconcile(ctx context.Context) error {
+func (b *Bridge) reconcile(ctx context.Context, before Status) error {
 	p := b.getProvider()
 	if p == nil {
 		return provider.ErrUnavailable
@@ -460,6 +468,9 @@ func (b *Bridge) reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// The phone drops an occasional response, so one unanswered message
+	// fetch must not hide that it answered the list.
+	b.phoneAnswered(ctx, before)
 	for _, c := range convs {
 		if err = b.apply(c, watermark); err != nil {
 			return err

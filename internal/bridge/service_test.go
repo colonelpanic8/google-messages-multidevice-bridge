@@ -138,7 +138,7 @@ func TestReconciliationRepairsMissingMessageWithoutRegressingLiveReceipt(t *test
 			return []provider.Snapshot{snapshot(t, "message", "m1", old), snapshot(t, "message", "m2", missing)}, nil
 		},
 	}
-	if err := b.reconcile(context.Background()); err != nil {
+	if err := b.reconcile(context.Background(), b.Status()); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := b.Store.Record("message", "m1")
@@ -254,7 +254,7 @@ func TestReconciliationChecksUnchangedConversationsAndFencesDuplicateLiveReceipt
 		},
 	})
 	for range 2 {
-		if err := b.reconcile(context.Background()); err != nil {
+		if err := b.reconcile(context.Background(), b.Status()); err != nil {
 			t.Fatal(err)
 		}
 	}
