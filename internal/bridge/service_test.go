@@ -551,7 +551,7 @@ func (f *fakeProvider) ConversationPage(ctx context.Context, folder string, curs
 }
 
 func TestHistoryBootstrapsPhoneWithoutClientReady(t *testing.T) {
-	for _, outcome := range []string{"success", "unavailable", "newer-disconnect"} {
+	for _, outcome := range []string{"success", "unavailable", "newer-disconnect", "message-timeout"} {
 		t.Run(outcome, func(t *testing.T) {
 			b := testBridge(t)
 			b.setStatus("connecting", "")
@@ -564,7 +564,12 @@ func TestHistoryBootstrapsPhoneWithoutClientReady(t *testing.T) {
 						return nil, err
 					}
 				}
+				if outcome == "message-timeout" {
+					return []provider.Snapshot{snapshot(t, "conversation", "c1", model.Conversation{Schema: 1, ID: "c1"})}, nil
+				}
 				return nil, nil
+			}, messages: func(context.Context, string) ([]provider.Snapshot, error) {
+				return nil, provider.ErrUnavailable
 			}}
 			if err := b.Handle(&events.ListenRecovered{}); err != nil {
 				t.Fatal(err)
@@ -580,6 +585,10 @@ func TestHistoryBootstrapsPhoneWithoutClientReady(t *testing.T) {
 					if outcome == "success" {
 						if status.State != "connected" || !status.Phone || status.LastSync == nil {
 							t.Fatalf("history did not establish liveness: %+v", status)
+						}
+					} else if outcome == "message-timeout" {
+						if status.SyncState != "failed" || status.State != "connected" || !status.Phone {
+							t.Fatalf("an answered conversation list did not establish liveness: %+v", status)
 						}
 					} else if status.State == "connected" || status.Phone {
 						t.Fatalf("history invented liveness: %+v", status)
