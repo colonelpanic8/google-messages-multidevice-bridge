@@ -272,7 +272,7 @@ func (g *googleConnection) Run(b *Bridge, ctx context.Context, offline bool, coo
 	case <-ctx.Done():
 		return nil
 	}
-	b.setProvider(provider.NewGoogle(g.client))
+	b.setProvider(provider.NewGoogle(g.client, b.Store.Private))
 	b.RequestSync()
 	owned.Add(3)
 	go func() { defer owned.Done(); b.syncLoop(providerCtx) }()

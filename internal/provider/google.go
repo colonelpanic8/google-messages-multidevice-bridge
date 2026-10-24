@@ -53,7 +53,9 @@ type contextMediaDownloader interface {
 }
 
 type Google struct {
-	Client    googleClient
+	Client googleClient
+	// Stored reads a private record written from a snapshot.
+	Stored    func(string) ([]byte, error)
 	listMu    sync.Mutex
 	mediaSlot chan struct{}
 	mediaOnce sync.Once
@@ -66,8 +68,23 @@ var (
 	_ contextMediaDownloader = (*libgm.Client)(nil)
 )
 
-func NewGoogle(client *libgm.Client) *Google {
-	return newGoogle(client)
+func NewGoogle(client *libgm.Client, stored func(string) ([]byte, error)) *Google {
+	g := newGoogle(client)
+	g.Stored = stored
+	return g
+}
+
+// ConversationKey names the private record holding a conversation's send fields.
+func ConversationKey(id string) string { return "conversation:" + id }
+
+func sendFields(c *gmproto.Conversation) *gmproto.Conversation {
+	out := &gmproto.Conversation{ConversationID: c.GetConversationID(), ReadOnly: c.GetReadOnly(), DefaultOutgoingID: c.GetDefaultOutgoingID(), SimCard: c.GetSimCard()}
+	for _, p := range c.GetParticipants() {
+		if p.GetIsMe() {
+			out.Participants = append(out.Participants, &gmproto.Participant{ID: p.GetID(), IsMe: true, SimPayload: p.GetSimPayload()})
+		}
+	}
+	return out
 }
 
 func newGoogle(client googleClient) *Google {
@@ -138,6 +155,11 @@ func SnapshotOf(msg proto.Message) (Snapshot, error) {
 			}
 			out.Participants = append(out.Participants, model.Participant{ID: p.GetID().GetParticipantID(), Name: name, Address: p.GetID().GetNumber(), IsMe: p.GetIsMe()})
 		}
+		fields, err := proto.Marshal(sendFields(m))
+		if err != nil {
+			return Snapshot{}, err
+		}
+		private[ConversationKey(id)] = fields
 		value = out
 	case *gmproto.TypingData:
 		kind, id = "typing", m.GetConversationID()
@@ -372,13 +394,27 @@ func (g *Google) CreateConversation(ctx context.Context, recipients []string, gr
 
 type simPayload = *gmproto.SIMPayload
 
-// Prepare fetches the conversation and resolves the outgoing identity. It sends
-// nothing, so a transient failure here leaves the outbox record queued.
+// Prepare resolves the outgoing identity without sending anything, so a
+// transient failure leaves the outbox record queued. It prefers the stored
+// conversation, since a phone round trip can take a minute; only the phone's
+// own answer rejects a send.
 func (g *Google) Prepare(ctx context.Context, conversationID string) (SendTarget, error) {
+	if g.Stored != nil {
+		var conv gmproto.Conversation
+		if data, err := g.Stored(ConversationKey(conversationID)); err == nil && proto.Unmarshal(data, &conv) == nil {
+			if target, err := sendTarget(&conv, conversationID); err == nil {
+				return target, nil
+			}
+		}
+	}
 	conv, err := g.Client.GetConversation(ctx, conversationID)
 	if err != nil {
 		return SendTarget{}, fmt.Errorf("%w: get conversation: %v", ErrUnavailable, err)
 	}
+	return sendTarget(conv, conversationID)
+}
+
+func sendTarget(conv *gmproto.Conversation, conversationID string) (SendTarget, error) {
 	if conv == nil || conv.GetConversationID() != conversationID || conv.GetReadOnly() || conv.GetDefaultOutgoingID() == "" {
 		return SendTarget{}, ErrRejected
 	}
