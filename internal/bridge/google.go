@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -189,8 +190,7 @@ func (g *googleConnection) Run(b *Bridge, ctx context.Context, offline bool, coo
 		}
 	}
 	providerCtx, cancel := context.WithCancel(ctx)
-	// Upstream diagnostics can contain message bodies and authentication data.
-	providerLog := zerolog.Nop()
+	providerLog := zerolog.New(libgmLogWriter{os.Stderr}).Level(zerolog.DebugLevel).With().Timestamp().Logger()
 	providerCtx = providerLog.WithContext(providerCtx)
 	b.pairing = cookies != nil
 	pairGeneration := uint64(0)
