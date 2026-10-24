@@ -654,3 +654,53 @@ func TestContactsKeepOnlyAddressableNumbersAndMarkFrequentOnes(t *testing.T) {
 		t.Fatalf("unreachable phone: %v", err)
 	}
 }
+
+func TestPrepareSendsFromStoredConversationWithoutAskingThePhone(t *testing.T) {
+	conv := &gmproto.Conversation{ConversationID: "c1", DefaultOutgoingID: "self", Participants: []*gmproto.Participant{
+		{ID: &gmproto.SmallInfo{ParticipantID: "self"}, IsMe: true, SimPayload: &gmproto.SIMPayload{SIMNumber: 2}},
+		{ID: &gmproto.SmallInfo{ParticipantID: "friend"}, FullName: "Friend"},
+	}}
+	snap, err := SnapshotOf(conv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := snap.Private
+	var asked int
+	var sent []*gmproto.SendMessageRequest
+	fake := &fakeGoogleClient{
+		conversation: func(context.Context, string) (*gmproto.Conversation, error) {
+			asked++
+			return nil, context.DeadlineExceeded
+		},
+		send: func(_ context.Context, req *gmproto.SendMessageRequest) (*gmproto.SendMessageResponse, error) {
+			sent = append(sent, req)
+			return &gmproto.SendMessageResponse{Status: gmproto.SendMessageResponse_SUCCESS}, nil
+		},
+	}
+	g := newGoogle(fake)
+	g.Stored = func(key string) ([]byte, error) {
+		if data, ok := stored[key]; ok {
+			return data, nil
+		}
+		return nil, errors.New("not found")
+	}
+	target, err := g.Prepare(context.Background(), "c1")
+	if err != nil || asked != 0 {
+		t.Fatalf("prepare: %v, phone asked %d times", err, asked)
+	}
+	if err = g.Send(context.Background(), target, model.Outbox{TransactionID: "tmp-1", Request: model.SendRequest{ConversationID: "c1", Text: "hi"}}); err != nil {
+		t.Fatal(err)
+	}
+	if req := sent[0]; req.GetMessagePayload().GetParticipantID() != "self" || req.GetSIMPayload().GetSIMNumber() != 2 {
+		t.Fatalf("send mapping: %+v", req)
+	}
+
+	conv.DefaultOutgoingID = ""
+	if snap, err = SnapshotOf(conv); err != nil {
+		t.Fatal(err)
+	}
+	stored = snap.Private
+	if _, err = g.Prepare(context.Background(), "c1"); !errors.Is(err, ErrUnavailable) || asked != 1 {
+		t.Fatalf("incomplete stored conversation: %v, phone asked %d times", err, asked)
+	}
+}
