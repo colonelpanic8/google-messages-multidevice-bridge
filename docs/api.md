@@ -85,7 +85,7 @@ accompany retryable connection failures. Both status and pairing responses inclu
 
 `degraded` means the upstream session exists but something is not answering, and
 `reason` says which: `transport_interrupted` (the Google connection dropped),
-`phone_not_responding`, `phone_ping_failed`, `no_data_received`, or
+`phone_not_responding`, `phone_ping_failed`, or
 `awaiting_phone` (nothing has confirmed the phone since the connection started).
 `detail` carries a sentence for display. `state_since` is when the current `state`
 began. `connection_events` lists up to 20 recent connection events, oldest first,

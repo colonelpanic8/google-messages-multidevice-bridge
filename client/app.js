@@ -1569,7 +1569,7 @@ const CONNECTION_EVENTS = {
   listen_recovered: "Connection to Google restored",
   phone_not_responding: "Phone stopped answering pings",
   phone_ping_failed: "Could not send a ping to the phone",
-  no_data_received: "Nothing received from Google recently",
+  no_data_received: "Asked Google for missed updates",
   phone_responding_again: "Phone answering again",
   sync_reached_phone: "History check reached the phone",
   reconnect_requested: "Reconnect requested",
