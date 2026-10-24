@@ -170,7 +170,7 @@ func encodeCursor(scope, key string, cursor *gmproto.Cursor) ([]byte, error) {
 		return nil, nil
 	}
 	if cursor.GetLastItemID() == "" || cursor.GetLastItemTimestamp() <= 0 {
-		return nil, ErrUnavailable
+		return nil, fmt.Errorf("%w: incomplete %s cursor", ErrUnavailable, scope)
 	}
 	position, err := proto.Marshal(cursor)
 	if err != nil {
@@ -221,7 +221,7 @@ func (g *Google) MessagePage(ctx context.Context, conversationID string, cursorD
 	}
 	res, err := g.Client.FetchMessages(ctx, conversationID, RecentMessages, cursor)
 	if err != nil || res == nil {
-		return nil, nil, ErrUnavailable
+		return nil, nil, fmt.Errorf("%w: fetch messages: %v", ErrUnavailable, err)
 	}
 	out, err := snapshotsOf(res.GetMessages())
 	if err != nil {
@@ -261,7 +261,7 @@ func (g *Google) ConversationPage(ctx context.Context, folder string, cursorData
 	defer g.listMu.Unlock()
 	res, err := g.Client.ListConversations(ctx, &gmproto.ListConversationsRequest{Count: RecentConversations, Folder: protocolFolder, Cursor: cursor})
 	if err != nil || res == nil {
-		return nil, nil, ErrUnavailable
+		return nil, nil, fmt.Errorf("%w: list conversations: %v", ErrUnavailable, err)
 	}
 	if res.GetCursor() == nil && len(res.GetCursorBytes()) > 0 {
 		return nil, nil, ErrUnsupportedCursor
@@ -377,7 +377,7 @@ type simPayload = *gmproto.SIMPayload
 func (g *Google) Prepare(ctx context.Context, conversationID string) (SendTarget, error) {
 	conv, err := g.Client.GetConversation(ctx, conversationID)
 	if err != nil {
-		return SendTarget{}, ErrUnavailable
+		return SendTarget{}, fmt.Errorf("%w: get conversation: %v", ErrUnavailable, err)
 	}
 	if conv == nil || conv.GetConversationID() != conversationID || conv.GetReadOnly() || conv.GetDefaultOutgoingID() == "" {
 		return SendTarget{}, ErrRejected
@@ -422,7 +422,7 @@ func (g *Google) Send(ctx context.Context, target SendTarget, o model.Outbox) er
 	if err != nil {
 		// Transport errors, relay 4xx/5xx, timeouts and cancellation all arrive
 		// here. None proves the phone did not act, so the outcome stays unknown.
-		return ErrAmbiguous
+		return fmt.Errorf("%w: %v", ErrAmbiguous, err)
 	}
 	return SendOutcome(res.GetStatus())
 }

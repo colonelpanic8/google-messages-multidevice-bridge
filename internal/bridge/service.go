@@ -316,6 +316,7 @@ func (b *Bridge) sendOne(ctx context.Context) (bool, error) {
 			return false, err
 		}
 		if err != nil {
+			stdlog.Printf("%s send %s not ready: %v", b.Network(), candidate.ID, err)
 			blocked[candidate.Request.ConversationID] = true
 			continue
 		}
@@ -338,6 +339,7 @@ func (b *Bridge) sendOne(ctx context.Context) (bool, error) {
 		}
 		b.Hub.Notify()
 		callCtx, cancel = context.WithTimeout(ctx, b.sendTimeout)
+		dispatched := time.Now()
 		switch o.Request.Kind {
 		case "conversation":
 			var snap provider.Snapshot
@@ -369,6 +371,9 @@ func (b *Bridge) sendOne(ctx context.Context) (bool, error) {
 			}
 		} else if err != nil {
 			state, detail = "ambiguous", "Send outcome unknown; inspect phone before sending again"
+		}
+		if err != nil {
+			stdlog.Printf("%s send %s %s after %s: %v", b.Network(), o.ID, state, time.Since(dispatched).Round(time.Millisecond), err)
 		}
 		if err = b.Store.Finish(o.ID, state, detail); err != nil {
 			return true, err
