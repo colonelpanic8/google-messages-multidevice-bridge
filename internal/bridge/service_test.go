@@ -171,6 +171,21 @@ func TestTransportRecoveryDoesNotInventPhoneRecovery(t *testing.T) {
 		t.Fatal(b.Status())
 	}
 }
+func TestCatchUpRequestKeepsPhoneResponsive(t *testing.T) {
+	b := testBridge(t)
+	b.Handle(&events.ClientReady{})
+	b.Handle(&events.PhoneNotResponding{})
+	// libgm requests a catch-up, announced as NoDataReceived, whenever the phone answers again.
+	b.Handle(&events.PhoneRespondingAgain{})
+	b.Handle(&events.NoDataReceived{})
+	status := b.Status()
+	if status.State != "connected" || !status.Phone || status.Reason != "" {
+		t.Fatalf("%+v", status)
+	}
+	if events := status.ConnectionEvents; events[len(events)-1].Event != "no_data_received" {
+		t.Fatalf("events %+v", events)
+	}
+}
 func TestDuplicateRequestSurvivesConversationBecomingReadOnly(t *testing.T) {
 	b := testBridge(t)
 	conv := model.Conversation{Schema: 1, ID: "c1"}

@@ -109,7 +109,9 @@ func (g *googleConnection) Handle(b *Bridge, event any) error {
 	case *events.PhoneNotResponding:
 		g.phoneUnresponsive(b, "phone_not_responding")
 	case *events.NoDataReceived:
-		g.phoneUnresponsive(b, "no_data_received")
+		// libgm announces every catch-up request this way, including the one
+		// right after the phone answers again; it says nothing about liveness.
+		b.recordConnectionEvent("no_data_received")
 	case *events.ListenRecovered:
 		b.connection("listen_recovered", true, b.Status().Phone, "")
 		b.RequestSync()

@@ -26,7 +26,6 @@ var degradedDetail = map[string]string{
 	"transport_interrupted": "The connection to Google dropped; reconnecting automatically.",
 	"phone_not_responding":  "Your phone stopped answering the bridge's pings.",
 	"phone_ping_failed":     "The bridge could not send pings to your phone.",
-	"no_data_received":      "Nothing has arrived from Google recently.",
 	"awaiting_phone":        "Waiting for your phone to answer.",
 }
 
@@ -405,6 +404,7 @@ func (b *Bridge) syncLoop(ctx context.Context) {
 		err := b.reconcile(ctx)
 		b.mu.Lock()
 		if err != nil {
+			stdlog.Printf("%s sync failed: %v", b.Network(), err)
 			b.status.SyncState = "failed"
 		} else {
 			now := time.Now().UTC()
