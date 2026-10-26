@@ -189,6 +189,13 @@ function notice(message) {
 function autogrow() {
   $("compose-size").textContent = $("text").value + " ";
 }
+// Only a draft past the height cap may scroll; rounding elsewhere must not show a scrollbar.
+new ResizeObserver(([{ target }]) => {
+  target.parentElement.classList.toggle(
+    "capped",
+    target.scrollHeight > target.clientHeight,
+  );
+}).observe($("compose-size"));
 
 // Rendering is batched per animation frame; state changes mark parts dirty.
 const dirty = new Set();

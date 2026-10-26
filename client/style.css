@@ -1330,7 +1330,11 @@ button.reaction:hover {
   inset: 0;
   width: 100%;
   height: 100%;
+  overflow-y: hidden;
   transition: background-color var(--motion-short) var(--ease-standard);
+}
+.compose-input.capped textarea {
+  overflow-y: auto;
 }
 .compose-row textarea:focus {
   outline: none;

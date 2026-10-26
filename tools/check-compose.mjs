@@ -6,6 +6,8 @@ export default async function checkCompose(page) {
   await page.setViewportSize({ width: 1280, height: 900 });
   const input = page.getByRole("textbox", { name: "Message", exact: true });
   const height = () => input.evaluate((node) => node.clientHeight);
+  const scrollable = () =>
+    input.evaluate((node) => getComputedStyle(node).overflowY === "auto");
   const fill = async (value) => {
     await input.fill(value);
     await input.evaluate(
@@ -41,10 +43,12 @@ export default async function checkCompose(page) {
     await input.evaluate((node) => node.scrollHeight > node.clientHeight),
     "Capped drafts should scroll",
   );
+  assert(await scrollable(), "Capped drafts should show a scrollbar");
   assert(
     (await fill("short")) === 48,
     "Deleting text should shrink the composer",
   );
+  assert(!(await scrollable()), "Uncapped drafts should not show a scrollbar");
 
   for (const value of ["word ".repeat(30), "x".repeat(150), "👩🏽‍💻 ".repeat(60)]) {
     const size = await fill(value);
