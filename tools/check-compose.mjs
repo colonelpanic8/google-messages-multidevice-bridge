@@ -8,6 +8,8 @@ export default async function checkCompose(page) {
   const height = () => input.evaluate((node) => node.clientHeight);
   const scrollable = () =>
     input.evaluate((node) => getComputedStyle(node).overflowY === "auto");
+  const scrollsSideways = () =>
+    input.evaluate((node) => getComputedStyle(node).overflowX !== "hidden");
   const fill = async (value) => {
     await input.fill(value);
     await input.evaluate(
@@ -45,10 +47,18 @@ export default async function checkCompose(page) {
   );
   assert(await scrollable(), "Capped drafts should show a scrollbar");
   assert(
+    !(await scrollsSideways()),
+    "Capped drafts should not scroll horizontally",
+  );
+  assert(
     (await fill("short")) === 48,
     "Deleting text should shrink the composer",
   );
   assert(!(await scrollable()), "Uncapped drafts should not show a scrollbar");
+  assert(
+    !(await scrollsSideways()),
+    "Uncapped drafts should not scroll horizontally",
+  );
 
   for (const value of ["word ".repeat(30), "x".repeat(150), "👩🏽‍💻 ".repeat(60)]) {
     const size = await fill(value);

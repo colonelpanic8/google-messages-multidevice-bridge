@@ -1330,7 +1330,7 @@ button.reaction:hover {
   inset: 0;
   width: 100%;
   height: 100%;
-  overflow-y: hidden;
+  overflow: hidden;
   transition: background-color var(--motion-short) var(--ease-standard);
 }
 .compose-input.capped textarea {
