@@ -7,10 +7,13 @@ use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
-use tauri_plugin_notification::NotificationExt;
 
 const KEYRING_SERVICE: &str = "google-messages-multidevice-bridge";
 const KEYRING_USER: &str = "api-token";
+
+// Name of the installed .desktop file and icon.
+#[cfg(target_os = "linux")]
+const LINUX_APP_ID: &str = "google-messages-desktop";
 
 // Preconfiguration hooks for Nix-managed hosts. The secret itself is never
 // baked into the binary: the wrapper (or the user's session environment)
@@ -206,8 +209,28 @@ fn set_unread(app: AppHandle, unread: State<Unread>, count: u32) {
     }
 }
 
+// The notification plugin names Linux notifications and picks their icon after
+// the executable, which Nix's wrapper renames to `.google-messages-desktop-wrapped`.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn notify(title: String, body: String) -> Result<(), String> {
+    let mut notification = notify_rust::Notification::new();
+    notification
+        .appname("Messages")
+        .icon(LINUX_APP_ID)
+        .hint(notify_rust::Hint::DesktopEntry(LINUX_APP_ID.to_string()))
+        .summary(&title)
+        .body(&body);
+    tauri::async_runtime::spawn(async move {
+        let _ = notification.show();
+    });
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
 #[tauri::command]
 fn notify(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
     app.notification()
         .builder()
         .title(title)

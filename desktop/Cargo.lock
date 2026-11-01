@@ -1453,6 +1453,7 @@ name = "google-messages-desktop"
 version = "0.1.2"
 dependencies = [
  "keyring",
+ "notify-rust",
  "serde",
  "tauri",
  "tauri-build",
