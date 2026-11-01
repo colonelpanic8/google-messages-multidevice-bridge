@@ -39,7 +39,7 @@
             # Covers third_party/mautrix-gmessages too, which go.mod replaces with
             # a local path: editing that copy changes the vendored tree, so this
             # hash must be updated or the build silently reuses the cached one.
-            vendorHash = "sha256-75hLS7bvgt2gyDn5l97IW0AdAqeeLMmJ9BJMLUiGrq4=";
+            vendorHash = "sha256-ioh9212Ds8yaalKfinse1e947noxXIQmVdRST+v1Mk4=";
 
             meta = {
               description = "One Google Messages or WhatsApp connection for all your devices";

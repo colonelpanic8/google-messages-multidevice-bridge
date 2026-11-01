@@ -275,7 +275,7 @@ func registerRecords(mux *http.ServeMux, b *bridge.Bridge) {
 			apiError(w, provider.ErrUnavailable)
 			return
 		}
-		b.RequestSync()
+		b.RequestFullSync()
 		w.WriteHeader(http.StatusAccepted)
 	})
 	mux.HandleFunc("GET /v1/attachments/{id}", func(w http.ResponseWriter, r *http.Request) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/provider"
@@ -31,6 +32,24 @@ type Status struct {
 	PreviousMessages      int        `json:"previous_session_messages"`
 	// Oldest first, so a client can tell a flapping connection from a stuck one.
 	ConnectionEvents []ConnectionEvent `json:"connection_events,omitempty"`
+	PhoneReport      PhoneReport       `json:"phone_report"`
+	Outage           *Outage           `json:"outage,omitempty"`
+}
+
+// PhoneReport is the phone's latest account of its own connection, from the
+// alerts it sends. Empty fields mean it has not said.
+type PhoneReport struct {
+	Network       string `json:"network,omitempty"`
+	Session       string `json:"session,omitempty"`
+	BatteryLow    bool   `json:"battery_low,omitempty"`
+	PushThrottled bool   `json:"push_throttled,omitempty"`
+}
+
+// Outage spans a loss of the phone connection, including brief recoveries
+// inside it. Announced is set once it has lasted long enough to tell anyone.
+type Outage struct {
+	Since     time.Time `json:"since"`
+	Announced bool      `json:"announced"`
 }
 
 type ConnectionEvent struct {
@@ -71,6 +90,7 @@ type Bridge struct {
 	prepareErr       error
 	storageErr       error
 	syncWake         chan struct{}
+	fullSync         atomic.Bool
 	sendWake         chan struct{}
 	eventMu          sync.Mutex
 	stopped          bool

@@ -784,10 +784,18 @@ index 77a7107..f784d85 100644
  		return nil, errors.New("input data is too short")
  	}
 diff --git a/upstream/pkg/libgm/event_handler.go b/local/pkg/libgm/event_handler.go
-index 44d04c0..488186a 100644
+index 44d04c0..64b72f5 100644
 --- a/upstream/pkg/libgm/event_handler.go
 +++ b/local/pkg/libgm/event_handler.go
-@@ -90,7 +90,7 @@ func (c *Client) decryptInternalMessage(data *gmproto.IncomingRPCMessage) (*Inco
+@@ -7,6 +7,7 @@ import (
+ 	"encoding/base64"
+ 	"fmt"
+ 	"strings"
++	"time"
+ 
+ 	"google.golang.org/protobuf/proto"
+ 
+@@ -90,7 +91,7 @@ func (c *Client) decryptInternalMessage(data *gmproto.IncomingRPCMessage) (*Inco
  			msg.DecryptedMessage = responseStruct.ProtoReflect().New().Interface()
  		}
  		if msg.Message.EncryptedData != nil {
@@ -796,7 +804,7 @@ index 44d04c0..488186a 100644
  			if err != nil {
  				return nil, fmt.Errorf("failed to decrypt data event: %w", err)
  			}
-@@ -104,7 +104,7 @@ func (c *Client) decryptInternalMessage(data *gmproto.IncomingRPCMessage) (*Inco
+@@ -104,7 +105,7 @@ func (c *Client) decryptInternalMessage(data *gmproto.IncomingRPCMessage) (*Inco
  				}
  			}
  		} else if msg.Message.EncryptedData2 != nil {
@@ -805,7 +813,7 @@ index 44d04c0..488186a 100644
  			if err != nil {
  				return nil, fmt.Errorf("failed to decrypt field 2 in data event: %w", err)
  			}
-@@ -118,10 +118,12 @@ func (c *Client) decryptInternalMessage(data *gmproto.IncomingRPCMessage) (*Inco
+@@ -118,10 +119,12 @@ func (c *Client) decryptInternalMessage(data *gmproto.IncomingRPCMessage) (*Inco
  			}
  			// Hacky hack to have User.handleAccountChange do the right-ish thing on startup
  			if strings.ContainsRune(ed2c.GetAccountChange().GetAccount(), '@') {
@@ -820,7 +828,7 @@ index 44d04c0..488186a 100644
  			}
  		}
  	default:
-@@ -130,7 +132,9 @@ func (c *Client) decryptInternalMessage(data *gmproto.IncomingRPCMessage) (*Inco
+@@ -130,7 +133,9 @@ func (c *Client) decryptInternalMessage(data *gmproto.IncomingRPCMessage) (*Inco
  	return msg, nil
  }
  
@@ -831,7 +839,7 @@ index 44d04c0..488186a 100644
  	const recentUpdatesLen = len(c.recentUpdates)
  	for i := c.recentUpdatesPtr + recentUpdatesLen - 1; i >= c.recentUpdatesPtr; i-- {
  		if c.recentUpdates[i%recentUpdatesLen].id == id {
-@@ -141,11 +145,22 @@ func (c *Client) deduplicateHash(id string, hash [32]byte) bool {
+@@ -141,11 +146,22 @@ func (c *Client) deduplicateHash(id string, hash [32]byte) bool {
  			}
  		}
  	}
@@ -856,7 +864,7 @@ index 44d04c0..488186a 100644
  func (c *Client) logContent(res *IncomingRPCMessage, thingID string, contentHash []byte) {
  	if c.Logger.Trace().Enabled() && (res.DecryptedData != nil || res.DecryptedMessage != nil) {
  		evt := c.Logger.Trace().Bool("is_old", res.IsOld)
-@@ -165,32 +180,32 @@ func (c *Client) logContent(res *IncomingRPCMessage, thingID string, contentHash
+@@ -165,34 +181,41 @@ func (c *Client) logContent(res *IncomingRPCMessage, thingID string, contentHash
  	}
  }
  
@@ -894,8 +902,17 @@ index 44d04c0..488186a 100644
 +		c.sessionHandler.queueMessageAck(msg.ResponseID)
  		return
  	}
++	if req, ok := c.sessionHandler.lateResponse(msg); ok {
++		c.Logger.Warn().
++			Str("request_id", msg.Message.SessionID).
++			Stringer("message_action", req.action).
++			Str("answered_after", time.Since(req.sent).Round(time.Second).String()).
++			Msg("Phone answered a request after it was abandoned")
++	}
  	logEvt := c.Logger.Debug().
-@@ -202,19 +217,23 @@ func (c *Client) HandleRPCMsg(rawMsg *gmproto.IncomingRPCMessage) {
+ 		Str("message_id", msg.ResponseID).
+ 		Stringer("bugle_route", msg.BugleRoute)
+@@ -202,19 +225,23 @@ func (c *Client) HandleRPCMsg(rawMsg *gmproto.IncomingRPCMessage) {
  	logEvt.Msg("Received message")
  	switch msg.BugleRoute {
  	case gmproto.BugleRoute_PairEvent:
@@ -914,16 +931,16 @@ index 44d04c0..488186a 100644
  		}
 -		c.handleUpdatesEvent(msg)
 +		err = c.handleUpdatesEvent(msg)
- 	}
++	}
 +	if err != nil {
 +		c.Logger.Error().Err(err).Str("message_id", msg.ResponseID).Msg("Event handler rejected incoming RPC message")
 +		return
-+	}
+ 	}
 +	c.sessionHandler.queueMessageAck(msg.ResponseID)
  }
  
  type WrappedMessage struct {
-@@ -225,15 +244,20 @@ type WrappedMessage struct {
+@@ -225,15 +252,20 @@ type WrappedMessage struct {
  
  var hackyLoggedOutBytes = []byte{0x72, 0x00}
  
@@ -948,7 +965,7 @@ index 44d04c0..488186a 100644
  		}
  		data, ok := msg.DecryptedMessage.(*gmproto.UpdateEvents)
  		if !ok {
-@@ -241,61 +265,75 @@ func (c *Client) handleUpdatesEvent(msg *IncomingRPCMessage) {
+@@ -241,61 +273,75 @@ func (c *Client) handleUpdatesEvent(msg *IncomingRPCMessage) {
  				Type("data_type", msg.DecryptedMessage).
  				Bool("is_old", msg.IsOld).
  				Msg("Unexpected data type in GET_UPDATES event")
@@ -1039,7 +1056,7 @@ index 44d04c0..488186a 100644
  				AccountChangeOrSomethingEvent: evt.AccountChange,
  			})
  
-@@ -316,4 +354,5 @@ func (c *Client) handleUpdatesEvent(msg *IncomingRPCMessage) {
+@@ -316,4 +362,5 @@ func (c *Client) handleUpdatesEvent(msg *IncomingRPCMessage) {
  			Str("evt_data", base64.StdEncoding.EncodeToString(msg.GetMessageData())).
  			Msg("Unexpected response data")
  	}
@@ -2134,24 +2151,40 @@ index a1d2147..1278e40 100644
  	})
  }
 diff --git a/upstream/pkg/libgm/session_handler.go b/local/pkg/libgm/session_handler.go
-index ba2e484..c4ab9c2 100644
+index ba2e484..d7c32bb 100644
 --- a/upstream/pkg/libgm/session_handler.go
 +++ b/local/pkg/libgm/session_handler.go
-@@ -34,6 +34,7 @@ const responseHardTimeout = 60 * time.Second
+@@ -34,6 +34,16 @@ const responseHardTimeout = 60 * time.Second
  // maxQueuedAcks caps how many message acks are kept queued for retry when ack requests fail,
  // so the queue can't grow unboundedly if the server is unreachable for a long time.
  const maxQueuedAcks = 1024
 +const ackRequestTimeout = 15 * time.Second
++
++// maxAbandonedRequests bounds how many abandoned requests are remembered so a
++// late answer can be attributed and timed.
++const maxAbandonedRequests = 256
++
++type sentRequest struct {
++	action gmproto.ActionType
++	sent   time.Time
++}
  
  type SessionHandler struct {
  	client *Client
-@@ -41,15 +42,30 @@ type SessionHandler struct {
+@@ -41,15 +51,37 @@ type SessionHandler struct {
  	responseWaiters     map[string]chan<- *IncomingRPCMessage
  	responseWaitersLock sync.Mutex
  
 +	// gaiaPairingWaiters maps an in-flight Gaia pairing action to its request ID.
 +	// Guarded by responseWaitersLock.
 +	gaiaPairingWaiters map[gmproto.ActionType]string
++
++	// sent describes each request in responseWaiters. abandoned keeps that
++	// description after the waiter gives up. Both are guarded by
++	// responseWaitersLock.
++	sent           map[string]sentRequest
++	abandoned      map[string]sentRequest
++	abandonedOrder []string
 +
  	ackMapLock sync.Mutex
  	ackMap     []string
@@ -2178,7 +2211,7 @@ index ba2e484..c4ab9c2 100644
  }
  
  func (s *SessionHandler) sendMessageNoResponse(ctx context.Context, params SendMessageParams) error {
-@@ -67,7 +83,7 @@ func (s *SessionHandler) sendMessageNoResponse(ctx context.Context, params SendM
+@@ -67,7 +99,7 @@ func (s *SessionHandler) sendMessageNoResponse(ctx context.Context, params SendM
  		Str("message_id", requestID).
  		Msg("Sending request to phone (not expecting response)")
  	_, err = typedHTTPResponse[*gmproto.OutgoingRPCResponse](
@@ -2187,22 +2220,26 @@ index ba2e484..c4ab9c2 100644
  	)
  	return err
  }
-@@ -84,6 +100,14 @@ func (s *SessionHandler) sendAsyncMessageWithID(ctx context.Context, params Send
+@@ -84,6 +116,18 @@ func (s *SessionHandler) sendAsyncMessageWithID(ctx context.Context, params Send
  	}
  
  	ch := s.waitResponse(requestID)
++	s.responseWaitersLock.Lock()
++	if s.sent == nil {
++		s.sent = make(map[string]sentRequest)
++	}
++	s.sent[requestID] = sentRequest{action: params.Action, sent: time.Now()}
 +	if isGaiaPairingAction(params.Action) {
-+		s.responseWaitersLock.Lock()
 +		if s.gaiaPairingWaiters == nil {
 +			s.gaiaPairingWaiters = make(map[gmproto.ActionType]string)
 +		}
 +		s.gaiaPairingWaiters[params.Action] = requestID
-+		s.responseWaitersLock.Unlock()
 +	}
++	s.responseWaitersLock.Unlock()
  	url := util.SendMessageURL
  	if s.client.AuthData.HasCookies() {
  		url = util.SendMessageURLGoogle
-@@ -93,7 +117,7 @@ func (s *SessionHandler) sendAsyncMessageWithID(ctx context.Context, params Send
+@@ -93,7 +137,7 @@ func (s *SessionHandler) sendAsyncMessageWithID(ctx context.Context, params Send
  		Str("message_id", requestID).
  		Msg("Sending request to phone")
  	_, err = typedHTTPResponse[*gmproto.OutgoingRPCResponse](
@@ -2211,7 +2248,7 @@ index ba2e484..c4ab9c2 100644
  	)
  	if err != nil {
  		s.cancelResponse(requestID, ch)
-@@ -123,9 +147,33 @@ func (s *SessionHandler) waitResponse(requestID string) chan *IncomingRPCMessage
+@@ -123,25 +167,83 @@ func (s *SessionHandler) waitResponse(requestID string) chan *IncomingRPCMessage
  	return ch
  }
  
@@ -2245,15 +2282,57 @@ index ba2e484..c4ab9c2 100644
  	// Only close the channel if the response hasn't been claimed yet: receiveResponse
  	// removes the waiter from the map (under the lock) before sending to the channel,
  	// so closing an already-claimed channel here could panic that send.
-@@ -142,6 +190,7 @@ func (s *SessionHandler) cancelAllResponseWaiters() {
+ 	if _, ok := s.responseWaiters[requestID]; ok {
  		delete(s.responseWaiters, requestID)
++		s.abandon(requestID)
+ 		close(ch)
+ 	}
+ }
+ 
++// abandon keeps requestID's description so a late answer can be timed. The
++// caller must hold responseWaitersLock.
++func (s *SessionHandler) abandon(requestID string) {
++	req, ok := s.sent[requestID]
++	if !ok {
++		return
++	}
++	delete(s.sent, requestID)
++	if s.abandoned == nil {
++		s.abandoned = make(map[string]sentRequest)
++	}
++	if len(s.abandonedOrder) >= maxAbandonedRequests {
++		delete(s.abandoned, s.abandonedOrder[0])
++		s.abandonedOrder = s.abandonedOrder[1:]
++	}
++	s.abandoned[requestID] = req
++	s.abandonedOrder = append(s.abandonedOrder, requestID)
++}
++
++// lateResponse reports the abandoned request msg answers, at most once.
++func (s *SessionHandler) lateResponse(msg *IncomingRPCMessage) (sentRequest, bool) {
++	if msg.Message == nil {
++		return sentRequest{}, false
++	}
++	s.responseWaitersLock.Lock()
++	defer s.responseWaitersLock.Unlock()
++	req, ok := s.abandoned[msg.Message.SessionID]
++	delete(s.abandoned, msg.Message.SessionID)
++	return req, ok
++}
++
+ func (s *SessionHandler) cancelAllResponseWaiters() {
+ 	s.responseWaitersLock.Lock()
+ 	defer s.responseWaitersLock.Unlock()
+ 	for requestID, ch := range s.responseWaiters {
+ 		delete(s.responseWaiters, requestID)
++		s.abandon(requestID)
  		close(ch)
  	}
 +	clear(s.gaiaPairingWaiters)
  }
  
  func (s *SessionHandler) receiveResponse(msg *IncomingRPCMessage) bool {
-@@ -162,11 +211,21 @@ func (s *SessionHandler) receiveResponse(msg *IncomingRPCMessage) bool {
+@@ -162,11 +264,22 @@ func (s *SessionHandler) receiveResponse(msg *IncomingRPCMessage) bool {
  	requestID := msg.Message.SessionID
  	s.responseWaitersLock.Lock()
  	ch, ok := s.responseWaiters[requestID]
@@ -2271,11 +2350,12 @@ index ba2e484..c4ab9c2 100644
  		return false
  	}
  	delete(s.responseWaiters, requestID)
++	delete(s.sent, requestID)
 +	s.forgetGaiaPairingWaiter(requestID)
  	s.responseWaitersLock.Unlock()
  	// Ditto activity is handled by the pinger directly
  	if msg.Message.Action != gmproto.ActionType_NOTIFY_DITTO_ACTIVITY {
-@@ -245,6 +304,7 @@ func (s *SessionHandler) sendUserMessage(ctx context.Context, actionType gmproto
+@@ -245,6 +358,7 @@ func (s *SessionHandler) sendUserMessage(ctx context.Context, actionType gmproto
  		Action:        actionType,
  		Data:          encryptedData,
  		UserInitiated: true,
@@ -2283,7 +2363,7 @@ index ba2e484..c4ab9c2 100644
  	})
  }
  
-@@ -259,11 +319,15 @@ type SendMessageParams struct {
+@@ -259,11 +373,15 @@ type SendMessageParams struct {
  	MessageType gmproto.MessageType
  
  	UserInitiated bool
@@ -2300,7 +2380,7 @@ index ba2e484..c4ab9c2 100644
  
  	requestID := params.RequestID
  	if requestID == "" {
-@@ -275,7 +339,7 @@ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.M
+@@ -275,7 +393,7 @@ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.M
  	}
  
  	message := &gmproto.OutgoingRPCMessage{
@@ -2309,7 +2389,7 @@ index ba2e484..c4ab9c2 100644
  		Data: &gmproto.OutgoingRPCMessage_Data{
  			RequestID:  requestID,
  			BugleRoute: gmproto.BugleRoute_DataEvent,
-@@ -286,18 +350,18 @@ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.M
+@@ -286,18 +404,18 @@ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.M
  		},
  		Auth: &gmproto.OutgoingRPCMessage_Auth{
  			RequestID:        requestID,
@@ -2332,7 +2412,7 @@ index ba2e484..c4ab9c2 100644
  	}
  	var encryptedData, unencryptedData []byte
  	if params.Data != nil {
-@@ -309,7 +373,7 @@ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.M
+@@ -309,7 +427,7 @@ func (s *SessionHandler) buildMessage(params SendMessageParams) (string, proto.M
  		if params.DontEncrypt {
  			unencryptedData = serializedData
  		} else {
@@ -2341,7 +2421,7 @@ index ba2e484..c4ab9c2 100644
  			if err != nil {
  				return "", nil, err
  			}
-@@ -340,20 +404,42 @@ func (s *SessionHandler) queueMessageAck(messageID string) {
+@@ -340,20 +458,42 @@ func (s *SessionHandler) queueMessageAck(messageID string) {
  	}
  }
  
@@ -2393,7 +2473,7 @@ index ba2e484..c4ab9c2 100644
  	s.ackMapLock.Lock()
  	dataToAck := s.ackMap
  	s.ackMap = nil
-@@ -362,16 +448,17 @@ func (s *SessionHandler) sendAckRequest() {
+@@ -362,16 +502,17 @@ func (s *SessionHandler) sendAckRequest() {
  		return
  	}
  	ackMessages := make([]*gmproto.AckMessageRequest_Message, len(dataToAck))
@@ -2413,7 +2493,7 @@ index ba2e484..c4ab9c2 100644
  			Network:          s.client.AuthData.AuthNetwork(),
  			ConfigVersion:    util.ConfigMessage,
  		},
-@@ -382,8 +469,10 @@ func (s *SessionHandler) sendAckRequest() {
+@@ -382,8 +523,10 @@ func (s *SessionHandler) sendAckRequest() {
  	if s.client.AuthData.HasCookies() {
  		url = util.AckMessagesURLGoogle
  	}

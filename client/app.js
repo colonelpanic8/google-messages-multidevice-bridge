@@ -386,7 +386,9 @@ function loadAll({ track = (key, work) => work({}) } = {}) {
 function applyStatus(next) {
   const previousEpoch = currentSessionEpoch;
   const previousState = providerState;
+  const previous = status;
   status = next || {};
+  if (previous.state) notifyOutage(previous.outage, status.outage);
   providerState = status.state || "offline";
   currentSessionEpoch = status.session_epoch || 0;
   invalidate("status", "compose");
@@ -1583,7 +1585,35 @@ const CONNECTION_EVENTS = {
   connection_stopped: "Connection stopped; retrying",
   logged_out: "Signed out by Google",
   listen_fatal_error: "Connection failed",
+  alert_browser_active: "Phone made a web session active",
+  alert_browser_inactive: "Phone marked this web session inactive",
+  alert_browser_inactive_from_timeout: "Phone timed out this web session",
+  alert_browser_inactive_from_inactivity: "Phone idled this web session",
+  alert_mobile_wifi_connection: "Phone switched to Wi-Fi",
+  alert_mobile_data_connection: "Phone switched to mobile data",
+  alert_mobile_battery_low: "Phone battery low",
+  alert_mobile_battery_restored: "Phone battery recovered",
+  alert_push_throttle_started: "Google started throttling pushes to the phone",
+  alert_push_throttling: "Google is throttling pushes to the phone",
+  alert_push_throttle_ended: "Google stopped throttling pushes to the phone",
+  alert_disconnected_from_satellite: "Phone disconnected from satellite",
 };
+
+const PHONE_SESSION = {
+  inactive: "this web session is inactive",
+  timed_out: "this web session timed out",
+  idle: "this web session is idle",
+};
+
+function phoneReport(report = {}) {
+  const parts = [];
+  if (report.network)
+    parts.push(report.network === "wifi" ? "on Wi-Fi" : "on mobile data");
+  if (report.battery_low) parts.push("battery low");
+  if (report.push_throttled) parts.push("Google is throttling pushes to it");
+  if (PHONE_SESSION[report.session]) parts.push(PHONE_SESSION[report.session]);
+  return parts.length ? `Phone reports: ${parts.join(", ")}.` : "";
+}
 
 function renderConnectionEvents() {
   const events = status.connection_events || [];
@@ -1616,6 +1646,9 @@ function renderStatus() {
   $("status").textContent = token ? state : "Locked";
   $("provider-detail").textContent = status.detail || "";
   renderConnectionEvents();
+  const report = token ? phoneReport(status.phone_report) : "";
+  $("phone-report").hidden = !report;
+  $("phone-report").textContent = report;
   $("sync-status").textContent = status.last_sync
     ? `Recent history checked ${new Date(status.last_sync).toLocaleTimeString()}.${
         status.sync_state === "failed" ? " Latest check failed." : ""
@@ -2471,6 +2504,21 @@ function notifyIncoming(message) {
     void select(message.conversation_id);
     notification.close();
   };
+}
+// Browsers hear about outages through web push; the desktop app has none.
+function notifyOutage(before, after) {
+  if (!desktop || !$("notify").checked) return;
+  const label = status.network === "whatsapp" ? "WhatsApp" : "Messages";
+  if (!before?.announced && after?.announced)
+    void desktop("notify", {
+      title: `${label} connection lost`,
+      body: `Your phone has not been reachable since ${clockTime(new Date(after.since))}. Messages may be delayed until it is.`,
+    }).catch(() => {});
+  else if (before?.announced && !after)
+    void desktop("notify", {
+      title: `${label} connection restored`,
+      body: "Your phone is reachable again.",
+    }).catch(() => {});
 }
 // Base64url as the Push API wants it for the server's VAPID public key.
 function decodeKey(value) {

@@ -150,10 +150,14 @@ func serve(parent context.Context, b *bridge.Bridge, offline bool, token string,
 	bridgeErr := make(chan error, 1)
 	go func() { bridgeErr <- b.ServeConnection(ctx, offline) }()
 	var watcher sync.WaitGroup
+	var notifier bridge.PushNotifier
 	if sender != nil {
+		notifier = pushAdapter{sender}
 		watcher.Add(1)
-		go func() { defer watcher.Done(); _ = b.WatchForPush(ctx, pushAdapter{sender}) }()
+		go func() { defer watcher.Done(); _ = b.WatchForPush(ctx, notifier) }()
 	}
+	watcher.Add(1)
+	go func() { defer watcher.Done(); b.WatchConnection(ctx, notifier) }()
 	defer watcher.Wait()
 	fmt.Fprintln(os.Stderr, b.Network(), "bridge listening on", listener.Addr())
 	bridgeFinished := false

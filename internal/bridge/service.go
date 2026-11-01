@@ -20,6 +20,14 @@ var validKey = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 
 const maxConnectionEvents = 20
 
+// Every conversation request is a push to the phone, so a periodic sync only
+// fetches messages for conversations whose snapshot changed, plus any not
+// fetched within fullReconcileEvery to repair missed receipts and reactions.
+const fullReconcileEvery = time.Hour
+
+// maxSyncBackoff caps the delay between syncs while the phone is unresponsive.
+const maxSyncBackoff = 30 * time.Minute
+
 // Degraded reasons. A phone cause is the event that last marked the phone
 // unresponsive; awaiting_phone means nothing has confirmed it yet.
 var degradedDetail = map[string]string{
@@ -32,6 +40,9 @@ var degradedDetail = map[string]string{
 func (b *Bridge) setStateLocked(state string) {
 	now := time.Now().UTC()
 	if state != b.status.State {
+		if !b.status.StateSince.IsZero() {
+			stdlog.Printf("%s state=%s after %s for %s", b.Network(), state, b.status.State, now.Sub(b.status.StateSince).Round(time.Second))
+		}
 		b.status.StateSince = now
 	}
 	b.status.State, b.status.Updated = state, now
@@ -94,6 +105,13 @@ func wake(ch chan struct{}) {
 	}
 }
 func (b *Bridge) RequestSync() { wake(b.syncWake) }
+
+// RequestFullSync asks the next sync to fetch messages for every recent
+// conversation, changed or not.
+func (b *Bridge) RequestFullSync() {
+	b.fullSync.Store(true)
+	wake(b.syncWake)
+}
 func (b *Bridge) getProvider() provider.Provider {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -387,6 +405,10 @@ func (b *Bridge) sendOne(ctx context.Context) (bool, error) {
 func (b *Bridge) syncLoop(ctx context.Context) {
 	ticker := time.NewTicker(b.syncEvery)
 	defer ticker.Stop()
+	// A new connection starts empty, so its first sync fetches everything.
+	seen := map[string]reconciled{}
+	failures := 0
+	var retryAt time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -403,15 +425,28 @@ func (b *Bridge) syncLoop(ctx context.Context) {
 		if !before.Transport || (before.State != "connected" && before.State != "degraded") {
 			continue
 		}
+		// Requests the phone cannot answer queue up for it, so stop adding
+		// them until it answers something else or someone asks.
+		started := time.Now()
+		if failures > 0 && !before.Phone && started.Before(retryAt) && !b.fullSync.Load() {
+			continue
+		}
+		if b.fullSync.Swap(false) {
+			clear(seen)
+		}
 		b.mu.Lock()
 		b.status.SyncState = "running"
 		b.mu.Unlock()
-		err := b.reconcile(ctx)
+		err := b.reconcile(ctx, seen)
 		b.mu.Lock()
 		if err != nil {
-			stdlog.Printf("%s sync failed: %v", b.Network(), err)
+			failures++
+			backoff := min(b.syncEvery<<min(failures-1, 8), maxSyncBackoff)
+			retryAt = started.Add(backoff)
+			stdlog.Printf("%s sync failed (%d in a row): %v", b.Network(), failures, err)
 			b.status.SyncState = "failed"
 		} else {
+			failures = 0
 			now := time.Now().UTC()
 			b.status.SyncState = "recent_window_complete"
 			if b.Network() == "whatsapp" {
@@ -447,7 +482,16 @@ func (b *Bridge) apply(snap provider.Snapshot, watermark uint64) error {
 	}
 	return nil
 }
-func (b *Bridge) reconcile(ctx context.Context) error {
+
+type reconciled struct {
+	snapshot string
+	at       time.Time
+}
+
+// reconcile refreshes recent conversations. With a seen map it skips message
+// fetches for conversations unchanged since a fetch within fullReconcileEvery
+// and records the ones it fetches; a nil map fetches every conversation.
+func (b *Bridge) reconcile(ctx context.Context, seen map[string]reconciled) error {
 	p := b.getProvider()
 	if p == nil {
 		return provider.ErrUnavailable
@@ -469,6 +513,10 @@ func (b *Bridge) reconcile(ctx context.Context) error {
 		if err = b.apply(c, watermark); err != nil {
 			return err
 		}
+		id, snapshot := c.Event.EntityID, string(c.Event.Data)
+		if last, ok := seen[id]; ok && last.snapshot == snapshot && time.Since(last.at) < fullReconcileEvery {
+			continue
+		}
 		mark, err := b.Store.HistoryWatermark()
 		if err != nil {
 			b.storageFailure(err)
@@ -484,6 +532,9 @@ func (b *Bridge) reconcile(ctx context.Context) error {
 			if err = b.apply(m, mark); err != nil {
 				return err
 			}
+		}
+		if seen != nil {
+			seen[id] = reconciled{snapshot: snapshot, at: time.Now()}
 		}
 	}
 	return nil
