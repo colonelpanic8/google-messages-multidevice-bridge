@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -786,6 +787,38 @@ func TestNonPairingResponseStillRequiresMatchingSessionID(t *testing.T) {
 	}
 	if c.sessionHandler.receiveResponse(msg) {
 		t.Fatal("unrelated response was matched to a pending request")
+	}
+}
+
+func TestAbandonedRequestIsAttributedToItsLateAnswerOnce(t *testing.T) {
+	c := testClient()
+	s := c.sessionHandler
+	late := func(id string) (sentRequest, bool) {
+		return s.lateResponse(&IncomingRPCMessage{IncomingRPCMessage: &gmproto.IncomingRPCMessage{}, Message: &gmproto.RPCMessageData{SessionID: id}})
+	}
+	for i := 0; i <= maxAbandonedRequests; i++ {
+		id := "request-" + strconv.Itoa(i)
+		ch := s.waitResponse(id)
+		s.responseWaitersLock.Lock()
+		if s.sent == nil {
+			s.sent = make(map[string]sentRequest)
+		}
+		s.sent[id] = sentRequest{action: gmproto.ActionType_LIST_CONVERSATIONS, sent: time.Now()}
+		s.responseWaitersLock.Unlock()
+		s.cancelResponse(id, ch)
+	}
+	if _, ok := late("request-0"); ok {
+		t.Fatal("the oldest abandoned request outlived the bound")
+	}
+	last := "request-" + strconv.Itoa(maxAbandonedRequests)
+	if req, ok := late(last); !ok || req.action != gmproto.ActionType_LIST_CONVERSATIONS {
+		t.Fatalf("late answer not attributed: %+v %v", req, ok)
+	}
+	if _, ok := late(last); ok {
+		t.Fatal("a duplicate late answer was attributed twice")
+	}
+	if len(s.sent) != 0 {
+		t.Fatalf("abandoned requests stayed pending: %d", len(s.sent))
 	}
 }
 

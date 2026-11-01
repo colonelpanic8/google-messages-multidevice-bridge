@@ -15,6 +15,7 @@ var libgmLogFields = map[string]bool{
 	"duration": true, "timeout_count": true, "urgent": true, "reason": true,
 	"liveness_source": true, "not_responding_sent": true, "skip_count": true,
 	"sleep_seconds": true, "listen_id": true, "bugle_default": true,
+	"answered_after": true,
 }
 
 type libgmLogWriter struct{ out io.Writer }

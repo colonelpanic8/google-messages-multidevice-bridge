@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -207,6 +208,13 @@ func (c *Client) HandleRPCMsg(rawMsg *gmproto.IncomingRPCMessage) {
 	if c.sessionHandler.receiveResponse(msg) {
 		c.sessionHandler.queueMessageAck(msg.ResponseID)
 		return
+	}
+	if req, ok := c.sessionHandler.lateResponse(msg); ok {
+		c.Logger.Warn().
+			Str("request_id", msg.Message.SessionID).
+			Stringer("message_action", req.action).
+			Str("answered_after", time.Since(req.sent).Round(time.Second).String()).
+			Msg("Phone answered a request after it was abandoned")
 	}
 	logEvt := c.Logger.Debug().
 		Str("message_id", msg.ResponseID).

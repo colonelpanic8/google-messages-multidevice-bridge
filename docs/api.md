@@ -90,6 +90,20 @@ accompany retryable connection failures. Both status and pairing responses inclu
 `detail` carries a sentence for display. `state_since` is when the current `state`
 began. `connection_events` lists up to 20 recent connection events, oldest first,
 as `{"at", "event"}`; it is kept in memory and starts empty when the bridge restarts.
+Events named `alert_<type>` are alerts the phone sent about itself, such as
+`alert_mobile_data_connection` or `alert_push_throttle_started`.
+
+`phone_report` is the latest the phone has said through those alerts:
+`network` (`wifi` or `mobile_data`), `session` (`active`, `inactive`,
+`timed_out`, or `idle`, describing a web session), `battery_low`, and
+`push_throttled`. Absent fields mean the phone has not said since the bridge
+started.
+
+`outage` is present while the connection is `degraded`, `connecting`, or
+`connection_failed`, as `{"since", "announced"}`. A recovery shorter than five
+minutes does not end it. `announced` becomes true once it has lasted 15 minutes;
+at that point, and when an announced outage ends, the bridge sends a web push
+tagged `connection`.
 
 Authenticated pairing control uses these states:
 
@@ -340,8 +354,12 @@ preserving the checkpoint. A repeated opaque cursor also fails instead of retryi
 forever. A `complete` job only means the provider returned no next mapped cursor; it
 does not guarantee that Google exposed every historical entity or attachment.
 
-Recent reconciliation is separate: it checks up to 30 inbox conversations and 50
-messages per conversation after recovery, every five minutes, and on explicit sync.
+Recent reconciliation is separate: it checks up to 30 inbox conversations every
+five minutes and after recovery, fetching up to 50 messages from each conversation
+that changed since its last fetch or was last fetched over an hour ago. The first
+sync of each connection and an explicit `POST /v1/sync` fetch messages from all of
+them. Every request reaches the phone, so while it is not responding, syncs other
+than explicit ones back off from five minutes, doubling up to 30.
 
 ## Message search
 

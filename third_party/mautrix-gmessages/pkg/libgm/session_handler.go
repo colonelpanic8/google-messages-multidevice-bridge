@@ -36,6 +36,15 @@ const responseHardTimeout = 60 * time.Second
 const maxQueuedAcks = 1024
 const ackRequestTimeout = 15 * time.Second
 
+// maxAbandonedRequests bounds how many abandoned requests are remembered so a
+// late answer can be attributed and timed.
+const maxAbandonedRequests = 256
+
+type sentRequest struct {
+	action gmproto.ActionType
+	sent   time.Time
+}
+
 type SessionHandler struct {
 	client *Client
 
@@ -45,6 +54,13 @@ type SessionHandler struct {
 	// gaiaPairingWaiters maps an in-flight Gaia pairing action to its request ID.
 	// Guarded by responseWaitersLock.
 	gaiaPairingWaiters map[gmproto.ActionType]string
+
+	// sent describes each request in responseWaiters. abandoned keeps that
+	// description after the waiter gives up. Both are guarded by
+	// responseWaitersLock.
+	sent           map[string]sentRequest
+	abandoned      map[string]sentRequest
+	abandonedOrder []string
 
 	ackMapLock sync.Mutex
 	ackMap     []string
@@ -100,14 +116,18 @@ func (s *SessionHandler) sendAsyncMessageWithID(ctx context.Context, params Send
 	}
 
 	ch := s.waitResponse(requestID)
+	s.responseWaitersLock.Lock()
+	if s.sent == nil {
+		s.sent = make(map[string]sentRequest)
+	}
+	s.sent[requestID] = sentRequest{action: params.Action, sent: time.Now()}
 	if isGaiaPairingAction(params.Action) {
-		s.responseWaitersLock.Lock()
 		if s.gaiaPairingWaiters == nil {
 			s.gaiaPairingWaiters = make(map[gmproto.ActionType]string)
 		}
 		s.gaiaPairingWaiters[params.Action] = requestID
-		s.responseWaitersLock.Unlock()
 	}
+	s.responseWaitersLock.Unlock()
 	url := util.SendMessageURL
 	if s.client.AuthData.HasCookies() {
 		url = util.SendMessageURLGoogle
@@ -179,8 +199,40 @@ func (s *SessionHandler) cancelResponse(requestID string, ch chan *IncomingRPCMe
 	// so closing an already-claimed channel here could panic that send.
 	if _, ok := s.responseWaiters[requestID]; ok {
 		delete(s.responseWaiters, requestID)
+		s.abandon(requestID)
 		close(ch)
 	}
+}
+
+// abandon keeps requestID's description so a late answer can be timed. The
+// caller must hold responseWaitersLock.
+func (s *SessionHandler) abandon(requestID string) {
+	req, ok := s.sent[requestID]
+	if !ok {
+		return
+	}
+	delete(s.sent, requestID)
+	if s.abandoned == nil {
+		s.abandoned = make(map[string]sentRequest)
+	}
+	if len(s.abandonedOrder) >= maxAbandonedRequests {
+		delete(s.abandoned, s.abandonedOrder[0])
+		s.abandonedOrder = s.abandonedOrder[1:]
+	}
+	s.abandoned[requestID] = req
+	s.abandonedOrder = append(s.abandonedOrder, requestID)
+}
+
+// lateResponse reports the abandoned request msg answers, at most once.
+func (s *SessionHandler) lateResponse(msg *IncomingRPCMessage) (sentRequest, bool) {
+	if msg.Message == nil {
+		return sentRequest{}, false
+	}
+	s.responseWaitersLock.Lock()
+	defer s.responseWaitersLock.Unlock()
+	req, ok := s.abandoned[msg.Message.SessionID]
+	delete(s.abandoned, msg.Message.SessionID)
+	return req, ok
 }
 
 func (s *SessionHandler) cancelAllResponseWaiters() {
@@ -188,6 +240,7 @@ func (s *SessionHandler) cancelAllResponseWaiters() {
 	defer s.responseWaitersLock.Unlock()
 	for requestID, ch := range s.responseWaiters {
 		delete(s.responseWaiters, requestID)
+		s.abandon(requestID)
 		close(ch)
 	}
 	clear(s.gaiaPairingWaiters)
@@ -225,6 +278,7 @@ func (s *SessionHandler) receiveResponse(msg *IncomingRPCMessage) bool {
 		return false
 	}
 	delete(s.responseWaiters, requestID)
+	delete(s.sent, requestID)
 	s.forgetGaiaPairingWaiter(requestID)
 	s.responseWaitersLock.Unlock()
 	// Ditto activity is handled by the pinger directly

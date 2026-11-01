@@ -88,6 +88,13 @@ be disabled from outside the package.
    `buildGaiaPairingContainer` so a regression test can assert the proposal stays
    unset.
 
+10. `session_handler.go`, `event_handler.go`: a request whose waiter gave up,
+   by timeout, cancellation, or disconnect, is remembered (at most 256) with its
+   action and send time. When the phone answers it anyway, libgm logs
+   `Phone answered a request after it was abandoned` with `answered_after`
+   instead of only `Got unexpected response`. Answers arriving hours late are
+   how a phone that cannot receive requests shows itself.
+
 ## Known wrong upstream behavior, not fixed here
 
 - The version 1 verification emoji list does not match what the phone displays,

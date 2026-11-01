@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdlog "log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,6 +84,8 @@ func (g *googleConnection) Handle(b *Bridge, event any) error {
 		if err := g.ingest(b, e); err != nil {
 			return err
 		}
+	case *gmproto.UserAlertEvent:
+		g.phoneAlert(b, e.GetAlertType())
 	case *gmproto.TypingData:
 		out, err := provider.SnapshotOf(e)
 		if err != nil {
@@ -135,6 +139,40 @@ func (g *googleConnection) Handle(b *Bridge, event any) error {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.storageErr
+}
+
+// phoneAlert records what the phone reports about its own connection. Alerts
+// about database and contact syncs are only logged.
+func (g *googleConnection) phoneAlert(b *Bridge, alert gmproto.AlertType) {
+	name := strings.ToLower(alert.String())
+	stdlog.Printf("%s phone alert=%s", b.Network(), name)
+	b.mu.Lock()
+	report := &b.status.PhoneReport
+	switch alert {
+	case gmproto.AlertType_BROWSER_ACTIVE:
+		report.Session = "active"
+	case gmproto.AlertType_BROWSER_INACTIVE:
+		report.Session = "inactive"
+	case gmproto.AlertType_BROWSER_INACTIVE_FROM_TIMEOUT:
+		report.Session = "timed_out"
+	case gmproto.AlertType_BROWSER_INACTIVE_FROM_INACTIVITY:
+		report.Session = "idle"
+	case gmproto.AlertType_MOBILE_WIFI_CONNECTION:
+		report.Network = "wifi"
+	case gmproto.AlertType_MOBILE_DATA_CONNECTION:
+		report.Network = "mobile_data"
+	case gmproto.AlertType_MOBILE_BATTERY_LOW, gmproto.AlertType_MOBILE_BATTERY_RESTORED:
+		report.BatteryLow = alert == gmproto.AlertType_MOBILE_BATTERY_LOW
+	case gmproto.AlertType_PUSH_THROTTLE_STARTED, gmproto.AlertType_PUSH_THROTTLING, gmproto.AlertType_PUSH_THROTTLE_ENDED:
+		report.PushThrottled = alert != gmproto.AlertType_PUSH_THROTTLE_ENDED
+	case gmproto.AlertType_DISCONNECTED_FROM_SATELLITE:
+	default:
+		b.mu.Unlock()
+		return
+	}
+	b.recordConnectionEventLocked("alert_" + name)
+	b.mu.Unlock()
+	b.Hub.Notify()
 }
 
 func (g *googleConnection) phoneUnresponsive(b *Bridge, cause string) {
