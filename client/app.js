@@ -68,6 +68,7 @@ const THREAD_CACHE = 16;
 let token = "",
   abort,
   streamAbort,
+  streamHeard = 0,
   generation = 0;
 let selected = "",
   composing = false;
@@ -489,6 +490,7 @@ async function stream(currentGeneration) {
         continue;
       }
       if (!response.ok) throw new Error("Live updates unavailable");
+      streamHeard = Date.now();
       const reader = response.body.getReader(),
         decoder = new TextDecoder();
       let live = false;
@@ -505,17 +507,19 @@ async function stream(currentGeneration) {
         for (;;) {
           const chunk = await readStreamChunk(reader, controller);
           if (chunk.done) throw new Error("Live connection closed");
+          streamHeard = Date.now();
           parse(decoder.decode(chunk.value, { stream: true }));
         }
       } finally {
         await reader.cancel().catch(() => {});
       }
     } catch {
-      if (current() && !loadingAll)
+      if (current() && !loadingAll && !controller.restart)
         notice("Live connection interrupted. Reconnecting…");
     }
     if (!current()) return;
-    if (!loadingAll) await new Promise((resolve) => setTimeout(resolve, 2000));
+    if (!loadingAll && !controller.restart)
+      await new Promise((resolve) => setTimeout(resolve, 2000));
   }
 }
 
@@ -3742,9 +3746,19 @@ async function markSelectedRead() {
     // message or the next visit tries again.
   }
 }
+// Heartbeats arrive every 15 seconds, so a stream quiet for longer went stale
+// while the window was hidden. A healthy one is left alone: reconnecting
+// replays events and leaves the window without live updates meanwhile.
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
-    streamAbort?.abort();
+    if (
+      streamAbort &&
+      !streamAbort.signal.aborted &&
+      Date.now() - streamHeard > 20000
+    ) {
+      streamAbort.restart = true;
+      streamAbort.abort();
+    }
     scheduleReadReceipt();
     void pollStatus();
   }

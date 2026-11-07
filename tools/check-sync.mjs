@@ -36,7 +36,16 @@ const fixture = window.syncFixture = {
     connection.closed = true;
     connection.controller.close();
   },
+  hidden: false,
+  reveal({ stale = false } = {}) {
+    if (stale) streamHeard = 0;
+    this.hidden = true;
+    document.dispatchEvent(new Event('visibilitychange'));
+    this.hidden = false;
+    document.dispatchEvent(new Event('visibilitychange'));
+  },
 };
+Object.defineProperty(document, 'hidden', { get: () => fixture.hidden });
 window.fetch = (input, options = {}) => {
   const url = new URL(input, location.href);
   if (url.pathname !== '/v1/stream') return networkFetch(input, options);
@@ -178,6 +187,33 @@ window.fetch = (input, options = {}) => {
     .getByText("Renamed: Preview received during reload", { exact: true })
     .waitFor();
 
+  // Showing the window again keeps a healthy stream and replaces a stale one
+  // at once, without the backoff or notice of a failed connection.
+  const beforeReveal = await page.evaluate(() => {
+    const f = window.syncFixture;
+    f.reveal();
+    return f.connections.length;
+  });
+  assert(
+    await page.evaluate(
+      (count) =>
+        window.syncFixture.connections.length === count &&
+        !window.syncFixture.connections.at(-1).signal.aborted,
+      beforeReveal,
+    ),
+    "Showing the window dropped a healthy stream",
+  );
+  await page.evaluate(() => window.syncFixture.reveal({ stale: true }));
+  await page.waitForFunction(
+    (count) => window.syncFixture.connections.length > count,
+    beforeReveal,
+    { timeout: 1000 },
+  );
+  assert(
+    !(await page.getByText("Live connection interrupted").isVisible()),
+    "Replacing a stale stream reported an interruption",
+  );
+
   const beforeReconnect = await page.evaluate(() => {
     const f = window.syncFixture;
     f.disconnect();
@@ -223,6 +259,7 @@ window.fetch = (input, options = {}) => {
     snapshotReplay: true,
     previewSenderRefresh: true,
     reconnectResume: true,
+    revealKeepsHealthyStream: true,
     databaseRollbackRecovery: true,
   };
 }
