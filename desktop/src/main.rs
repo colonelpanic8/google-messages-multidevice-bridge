@@ -265,6 +265,12 @@ fn reload_when_renderer_dies(window: &tauri::WebviewWindow) -> tauri::Result<()>
 }
 
 fn main() {
+    // GTK derives the Wayland app_id / X11 WM_CLASS from argv[0], which Nix
+    // wrappers rename (".google-messages-desktop-wrapped"), so docks could not
+    // match the window to google-messages-desktop.desktop and its icon.
+    #[cfg(target_os = "linux")]
+    webkit2gtk::glib::set_prgname(Some("google-messages-desktop"));
+
     tauri::Builder::default()
         // Closing the window only hides it, so an instance outlives its window.
         // Without this the launcher starts a second process that the first
