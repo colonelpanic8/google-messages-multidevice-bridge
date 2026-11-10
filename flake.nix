@@ -12,6 +12,8 @@
         "x86_64-linux"
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
+      version = "0.1.3";
+      commit = self.rev or self.dirtyRev or "";
     in
     {
       packages = forAllSystems (
@@ -22,8 +24,12 @@
         {
           default = pkgs.buildGoModule {
             pname = "google-messages-multidevice-bridge";
-            version = "0.1.3";
+            inherit version;
             src = ./.;
+            ldflags = [
+              "-X github.com/colonelpanic8/google-messages-multidevice-bridge/internal/buildinfo.Version=${version}"
+              "-X github.com/colonelpanic8/google-messages-multidevice-bridge/internal/buildinfo.Commit=${commit}"
+            ];
 
             go = pkgs.go_1_26;
             subPackages = [
@@ -51,7 +57,7 @@
           };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-          desktop = pkgs.callPackage ./nix/desktop.nix { };
+          desktop = pkgs.callPackage ./nix/desktop.nix { inherit version commit; };
         }
       );
 

@@ -5,6 +5,7 @@
 identifier = "allow-app-commands"
 description = "Lets the bundled client call this app's own commands."
 commands.allow = [
+  "app_info",
   "get_bridge_url",
   "save_bridge_url",
   "open_external",

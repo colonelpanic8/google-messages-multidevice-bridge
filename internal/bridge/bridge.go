@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/buildinfo"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/provider"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
 )
@@ -17,19 +18,20 @@ import (
 var ErrStorage = errors.New("storage failure")
 
 type Status struct {
-	Network               string     `json:"network"`
-	State                 string     `json:"state"`
-	Reason                string     `json:"reason,omitempty"`
-	Detail                string     `json:"detail,omitempty"`
-	Updated               time.Time  `json:"updated"`
-	StateSince            time.Time  `json:"state_since"`
-	Transport             bool       `json:"transport_connected"`
-	Phone                 bool       `json:"phone_responsive"`
-	SyncState             string     `json:"sync_state"`
-	LastSync              *time.Time `json:"last_sync,omitempty"`
-	SessionEpoch          uint64     `json:"session_epoch"`
-	PreviousConversations int        `json:"previous_session_conversations"`
-	PreviousMessages      int        `json:"previous_session_messages"`
+	Build                 buildinfo.Info `json:"build"`
+	Network               string         `json:"network"`
+	State                 string         `json:"state"`
+	Reason                string         `json:"reason,omitempty"`
+	Detail                string         `json:"detail,omitempty"`
+	Updated               time.Time      `json:"updated"`
+	StateSince            time.Time      `json:"state_since"`
+	Transport             bool           `json:"transport_connected"`
+	Phone                 bool           `json:"phone_responsive"`
+	SyncState             string         `json:"sync_state"`
+	LastSync              *time.Time     `json:"last_sync,omitempty"`
+	SessionEpoch          uint64         `json:"session_epoch"`
+	PreviousConversations int            `json:"previous_session_conversations"`
+	PreviousMessages      int            `json:"previous_session_messages"`
 	// Oldest first, so a client can tell a flapping connection from a stuck one.
 	ConnectionEvents []ConnectionEvent `json:"connection_events,omitempty"`
 	PhoneReport      PhoneReport       `json:"phone_report"`
@@ -109,6 +111,7 @@ func New(s *store.Store) *Bridge {
 func (b *Bridge) Status() Status {
 	b.mu.RLock()
 	status := b.status
+	status.Build = buildinfo.Get()
 	status.Network = b.Network()
 	if b.whatsappQuarantined > 0 {
 		if status.Detail != "" {

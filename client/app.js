@@ -1730,7 +1730,35 @@ function renderConnectionEvents() {
   );
 }
 
+const REPOSITORY =
+  "https://github.com/colonelpanic8/google-messages-multidevice-bridge";
+let appInfo, aboutSignature;
+function buildLine(build) {
+  if (!build?.version) return el("dd", "Unknown");
+  const line = el("dd", build.version);
+  const commit = build.commit?.replace(/-dirty$/, "");
+  if (commit) {
+    line.append(" · ");
+    const link = el("a", build.commit.replace(commit, commit.slice(0, 7)));
+    link.href = `${REPOSITORY}/commit/${commit}`;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.title = build.commit;
+    line.append(link);
+  }
+  return line;
+}
+function renderAbout() {
+  const signature = JSON.stringify([appInfo, status.build]);
+  if (signature === aboutSignature) return;
+  aboutSignature = signature;
+  const rows = [];
+  if (desktop) rows.push(el("dt", "Desktop app"), buildLine(appInfo));
+  rows.push(el("dt", "Bridge"), buildLine(status.build));
+  $("about").replaceChildren(...rows);
+}
 function renderStatus() {
+  renderAbout();
   if (status.network === "whatsapp") {
     $("add-people-hint").textContent =
       "Adding people creates a new group with the combined recipients.";
@@ -3161,7 +3189,16 @@ $("settings-pairing").onclick = () => {
   $("settings-dialog").close();
   openDialog("pairing-dialog");
 };
-$("open-settings").onclick = () => openDialog("settings-dialog");
+$("open-settings").onclick = () => {
+  if (desktop && !appInfo)
+    void desktop("app_info")
+      .then((info) => {
+        appInfo = info;
+        renderAbout();
+      })
+      .catch(() => {});
+  openDialog("settings-dialog");
+};
 $("open-history").onclick = () => openDialog("history-dialog");
 async function startPairing(reuseSignIn = false) {
   if (

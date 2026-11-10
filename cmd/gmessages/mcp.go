@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/buildinfo"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/client"
 )
 
@@ -305,7 +306,7 @@ func (s *mcpServer) dispatch(ctx context.Context, req rpcRequest) (any, *rpcErro
 		return map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "gmessages", "version": "0.1.0"},
+			"serverInfo":      map[string]any{"name": "gmessages", "version": buildinfo.Version},
 			"instructions":    mcpInstructions,
 		}, nil
 	case "ping":

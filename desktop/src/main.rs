@@ -137,6 +137,20 @@ fn open_setup(app: &AppHandle) {
     let _ = app.emit("show-connect", ());
 }
 
+#[derive(serde::Serialize)]
+struct AppInfo {
+    version: &'static str,
+    commit: &'static str,
+}
+
+#[tauri::command]
+fn app_info() -> AppInfo {
+    AppInfo {
+        version: env!("CARGO_PKG_VERSION"),
+        commit: option_env!("GMESSAGES_DESKTOP_COMMIT").unwrap_or(""),
+    }
+}
+
 // The OS keyring is preferred; a private file in the config directory covers
 // sessions without a secret service. A preseeded token from the environment
 // wins over both so managed hosts unlock without typing anything.
@@ -345,6 +359,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            app_info,
             get_bridge_url,
             save_bridge_url,
             open_external,
