@@ -1,13 +1,17 @@
 package api
 
 import (
+	"errors"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/bridge"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/provider"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
+
+const uploadTimeout = 10 * time.Minute
 
 func registerFeatures(mux *http.ServeMux, b *bridge.Bridge) {
 	mux.HandleFunc("POST /v1/connection/restart", func(w http.ResponseWriter, r *http.Request) { b.RequestReconnect(); w.WriteHeader(http.StatusAccepted) })
@@ -117,10 +121,18 @@ func registerFeatures(mux *http.ServeMux, b *bridge.Bridge) {
 		w.WriteHeader(http.StatusAccepted)
 	})
 	mux.HandleFunc("POST /v1/uploads", func(w http.ResponseWriter, r *http.Request) {
+		// The server's read timeout is sized for JSON bodies, not for 20 MiB
+		// over a slow uplink.
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(uploadTimeout))
 		r.Body = http.MaxBytesReader(w, r.Body, provider.MaxAttachmentBytes)
 		data, err := io.ReadAll(r.Body)
-		if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
 			apiError(w, provider.ErrTooLarge)
+			return
+		}
+		if err != nil {
+			http.Error(w, "upload interrupted", http.StatusBadRequest)
 			return
 		}
 		out, err := b.SaveUpload(r.URL.Query().Get("name"), r.Header.Get("Content-Type"), data)
