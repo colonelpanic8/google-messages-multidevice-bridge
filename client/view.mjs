@@ -228,6 +228,22 @@ export function sortConversations(conversations) {
   );
 }
 
+// Rows worth sliding after a reorder: the ones that moved and are on screen at
+// either end of the move. One conversation jumping to the top shifts every row
+// above its old place, and animating all of those stalls a long list.
+export function slidingRows(rows, view) {
+  const onScreen = (top, height) =>
+    top + height > view.top && top < view.bottom;
+  const moves = [];
+  for (const { node, from, to, height } of rows) {
+    const delta = from - to;
+    if (Math.abs(delta) < 2) continue;
+    if (onScreen(from, height) || onScreen(to, height))
+      moves.push({ node, delta });
+  }
+  return moves;
+}
+
 export function filterConversations(conversations, query) {
   const needle = (query || "").trim().toLowerCase();
   if (!needle) return conversations;

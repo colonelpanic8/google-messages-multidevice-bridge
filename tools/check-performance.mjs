@@ -212,8 +212,57 @@ window.performanceFixture = {
         matches: document.getElementById("conversations").children.length,
       });
     }
-    return { initialMilliseconds, searches: samples };
+    // The last of 2,000 rows jumps to the top, shifting every row above it.
+    // From the top of the list: scroll anchoring would hide the shift.
+    document.getElementById("conversations").scrollTop = 0;
+    f.applyEvent({
+      id: 3002000,
+      type: "conversation",
+      entity_id: "perf-0",
+      data: {
+        id: "perf-0",
+        name: "Synthetic person 0",
+        updated: new Date().toISOString(),
+      },
+    });
+    await settle();
+    const reorder = {
+      milliseconds: f.measurements.lastListMilliseconds,
+      first:
+        document.getElementById("conversations").firstElementChild.textContent,
+      // Script-driven slides only; entrance animations are CSS.
+      animations: document
+        .getElementById("conversations")
+        .getAnimations({ subtree: true })
+        .filter((animation) => animation.constructor === Animation).length,
+    };
+    // A window on a hidden workspace is never given a frame.
+    const requestFrame = window.requestAnimationFrame;
+    window.requestAnimationFrame = () => 1;
+    f.applyEvent({
+      id: 3002001,
+      type: "conversation",
+      entity_id: "perf-1",
+      data: {
+        id: "perf-1",
+        name: "Renamed without a frame",
+        updated: "2020-01-01T00:00:00Z",
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    window.requestAnimationFrame = requestFrame;
+    const frameless = document
+      .getElementById("conversations")
+      .textContent.includes("Renamed without a frame");
+    return { initialMilliseconds, searches: samples, reorder, frameless };
   });
+  assert(
+    list.reorder.first.includes("Synthetic person 0") &&
+      list.reorder.animations > 0 &&
+      list.reorder.animations < 100,
+    "A reorder must slide only the rows on screen",
+  );
+  assert(list.frameless, "The list must keep up while no frames are drawn");
   assert(
     list.searches[0].matches === 111 &&
       list.searches[1].matches === 1111 &&

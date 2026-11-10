@@ -44,6 +44,7 @@ import {
   reactedByMe,
   reactionTitle,
   searchMatches,
+  slidingRows,
   sortConversations,
   summarizeHistory,
   threadOutbox,
@@ -151,7 +152,7 @@ const stillMotion = matchMedia("(prefers-reduced-motion: reduce)");
 // Entrance classes are removed once they play so a later redraw of the same
 // node does not replay them.
 function animateIn(node) {
-  if (stillMotion.matches) return;
+  if (stillMotion.matches || !presenting) return;
   node.classList.add("entering");
   node.addEventListener(
     "animationend",
@@ -161,23 +162,28 @@ function animateIn(node) {
 }
 
 // FLIP: measure before the reorder, then play the old position back so rows
-// that moved slide into place instead of jumping.
+// that moved slide into place instead of jumping. Every read comes before the
+// first write: a read after an animation has started re-resolves the style of
+// every row animated so far, which froze a long list for seconds per reorder.
 function measureRows(nodes) {
-  if (stillMotion.matches) return undefined;
+  if (stillMotion.matches || !presenting) return undefined;
   const before = new Map();
   for (const node of nodes) before.set(node, node.getBoundingClientRect().top);
   return before;
 }
-function slideRows(before) {
+function slideRows(before, container) {
   if (!before) return;
-  for (const [node, top] of before) {
-    const delta = top - node.getBoundingClientRect().top;
-    if (!delta || Math.abs(delta) < 2) continue;
+  const view = container.getBoundingClientRect();
+  const rows = [];
+  for (const [node, from] of before) {
+    const { top, height } = node.getBoundingClientRect();
+    rows.push({ node, from, to: top, height });
+  }
+  for (const { node, delta } of slidingRows(rows, view))
     node.animate(
       [{ transform: `translateY(${delta}px)` }, { transform: "none" }],
       { duration: 260, easing: "cubic-bezier(0.05, 0.7, 0.1, 1)" },
     );
-  }
 }
 
 let noticeTimer;
@@ -199,14 +205,25 @@ new ResizeObserver(([{ target }]) => {
 }).observe($("compose-size"));
 
 // Rendering is batched per animation frame; state changes mark parts dirty.
+// A window on a hidden workspace gets no frames at all, so a timer stands in:
+// the DOM stays current and a reveal has nothing left to catch up on.
+const FRAME_TIMEOUT = 250;
 const dirty = new Set();
-let frame;
+let frame,
+  frameTimer,
+  presenting = true;
 function invalidate(...parts) {
   for (const part of parts) dirty.add(part);
-  if (!frame) frame = requestAnimationFrame(render);
+  if (frame) return;
+  frame = requestAnimationFrame(() => render(true));
+  frameTimer = setTimeout(() => render(false), FRAME_TIMEOUT);
 }
-function render() {
+function render(framed) {
+  cancelAnimationFrame(frame);
+  clearTimeout(frameTimer);
   frame = undefined;
+  // Motion started without a frame would all play at once on reveal.
+  presenting = framed;
   const parts = new Set(dirty);
   dirty.clear();
   if (parts.has("status")) renderStatus();
@@ -613,7 +630,7 @@ function renderList() {
     child.remove();
     child = next;
   }
-  slideRows(placed);
+  slideRows(placed, container);
   if (listRendered)
     for (const conversation of items) {
       const entry = listNodes.get(conversation.id);
@@ -2486,6 +2503,9 @@ function scheduleTyping() {
 // Matches the bridge's web push window: history imports and status changes
 // replay old messages through the live stream, and none of them are news.
 const NOTIFY_WINDOW = 5 * 60 * 1000;
+// A window parked on a hidden workspace still reports itself visible, so
+// only one that also holds focus counts as somebody looking at it.
+const watching = () => !document.hidden && document.hasFocus();
 const notified = new Set();
 function notifyIncoming(message) {
   if (
@@ -2497,7 +2517,7 @@ function notifyIncoming(message) {
     message.direction !== "incoming" ||
     message.deleted ||
     notified.has(message.id) ||
-    (!document.hidden && message.conversation_id === selected)
+    (watching() && message.conversation_id === selected)
   )
     return;
   notified.add(message.id);
@@ -3745,7 +3765,7 @@ async function markSelectedRead() {
   if (
     !token ||
     !id ||
-    document.hidden ||
+    !watching() ||
     !$("auto-mark-read").checked ||
     providerState !== "connected" ||
     !conversation?.unread ||
@@ -3765,20 +3785,21 @@ async function markSelectedRead() {
 // Heartbeats arrive every 15 seconds, so a stream quiet for longer went stale
 // while the window was hidden. A healthy one is left alone: reconnecting
 // replays events and leaves the window without live updates meanwhile.
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) {
-    if (
-      streamAbort &&
-      !streamAbort.signal.aborted &&
-      Date.now() - streamHeard > 20000
-    ) {
-      streamAbort.restart = true;
-      streamAbort.abort();
-    }
-    scheduleReadReceipt();
-    void pollStatus();
+function resumed() {
+  if (document.hidden) return;
+  if (
+    streamAbort &&
+    !streamAbort.signal.aborted &&
+    Date.now() - streamHeard > 20000
+  ) {
+    streamAbort.restart = true;
+    streamAbort.abort();
   }
-});
+  scheduleReadReceipt();
+  void pollStatus();
+}
+document.addEventListener("visibilitychange", resumed);
+window.addEventListener("focus", resumed);
 $("mark-read").onclick = async () => {
   const latest = newestReadable(selected);
   if (!latest) return;

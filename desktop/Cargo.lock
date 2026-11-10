@@ -1452,6 +1452,7 @@ dependencies = [
 name = "google-messages-desktop"
 version = "0.1.3"
 dependencies = [
+ "gtk",
  "keyring",
  "notify-rust",
  "serde",

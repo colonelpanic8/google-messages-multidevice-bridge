@@ -26,6 +26,7 @@ import {
   messageStatus,
   outboxStatus,
   searchMatches,
+  slidingRows,
   threadOutbox,
 } from "./view.mjs";
 
@@ -468,4 +469,27 @@ test("search matches merge loaded messages over results, newest first", () => {
     { id: "d", time: at(4), text: "unrelated" },
   ];
   assert.deepEqual(searchMatches(results, loaded, "pizza"), ["c", "b"]);
+});
+
+test("a reorder slides only the moved rows that are on screen", () => {
+  const view = { top: 100, bottom: 500 };
+  const height = 68;
+  // Row 900 jumps to the top of a 1000-row list, pushing the rest down one.
+  const rows = [{ node: "moved", from: 100 + 900 * height, to: 100, height }];
+  for (let index = 0; index < 999; index++) {
+    const from = 100 + index * height;
+    rows.push({
+      node: index,
+      from,
+      to: index < 900 ? from + height : from,
+      height,
+    });
+  }
+  const moves = slidingRows(rows, view);
+  assert.deepEqual(
+    moves.map((move) => move.node),
+    ["moved", 0, 1, 2, 3, 4, 5],
+  );
+  assert.equal(moves[0].delta, 900 * height);
+  assert.equal(moves[1].delta, -height);
 });
