@@ -2470,10 +2470,14 @@ function scheduleTyping() {
 
 // --- Notifications ----------------------------------------------------------
 
+// Matches the bridge's web push window: history imports and status changes
+// replay old messages through the live stream, and none of them are news.
+const NOTIFY_WINDOW = 5 * 60 * 1000;
 const notified = new Set();
 function notifyIncoming(message) {
   if (
     !$("notify").checked ||
+    Date.now() - new Date(message.time).getTime() > NOTIFY_WINDOW ||
     (!desktop &&
       (typeof Notification !== "function" ||
         Notification.permission !== "granted")) ||
