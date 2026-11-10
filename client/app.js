@@ -2503,6 +2503,9 @@ function scheduleTyping() {
 // Matches the bridge's web push window: history imports and status changes
 // replay old messages through the live stream, and none of them are news.
 const NOTIFY_WINDOW = 5 * 60 * 1000;
+// A window parked on a hidden workspace still reports itself visible, so
+// only one that also holds focus counts as somebody looking at it.
+const watching = () => !document.hidden && document.hasFocus();
 const notified = new Set();
 function notifyIncoming(message) {
   if (
@@ -2514,7 +2517,7 @@ function notifyIncoming(message) {
     message.direction !== "incoming" ||
     message.deleted ||
     notified.has(message.id) ||
-    (!document.hidden && message.conversation_id === selected)
+    (watching() && message.conversation_id === selected)
   )
     return;
   notified.add(message.id);
@@ -3762,7 +3765,7 @@ async function markSelectedRead() {
   if (
     !token ||
     !id ||
-    document.hidden ||
+    !watching() ||
     !$("auto-mark-read").checked ||
     providerState !== "connected" ||
     !conversation?.unread ||
@@ -3782,20 +3785,21 @@ async function markSelectedRead() {
 // Heartbeats arrive every 15 seconds, so a stream quiet for longer went stale
 // while the window was hidden. A healthy one is left alone: reconnecting
 // replays events and leaves the window without live updates meanwhile.
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) {
-    if (
-      streamAbort &&
-      !streamAbort.signal.aborted &&
-      Date.now() - streamHeard > 20000
-    ) {
-      streamAbort.restart = true;
-      streamAbort.abort();
-    }
-    scheduleReadReceipt();
-    void pollStatus();
+function resumed() {
+  if (document.hidden) return;
+  if (
+    streamAbort &&
+    !streamAbort.signal.aborted &&
+    Date.now() - streamHeard > 20000
+  ) {
+    streamAbort.restart = true;
+    streamAbort.abort();
   }
-});
+  scheduleReadReceipt();
+  void pollStatus();
+}
+document.addEventListener("visibilitychange", resumed);
+window.addEventListener("focus", resumed);
 $("mark-read").onclick = async () => {
   const latest = newestReadable(selected);
   if (!latest) return;
