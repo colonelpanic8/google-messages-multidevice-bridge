@@ -1542,7 +1542,9 @@ function renderCompose() {
   const conversation = conversations.get(selected);
   if (!conversation) return;
   const hasPending = !!pendingSend;
-  $("text").disabled = conversation.read_only || hasPending;
+  $("text").disabled = conversation.read_only;
+  // Read-only rather than disabled, which would throw away keyboard focus.
+  $("text").readOnly = hasPending;
   $("attachments").disabled = conversation.read_only || hasPending;
   $("send").disabled = conversation.read_only || sending || hasPending;
   $("text").placeholder = conversation.read_only
@@ -3381,6 +3383,7 @@ function attachPastedImages(images) {
   invalidate("compose");
 }
 $("text").onpaste = (event) => {
+  if (pendingSend) return;
   const pasted = pastedImages(event.clipboardData);
   if (pasted.length) {
     event.preventDefault();
@@ -3396,7 +3399,7 @@ $("text").onpaste = (event) => {
 $("text").onkeydown = (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
-    void sendMessage();
+    if (!pendingSend) void sendMessage();
   }
 };
 $("attachments").onchange = () => {
