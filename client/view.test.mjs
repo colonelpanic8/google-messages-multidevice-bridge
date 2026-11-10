@@ -133,10 +133,21 @@ test("outbox rows hide conversation requests and confirmed stored sends", () => 
       conversation_id: "c",
     },
     { id: "e", state: "queued", request: { conversation_id: "other" } },
+    {
+      id: "f",
+      state: "accepted",
+      request: { kind: "reaction", conversation_id: "c", emoji: "👍" },
+    },
+    {
+      id: "g",
+      state: "sending",
+      request: { kind: "reaction", conversation_id: "c", emoji: "👍" },
+    },
+    { id: "h", state: "accepted", request: { conversation_id: "c" } },
   ];
   assert.deepEqual(
-    threadOutbox(outbox, "c", new Set(["m1"])).map((item) => item.id),
-    ["a", "c"],
+    threadOutbox(outbox, "c").map((item) => item.id),
+    ["a", "g", "h"],
   );
 });
 

@@ -1088,11 +1088,7 @@ function renderThread() {
       messages,
       rows: layoutThread(
         messages,
-        threadOutbox(
-          [...outbox.values()],
-          selected,
-          new Set(messages.map((message) => message.id)),
-        ),
+        threadOutbox([...outbox.values()], selected),
       ),
     };
   }
@@ -1246,7 +1242,7 @@ function renderThreadStatus() {
     importState?.state === "active" || importState?.state === "waiting";
   const empty =
     !entry.messages.size &&
-    !threadOutbox([...outbox.values()], selected, new Set()).length;
+    !threadOutbox([...outbox.values()], selected).length;
   if (empty)
     rowsNode.replaceChildren(
       !entry.fetched || arriving
