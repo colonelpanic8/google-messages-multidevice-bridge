@@ -16,6 +16,7 @@ import (
 
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
 	bolt "go.etcd.io/bbolt"
+	bolterrors "go.etcd.io/bbolt/errors"
 )
 
 type Event struct {
@@ -48,6 +49,9 @@ func Open(path string, key []byte) (*Store, error) {
 		return nil, err
 	}
 	db, err := bolt.Open(path, 0600, &bolt.Options{Timeout: time.Second})
+	if errors.Is(err, bolterrors.ErrTimeout) {
+		return nil, fmt.Errorf("database %s is locked by another process; is another bridge using it?", path)
+	}
 	if err != nil {
 		return nil, err
 	}

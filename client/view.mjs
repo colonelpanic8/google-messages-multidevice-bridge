@@ -239,15 +239,18 @@ export function filterConversations(conversations, query) {
   });
 }
 
-// A conversation-kind outbox row only matters to the new chat flow, and a
-// confirmed row is redundant once its message is stored.
-export function threadOutbox(outbox, conversationID, messageIDs) {
+// A conversation-kind outbox row only matters to the new chat flow. A send is
+// confirmed by its stored message, which then speaks for it whether or not
+// that message is on a loaded page. A reaction is never confirmed: accepted is
+// as far as it goes, and the reacted-to message shows the result.
+export function threadOutbox(outbox, conversationID) {
   return outbox.filter((item) => {
     const body = item.request || {};
     if (body.kind === "conversation") return false;
     if ((body.conversation_id || item.conversation_id) !== conversationID)
       return false;
-    return item.state !== "confirmed" || !messageIDs.has(item.message_id);
+    if (body.kind === "reaction" && item.state === "accepted") return false;
+    return item.state !== "confirmed";
   });
 }
 

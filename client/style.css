@@ -1340,7 +1340,8 @@ button.reaction:hover {
   outline: none;
   background: var(--surface-high);
 }
-.compose-row textarea:disabled {
+.compose-row textarea:disabled,
+.compose-row textarea:read-only {
   opacity: 0.6;
 }
 .send {

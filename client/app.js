@@ -690,7 +690,20 @@ async function loadPreview(img) {
   }
   try {
     const url = await pending;
-    if (!signal.aborted && img.isConnected) img.src = url;
+    if (signal.aborted || !img.isConnected) return;
+    // A preview has no size until it loads, so a thread resting at the bottom
+    // follows it down instead of being left short of its newest message.
+    const container = $("messages");
+    if (
+      container.scrollHeight - container.scrollTop - container.clientHeight <
+      80
+    )
+      img.addEventListener(
+        "load",
+        () => (container.scrollTop = container.scrollHeight),
+        { once: true },
+      );
+    img.src = url;
   } catch {
     if (previewCache.get(id) === pending) previewCache.delete(id);
     if (!signal.aborted && img.isConnected) img.closest(".bubble")?.remove();
@@ -1088,11 +1101,7 @@ function renderThread() {
       messages,
       rows: layoutThread(
         messages,
-        threadOutbox(
-          [...outbox.values()],
-          selected,
-          new Set(messages.map((message) => message.id)),
-        ),
+        threadOutbox([...outbox.values()], selected),
       ),
     };
   }
@@ -1246,7 +1255,7 @@ function renderThreadStatus() {
     importState?.state === "active" || importState?.state === "waiting";
   const empty =
     !entry.messages.size &&
-    !threadOutbox([...outbox.values()], selected, new Set()).length;
+    !threadOutbox([...outbox.values()], selected).length;
   if (empty)
     rowsNode.replaceChildren(
       !entry.fetched || arriving
@@ -1546,7 +1555,9 @@ function renderCompose() {
   const conversation = conversations.get(selected);
   if (!conversation) return;
   const hasPending = !!pendingSend;
-  $("text").disabled = conversation.read_only || hasPending;
+  $("text").disabled = conversation.read_only;
+  // Read-only rather than disabled, which would throw away keyboard focus.
+  $("text").readOnly = hasPending;
   $("attachments").disabled = conversation.read_only || hasPending;
   $("send").disabled = conversation.read_only || sending || hasPending;
   $("text").placeholder = conversation.read_only
@@ -2472,10 +2483,14 @@ function scheduleTyping() {
 
 // --- Notifications ----------------------------------------------------------
 
+// Matches the bridge's web push window: history imports and status changes
+// replay old messages through the live stream, and none of them are news.
+const NOTIFY_WINDOW = 5 * 60 * 1000;
 const notified = new Set();
 function notifyIncoming(message) {
   if (
     !$("notify").checked ||
+    Date.now() - new Date(message.time).getTime() > NOTIFY_WINDOW ||
     (!desktop &&
       (typeof Notification !== "function" ||
         Notification.permission !== "granted")) ||
@@ -3385,6 +3400,7 @@ function attachPastedImages(images) {
   invalidate("compose");
 }
 $("text").onpaste = (event) => {
+  if (pendingSend) return;
   const pasted = pastedImages(event.clipboardData);
   if (pasted.length) {
     event.preventDefault();
@@ -3400,7 +3416,7 @@ $("text").onpaste = (event) => {
 $("text").onkeydown = (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
-    void sendMessage();
+    if (!pendingSend) void sendMessage();
   }
 };
 $("attachments").onchange = () => {
