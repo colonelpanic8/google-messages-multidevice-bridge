@@ -298,6 +298,123 @@ fn pin_webview_gtk_style(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     })
 }
 
+/// Name for the save dialog. Images shown from blob URLs give WebKit no
+/// filename, so the name falls back to one built from the MIME type.
+fn download_name(suggested: &str, mime: Option<&str>) -> String {
+    let suggested = suggested.trim();
+    if !suggested.is_empty() {
+        return suggested.to_string();
+    }
+    let (kind, subtype) = mime
+        .and_then(|m| m.split(';').next())
+        .and_then(|m| m.trim().split_once('/'))
+        .unwrap_or(("", ""));
+    let stem = match kind {
+        "image" | "video" | "audio" => kind,
+        _ => "download",
+    };
+    let ext = match subtype {
+        "" | "octet-stream" => return stem.to_string(),
+        "jpeg" => "jpg",
+        "svg+xml" => "svg",
+        "quicktime" => "mov",
+        "mpeg" if kind == "audio" => "mp3",
+        other => other,
+    };
+    format!("{stem}.{ext}")
+}
+
+// WebKitGTK's own "Save Image As" saves straight into the downloads directory
+// without asking, and an image shown from a blob URL has no filename, so it
+// landed there unnamed. The item is swapped for one that asks first.
+#[cfg(target_os = "linux")]
+fn ask_where_to_save_images(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    use webkit2gtk::{
+        ContextMenuAction, ContextMenuExt, ContextMenuItem, ContextMenuItemExt, HitTestResultExt,
+        WebViewExt,
+    };
+
+    window.with_webview(|webview| {
+        webview.inner().connect_context_menu(|view, menu, _, hit| {
+            let Some(uri) = hit.image_uri() else {
+                return false;
+            };
+            let items = menu.items();
+            let Some(position) = items
+                .iter()
+                .position(|item| item.stock_action() == ContextMenuAction::DownloadImageToDisk)
+            else {
+                return false;
+            };
+            let action = webkit2gtk::gio::SimpleAction::new("save-image-as", None);
+            let view = view.clone();
+            action.connect_activate(move |_, _| {
+                // Started here, the download can be claimed before WebKit
+                // decides its destination; the context-wide download-started
+                // signal arrives too late for that.
+                if let Some(download) = view.download_uri(&uri) {
+                    ask_for_destination(&download);
+                }
+            });
+            menu.remove(&items[position]);
+            menu.insert(
+                &ContextMenuItem::from_gaction(&action, "Save Image As", None),
+                position as i32,
+            );
+            false
+        });
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn ask_for_destination(download: &webkit2gtk::Download) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use gtk::prelude::*;
+    use webkit2gtk::{DownloadExt, URIResponseExt};
+
+    download.connect_decide_destination(|download, suggested| {
+        let mime = download.response().and_then(|r| r.mime_type());
+        let parent = download
+            .web_view()
+            .and_then(|view| view.toplevel())
+            .and_then(|top| top.downcast::<gtk::Window>().ok());
+        let chooser = gtk::FileChooserNative::new(
+            Some("Save As"),
+            parent.as_ref(),
+            gtk::FileChooserAction::Save,
+            Some("_Save"),
+            Some("_Cancel"),
+        );
+        chooser.set_do_overwrite_confirmation(true);
+        chooser.set_current_name(&download_name(suggested, mime.as_deref()));
+        if let Some(dir) = gtk::glib::user_special_dir(gtk::glib::UserDirectory::Downloads) {
+            chooser.set_current_folder(dir);
+        }
+        // The dialog is owned by nothing, so it is kept alive until it answers.
+        let keep = Rc::new(RefCell::new(None));
+        let download = download.clone();
+        chooser.connect_response({
+            let keep = keep.clone();
+            move |chooser, response| {
+                match (response, chooser.uri()) {
+                    (gtk::ResponseType::Accept, Some(uri)) => {
+                        // The dialog already confirmed any overwrite.
+                        download.set_allow_overwrite(true);
+                        download.set_destination(&uri);
+                    }
+                    _ => download.cancel(),
+                }
+                keep.borrow_mut().take();
+            }
+        });
+        chooser.show();
+        *keep.borrow_mut() = Some(chooser);
+        true
+    });
+}
+
 fn main() {
     // GTK derives the Wayland app_id / X11 WM_CLASS from argv[0], which Nix
     // wrappers rename (".google-messages-desktop-wrapped"), so docks could not
@@ -348,6 +465,7 @@ fn main() {
             if let Some(window) = app.get_webview_window("main") {
                 reload_when_renderer_dies(&window)?;
                 pin_webview_gtk_style(&window)?;
+                ask_where_to_save_images(&window)?;
             }
 
             Ok(())
@@ -417,6 +535,28 @@ mod tests {
         assert_eq!(select_token(None, stored), Some("stored".to_string()));
         let none = || None;
         assert_eq!(select_token(None, none), None);
+    }
+
+    #[test]
+    fn download_name_keeps_webkits_suggestion() {
+        assert_eq!(
+            download_name("IMG_1234.jpg", Some("image/jpeg")),
+            "IMG_1234.jpg"
+        );
+    }
+
+    #[test]
+    fn download_name_falls_back_to_the_mime_type_for_blob_urls() {
+        assert_eq!(download_name("", Some("image/jpeg")), "image.jpg");
+        assert_eq!(
+            download_name(" ", Some("image/png; charset=binary")),
+            "image.png"
+        );
+        assert_eq!(
+            download_name("", Some("application/octet-stream")),
+            "download"
+        );
+        assert_eq!(download_name("", None), "download");
     }
 
     #[test]
