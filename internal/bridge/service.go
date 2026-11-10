@@ -183,8 +183,8 @@ func (b *Bridge) prepare() error {
 	return nil
 }
 func (b *Bridge) Queue(id string, req model.SendRequest) (model.Outbox, bool, error) {
-	b.mutationMu.Lock()
-	defer b.mutationMu.Unlock()
+	b.mutationMu.RLock()
+	defer b.mutationMu.RUnlock()
 	if b.PairingActive() {
 		return model.Outbox{}, false, ErrPairing
 	}
@@ -540,8 +540,8 @@ func (b *Bridge) reconcile(ctx context.Context, seen map[string]reconciled) erro
 	return nil
 }
 func (b *Bridge) MarkRead(ctx context.Context, conv, id string) error {
-	b.mutationMu.Lock()
-	defer b.mutationMu.Unlock()
+	b.mutationMu.RLock()
+	defer b.mutationMu.RUnlock()
 	if b.PairingActive() {
 		return ErrPairing
 	}
@@ -650,8 +650,8 @@ func (b *Bridge) RequestAttachment(ctx context.Context, id string) error {
 }
 
 func (b *Bridge) claimSend(id string) (model.Outbox, error) {
-	b.mutationMu.Lock()
-	defer b.mutationMu.Unlock()
+	b.mutationMu.RLock()
+	defer b.mutationMu.RUnlock()
 	if b.PairingActive() {
 		return model.Outbox{}, ErrPairing
 	}

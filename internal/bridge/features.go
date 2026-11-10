@@ -135,8 +135,8 @@ func (b *Bridge) prepareMedia(ctx context.Context, p provider.Provider, target p
 	return target, nil
 }
 func (b *Bridge) Typing(ctx context.Context, conv string) error {
-	b.mutationMu.Lock()
-	defer b.mutationMu.Unlock()
+	b.mutationMu.RLock()
+	defer b.mutationMu.RUnlock()
 	if b.PairingActive() {
 		return ErrPairing
 	}

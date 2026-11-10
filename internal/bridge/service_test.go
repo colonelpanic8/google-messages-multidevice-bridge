@@ -683,3 +683,41 @@ func TestDegradedStatusNamesTheCause(t *testing.T) {
 		t.Fatalf("history not bounded: %d", len(events))
 	}
 }
+
+// A read receipt waits on the phone for up to 30 seconds; a send submitted
+// meanwhile must not wait with it.
+func TestQueueDoesNotWaitForMarkRead(t *testing.T) {
+	b := testBridge(t)
+	b.persist(snapshot(t, "conversation", "c1", model.Conversation{Schema: 1, ID: "c1"}))
+	b.persist(snapshot(t, "message", "m1", model.Message{Schema: 1, ID: "m1", ConversationID: "c1", Time: time.Now().UTC(), Direction: "incoming", Text: "x", Status: "incoming_complete"}))
+	entered, release := make(chan struct{}), make(chan struct{})
+	b.provider = &fakeProvider{markRead: func(ctx context.Context, _, _ string) error {
+		close(entered)
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return nil
+	}}
+	b.Handle(&events.ClientReady{})
+	read := make(chan error, 1)
+	go func() { read <- b.MarkRead(context.Background(), "c1", "m1") }()
+	<-entered
+	queued := make(chan error, 1)
+	go func() {
+		_, _, err := b.Queue("idempotency-key-01", model.SendRequest{ConversationID: "c1", Text: "hi"})
+		queued <- err
+	}()
+	select {
+	case err := <-queued:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queueing a send waited for the read receipt")
+	}
+	close(release)
+	if err := <-read; err != nil {
+		t.Fatal(err)
+	}
+}
