@@ -264,6 +264,26 @@ fn reload_when_renderer_dies(window: &tauri::WebviewWindow) -> tauri::Result<()>
     })
 }
 
+// WebKitGTK rebuilds the style and layout of the whole page every time the
+// GTK style of its widget changes, and themes restyle every widget whenever
+// the window gains or loses focus (:backdrop). Raising the window therefore
+// stalled the page for as long as a full restyle of everything loaded takes.
+// The page takes only the accent colour from that style, read once at
+// startup, so the style is pinned.
+#[cfg(target_os = "linux")]
+fn pin_webview_gtk_style(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    use gtk::prelude::{CssProviderExt, StyleContextExt, WidgetExt};
+    window.with_webview(|webview| {
+        let provider = gtk::CssProvider::new();
+        if provider.load_from_data(b"* { all: initial; }").is_ok() {
+            webview
+                .inner()
+                .style_context()
+                .add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_USER + 1);
+        }
+    })
+}
+
 fn main() {
     // GTK derives the Wayland app_id / X11 WM_CLASS from argv[0], which Nix
     // wrappers rename (".google-messages-desktop-wrapped"), so docks could not
@@ -313,6 +333,7 @@ fn main() {
             #[cfg(target_os = "linux")]
             if let Some(window) = app.get_webview_window("main") {
                 reload_when_renderer_dies(&window)?;
+                pin_webview_gtk_style(&window)?;
             }
 
             Ok(())

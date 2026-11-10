@@ -400,7 +400,9 @@ browser is installed to cover the desktop app's rendering engine.
 `tools/check-performance.mjs` runs against the same fixture. It checks live
 message updates, lazy reaction menus, background import updates, cached navigation,
 pending sends in empty threads, and attachment cleanup. It also measures redraws
-with 1,500 messages and search with 2,000 synthetic conversations:
+with 1,500 messages and search with 2,000 synthetic conversations, and checks that
+reordering that list animates only the rows on screen and that the list keeps up
+while the window is given no frames:
 
 ```sh
 playwright-cli -s=performance open http://127.0.0.1:PORT --browser chrome
