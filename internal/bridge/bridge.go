@@ -61,7 +61,7 @@ type Bridge struct {
 	whatsappQuarantined uint64
 
 	network          string
-	mutationMu       sync.Mutex
+	mutationMu       sync.RWMutex
 	offlineOnly      bool
 	pairingState     PairingState
 	pairCookies      map[string]string

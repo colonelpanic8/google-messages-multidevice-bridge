@@ -30,7 +30,7 @@ func (b *Bridge) WatchForPush(ctx context.Context, notifier PushNotifier) error 
 		return err
 	}
 	sub, unsubscribe := b.Hub.Subscribe()
-	defer unsubscribe()
+	defer func() { unsubscribe() }()
 	seen := map[string]bool{}
 	var order []string
 	var recoveryNotice string
@@ -40,7 +40,11 @@ func (b *Bridge) WatchForPush(ctx context.Context, notifier PushNotifier) error 
 		case <-ctx.Done():
 			return nil
 		case <-sub.Done:
-			return nil
+			// The hub drops a subscriber that falls behind on typing events.
+			// Nothing durable is lost: the cursor replays from the store.
+			sub, unsubscribe = b.Hub.Subscribe()
+		case <-sub.Live:
+			continue
 		case <-sub.Wake:
 		}
 

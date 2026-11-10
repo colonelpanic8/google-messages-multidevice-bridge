@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -142,5 +144,64 @@ func TestMCPListsReadOnlyToolsAndCallsThem(t *testing.T) {
 	}
 	if responses["4"]["error"] == nil {
 		t.Fatal("send_message was callable without --allow-send")
+	}
+}
+
+// A receipt re-emits the stored message it belongs to, and a wait for the next
+// code must not hand back the previous one.
+func TestWaitIgnoresUpdatesToStoredMessages(t *testing.T) {
+	s, flags := fixture(t)
+	old := model.Message{Schema: 1, ID: "code1", ConversationID: "c1", SenderID: "bank", Time: time.Now().Add(-time.Minute), Direction: "incoming", Status: "incoming_complete", Text: "Your code is 111111"}
+	appendRecord(t, s, "message", old)
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		old.Status = "incoming_displayed"
+		appendRecord(t, s, "message", old)
+	}()
+	if out, err := cli(t, "", append([]string{"wait", "--query", "code", "--timeout", "3s"}, flags...)...); err != errTimeout {
+		t.Fatalf("a status update satisfied the wait: %q %v", out, err)
+	}
+}
+
+func TestWaitSurvivesAFailedPoll(t *testing.T) {
+	s, flags := fixture(t)
+	handler := api.New(bridge.New(s), testToken, nil)
+	var polls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/events" && polls.Add(1) == 1 {
+			http.Error(w, "service stopping", http.StatusServiceUnavailable)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+	flags[1] = server.URL
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		appendRecord(t, s, "message", model.Message{Schema: 1, ID: "m2", ConversationID: "c1", SenderID: "bank", Time: time.Now(), Direction: "incoming", Text: "Your code is 654321"})
+	}()
+	out, err := cli(t, "", append([]string{"wait", "--query", "code", "--timeout", "15s"}, flags...)...)
+	if err != nil || !strings.Contains(out, "654321") {
+		t.Fatalf("wait: %q %v", out, err)
+	}
+}
+
+func TestSendReportsARejectedMessage(t *testing.T) {
+	s, flags := fixture(t)
+	go func() {
+		for range 100 {
+			time.Sleep(50 * time.Millisecond)
+			raw, _, _ := s.Snapshot("outbox")
+			if len(raw) == 0 {
+				continue
+			}
+			var o model.Outbox
+			_ = json.Unmarshal(raw[0], &o)
+			_ = s.RejectQueued(o.ID, "Conversation has no usable outgoing sender")
+			return
+		}
+	}()
+	if out, err := cli(t, "", append([]string{"send", "--conversation", "Bank", "hello"}, flags...)...); err == nil {
+		t.Fatalf("a rejected send reported success: %q", out)
 	}
 }

@@ -220,11 +220,13 @@ func wait(ctx context.Context, c *client.Client, o searchOptions, timeout time.D
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	q := client.SearchQuery{Text: o.Query, Since: since, Direction: o.Direction, Limit: 500}
-	if since.IsZero() {
-		q.Since, q.Limit = start, 1
+	watching := since.IsZero()
+	if watching {
+		// The phone stamps messages with its own clock, so allow for skew
+		// when deciding that an event is a new message rather than an update.
+		since = start.Add(-2 * time.Minute)
 	}
-	existing, cursor, err := c.Search(ctx, q)
+	existing, cursor, err := c.Search(ctx, client.SearchQuery{Text: o.Query, Since: since, Direction: o.Direction, Limit: 500})
 	if err != nil {
 		return messageView{}, err
 	}
@@ -232,25 +234,29 @@ func wait(ctx context.Context, c *client.Client, o searchOptions, timeout time.D
 	if err != nil {
 		return messageView{}, err
 	}
-	if !since.IsZero() {
-		for _, m := range existing {
-			if matches(cs.byID[m.ConversationID], o.Conversation) {
-				return cs.view(m), nil
-			}
+	// Receipts and reactions re-emit a stored message, which is not an arrival.
+	stored := map[string]bool{}
+	for _, m := range existing {
+		if watching {
+			stored[m.ID] = true
+		} else if matches(cs.byID[m.ConversationID], o.Conversation) {
+			return cs.view(m), nil
 		}
-	} else {
-		// The phone stamps messages with its own clock, so allow for skew
-		// when deciding that an event is a new message rather than an update.
-		since = start.Add(-2 * time.Minute)
 	}
 	query := strings.ToLower(o.Query)
 	for {
 		events, next, err := c.Events(ctx, cursor)
 		if err != nil {
-			if ctx.Err() != nil {
-				return messageView{}, errTimeout
+			// A bridge restart should not cost the message that follows it.
+			select {
+			case <-ctx.Done():
+				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+					return messageView{}, errTimeout
+				}
+				return messageView{}, err
+			case <-time.After(2 * time.Second):
+				continue
 			}
-			return messageView{}, err
 		}
 		cursor = next
 		for _, e := range events {
@@ -258,7 +264,7 @@ func wait(ctx context.Context, c *client.Client, o searchOptions, timeout time.D
 				continue
 			}
 			var m model.Message
-			if json.Unmarshal(e.Data, &m) != nil || m.Deleted || m.Time.Before(since) {
+			if json.Unmarshal(e.Data, &m) != nil || m.Deleted || m.Time.Before(since) || stored[m.ID] {
 				continue
 			}
 			if o.Direction != "" && m.Direction != o.Direction {
@@ -333,7 +339,11 @@ func send(ctx context.Context, c *client.Client, o sendOptions) (model.Outbox, e
 	if err != nil || !o.Wait {
 		return queued, err
 	}
-	return awaitWithin(ctx, c, key, 90*time.Second)
+	sent, err := awaitWithin(ctx, c, key, 90*time.Second)
+	if err == nil && sent.State != "accepted" && sent.State != "confirmed" {
+		return sent, fmt.Errorf("send %s ended %s: %s", key, sent.State, sent.Detail)
+	}
+	return sent, err
 }
 
 func awaitWithin(ctx context.Context, c *client.Client, key string, d time.Duration) (model.Outbox, error) {
