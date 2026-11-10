@@ -210,6 +210,7 @@ var tools = []tool{
 			"text":         prop("string", "Message text"),
 			"conversation": conversationProp,
 			"to":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "E.164 recipients for a new or existing conversation, instead of conversation"},
+			"reply_to":     prop("string", "ID of a message in the conversation to reply to"),
 		}),
 		Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
 		send:        true,

@@ -61,7 +61,9 @@ func TestBrowserFixture(t *testing.T) {
 			sender, direction, status = "me", "outgoing", "outgoing_complete"
 		}
 		id := fmt.Sprintf("long-%04d", i)
-		appendRecord("message", id, model.Message{Schema: 1, ID: id, ConversationID: "synthetic-long", SenderID: sender, Time: now.Add(time.Duration(i-1501) * time.Hour), Text: fmt.Sprintf("Message %d", i), Direction: direction, Status: status, Reactions: []model.Reaction{}, Attachments: []model.Attachment{}})
+		// One reply to a loaded message, one to a message far up the history.
+		replyTo := map[int]string{1500: "long-1497", 1499: "long-0003"}[i]
+		appendRecord("message", id, model.Message{Schema: 1, ID: id, ConversationID: "synthetic-long", SenderID: sender, Time: now.Add(time.Duration(i-1501) * time.Hour), Text: fmt.Sprintf("Message %d", i), Direction: direction, Status: status, ReplyTo: replyTo, Reactions: []model.Reaction{}, Attachments: []model.Attachment{}})
 	}
 	appendRecord("conversation", "synthetic-long", model.Conversation{Schema: 1, ID: "synthetic-long", Name: "Long history", Preview: "Message 1500", Protocol: "rcs", State: "active", Updated: now.Add(-2 * time.Hour), Participants: []model.Participant{{ID: "archivist", Name: "Robin (synthetic)", Address: "+1 555 0142"}, {ID: "me", Name: "You", IsMe: true}}})
 	appendRecord("conversation", "synthetic-group", model.Conversation{Schema: 1, ID: "synthetic-group", Name: "Book club", Preview: "Chapter four tonight?", Protocol: "rcs", State: "active", Updated: now.Add(-30 * time.Minute), Participants: []model.Participant{

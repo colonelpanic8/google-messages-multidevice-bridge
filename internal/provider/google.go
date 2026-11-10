@@ -105,7 +105,7 @@ func SnapshotOf(msg proto.Message) (Snapshot, error) {
 		} else if strings.HasPrefix(status, "outgoing_") {
 			direction = "outgoing"
 		}
-		out := model.Message{Schema: model.Schema, ID: id, ConversationID: m.GetConversationID(), SenderID: m.GetParticipantID(), Time: time.UnixMicro(m.GetTimestamp()).UTC(), Subject: m.GetSubject(), Direction: direction, Status: status, TransactionID: m.GetTmpID(), Deleted: strings.Contains(status, "deleted"), Attachments: []model.Attachment{}, Reactions: []model.Reaction{}}
+		out := model.Message{Schema: model.Schema, ID: id, ConversationID: m.GetConversationID(), SenderID: m.GetParticipantID(), Time: time.UnixMicro(m.GetTimestamp()).UTC(), Subject: m.GetSubject(), Direction: direction, Status: status, TransactionID: m.GetTmpID(), ReplyTo: m.GetReplyMessage().GetMessageID(), Deleted: strings.Contains(status, "deleted"), Attachments: []model.Attachment{}, Reactions: []model.Reaction{}}
 		for _, info := range m.GetMessageInfo() {
 			out.Text += info.GetMessageContent().GetContent()
 			if media := info.GetMediaContent(); media != nil {
@@ -454,6 +454,9 @@ func (g *Google) Send(ctx context.Context, target SendTarget, o model.Outbox) er
 		messageInfo = append(messageInfo, &gmproto.MessageInfo{Data: &gmproto.MessageInfo_MessageContent{MessageContent: &gmproto.MessageContent{Content: o.Request.Text}}})
 	}
 	req := &gmproto.SendMessageRequest{ConversationID: o.Request.ConversationID, TmpID: o.TransactionID, SIMPayload: target.sim, MessagePayload: &gmproto.MessagePayload{TmpID: o.TransactionID, TmpID2: o.TransactionID, ConversationID: o.Request.ConversationID, ParticipantID: target.participantID, MessageInfo: messageInfo}}
+	if o.Request.ReplyTo != "" {
+		req.Reply = &gmproto.ReplyPayload{MessageID: o.Request.ReplyTo}
+	}
 	res, err := g.Client.SendMessage(ctx, req)
 	if err != nil {
 		// Transport errors, relay 4xx/5xx, timeouts and cancellation all arrive

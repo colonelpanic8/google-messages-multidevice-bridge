@@ -216,19 +216,13 @@ func (b *Bridge) Queue(id string, req model.SendRequest) (model.Outbox, bool, er
 		if conv.ReadOnly || conv.State == "deleted" {
 			return model.Outbox{}, false, ErrInvalid
 		}
+		target := req.ReplyTo
 		if req.Kind == "reaction" {
-			if current, err := b.Store.EntityCurrent("message", req.MessageID); err != nil {
+			target = req.MessageID
+		}
+		if target != "" {
+			if err := b.targetMessage(req.ConversationID, target); err != nil {
 				return model.Outbox{}, false, err
-			} else if !current {
-				return model.Outbox{}, false, ErrInvalid
-			}
-			raw, err = b.Store.Record("message", req.MessageID)
-			if err != nil {
-				return model.Outbox{}, false, err
-			}
-			var msg model.Message
-			if json.Unmarshal(raw, &msg) != nil || msg.ConversationID != req.ConversationID || msg.Deleted {
-				return model.Outbox{}, false, ErrInvalid
 			}
 		}
 		var size int64
@@ -255,6 +249,25 @@ func (b *Bridge) Queue(id string, req model.SendRequest) (model.Outbox, bool, er
 		wake(b.sendWake)
 	}
 	return o, created, err
+}
+
+// targetMessage checks that a reaction or reply names a live message in the
+// conversation it is sent to.
+func (b *Bridge) targetMessage(conversationID, id string) error {
+	if current, err := b.Store.EntityCurrent("message", id); err != nil {
+		return err
+	} else if !current {
+		return ErrInvalid
+	}
+	raw, err := b.Store.Record("message", id)
+	if err != nil {
+		return err
+	}
+	var msg model.Message
+	if json.Unmarshal(raw, &msg) != nil || msg.ConversationID != conversationID || msg.Deleted {
+		return ErrInvalid
+	}
+	return nil
 }
 func (b *Bridge) sendLoop(ctx context.Context) {
 	ticker := time.NewTicker(b.sendRetry)

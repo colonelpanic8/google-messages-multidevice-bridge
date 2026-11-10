@@ -8,6 +8,8 @@ import {
   contactKey,
   contactName,
   displayName,
+  quoteAuthor,
+  quoteSnippet,
   filterConversations,
   highlightRuns,
   importStatus,
@@ -492,4 +494,30 @@ test("a reorder slides only the moved rows that are on screen", () => {
   );
   assert.equal(moves[0].delta, 900 * height);
   assert.equal(moves[1].delta, -height);
+});
+
+test("quotes name their author and summarize the original", () => {
+  const conversation = {
+    id: "c1",
+    participants: [
+      { id: "p1", name: "Ada" },
+      { id: "me", is_me: true },
+    ],
+  };
+  assert.equal(quoteSnippet(undefined), "Original message");
+  assert.equal(quoteAuthor(undefined, conversation), "");
+  assert.equal(quoteSnippet({ text: "  see\nyou   there " }), "see you there");
+  assert.equal(
+    quoteSnippet({ text: "", attachments: [{ mime: "image/jpeg" }] }),
+    "Photo",
+  );
+  assert.equal(
+    quoteSnippet({ text: "gone", deleted: true }),
+    "Message deleted",
+  );
+  assert.equal(
+    quoteAuthor({ direction: "incoming", sender_id: "p1" }, conversation),
+    "Ada",
+  );
+  assert.equal(quoteAuthor({ direction: "outgoing" }, conversation), "You");
 });

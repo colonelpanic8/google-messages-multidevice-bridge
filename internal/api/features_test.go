@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,6 +105,27 @@ func TestUploadEndpointValidationAndDurability(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			status, body := featureRequest(t, server, "POST", test.path, test.contentType, "", test.body)
+			requireStatus(t, status, body, test.want)
+		})
+	}
+}
+
+func TestRepliesMustNameAMessageInTheSameConversation(t *testing.T) {
+	b, server := fixture(t)
+	now := time.Now().UTC()
+	appendAPIRecord(t, b, "conversation", "c1", model.Conversation{Schema: model.Schema, ID: "c1", Updated: now})
+	appendAPIRecord(t, b, "conversation", "c2", model.Conversation{Schema: model.Schema, ID: "c2", Updated: now})
+	appendAPIRecord(t, b, "message", "m1", model.Message{Schema: model.Schema, ID: "m1", ConversationID: "c1", Time: now})
+	for _, test := range []struct {
+		name, body string
+		want       int
+	}{
+		{"same conversation", `{"conversation_id":"c1","text":"yes","reply_to":"m1"}`, http.StatusAccepted},
+		{"other conversation", `{"conversation_id":"c2","text":"yes","reply_to":"m1"}`, http.StatusBadRequest},
+		{"unknown message", `{"conversation_id":"c1","text":"yes","reply_to":"missing"}`, http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			status, body := featureRequest(t, server, "POST", "/v1/messages", "application/json", "reply-key-"+strings.ReplaceAll(test.name, " ", "-"), bytes.NewBufferString(test.body))
 			requireStatus(t, status, body, test.want)
 		})
 	}

@@ -173,6 +173,9 @@
           d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"
         />
       </symbol>
+      <symbol id="i-reply" viewBox="0 0 24 24">
+        <path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" />
+      </symbol>
       <symbol id="i-check" viewBox="0 0 24 24">
         <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
       </symbol>
@@ -537,6 +540,22 @@
             </button>
           </div>
           <form id="compose" class="compose">
+            <div id="reply-bar" class="reply-bar" hidden>
+              <svg><use href="#i-reply" /></svg>
+              <div class="quote-body">
+                <span id="reply-author" class="quote-author"></span>
+                <span id="reply-text" class="quote-text"></span>
+              </div>
+              <button
+                id="cancel-reply"
+                type="button"
+                class="icon-button"
+                aria-label="Cancel reply"
+                title="Cancel reply (Esc)"
+              >
+                <svg><use href="#i-close" /></svg>
+              </button>
+            </div>
             <div id="selected-attachments" class="chips"></div>
             <div class="compose-row">
               <label class="icon-button attach" title="Attach files">

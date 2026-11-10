@@ -243,6 +243,20 @@ test("captions are queued after attachments as separate requests", () => {
   assert.equal(splitRequests("c1", "").length, 0);
 });
 
+test("a reply quotes from the first request only", () => {
+  const requests = splitRequests(
+    "c1",
+    "caption",
+    ["upload-1"],
+    "google-messages",
+    "m1",
+  );
+  assert.deepEqual(
+    requests.map((r) => r.body.reply_to),
+    ["m1", undefined],
+  );
+});
+
 test("paging to the start of a thread stops at the oldest page", async () => {
   const pages = { c: "b", b: "a", a: "" };
   const seen = [];

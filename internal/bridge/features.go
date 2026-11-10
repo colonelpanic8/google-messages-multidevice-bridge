@@ -27,7 +27,7 @@ func validateRequest(req *model.SendRequest) error {
 		req.Kind = ""
 	}
 	if req.Kind == "conversation" {
-		if req.ConversationID != "" || req.Text != "" || len(req.AttachmentIDs) > 0 || req.MessageID != "" || req.Emoji != "" || req.Remove || len(req.Recipients) < 1 || len(req.Recipients) > 20 {
+		if req.ConversationID != "" || req.Text != "" || len(req.AttachmentIDs) > 0 || req.MessageID != "" || req.Emoji != "" || req.Remove || req.ReplyTo != "" || len(req.Recipients) < 1 || len(req.Recipients) > 20 {
 			return ErrInvalid
 		}
 		req.GroupName = strings.TrimSpace(req.GroupName)
@@ -49,12 +49,12 @@ func validateRequest(req *model.SendRequest) error {
 		return ErrInvalid
 	}
 	if req.Kind == "reaction" {
-		if req.MessageID == "" || len(req.MessageID) > 256 || strings.TrimSpace(req.Emoji) == "" || len(req.Emoji) > 64 || !utf8.ValidString(req.Emoji) || req.Text != "" || len(req.AttachmentIDs) > 0 {
+		if req.MessageID == "" || len(req.MessageID) > 256 || strings.TrimSpace(req.Emoji) == "" || len(req.Emoji) > 64 || !utf8.ValidString(req.Emoji) || req.Text != "" || len(req.AttachmentIDs) > 0 || req.ReplyTo != "" {
 			return ErrInvalid
 		}
 		return nil
 	}
-	if req.Kind != "" || req.MessageID != "" || req.Emoji != "" || req.Remove || len(req.Text) > 16000 || !utf8.ValidString(req.Text) || len(req.AttachmentIDs) > 10 {
+	if req.Kind != "" || req.MessageID != "" || req.Emoji != "" || req.Remove || len(req.ReplyTo) > 256 || len(req.Text) > 16000 || !utf8.ValidString(req.Text) || len(req.AttachmentIDs) > 10 {
 		return ErrInvalid
 	}
 	// The phone drops media when text rides in the same send, so a message

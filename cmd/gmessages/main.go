@@ -31,8 +31,8 @@ Commands:
   wait [--query Q] [--conversation C] [--since D] [--timeout 2m]
                                  block until a matching message arrives, then print it
   contacts [--query Q]           the phone's address book
-  send (--conversation C | --to +15550100) [--no-wait] <text|->
-                                 send a text message
+  send (--conversation C | --to +15550100) [--reply-to M] [--no-wait] <text|->
+                                 send a text message, optionally replying to message M
   outbox <idempotency-key>       one queued operation
   attachment <id> [-o path]      download an attachment
   profiles                       configured bridge profiles
@@ -240,6 +240,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		var to string
 		fs.StringVar(&o.Conversation, "conversation", "", "")
 		fs.StringVar(&to, "to", "", "")
+		fs.StringVar(&o.ReplyTo, "reply-to", "", "")
 		noWait := fs.Bool("no-wait", false, "")
 		positional, err := parse(fs, args)
 		if err != nil {

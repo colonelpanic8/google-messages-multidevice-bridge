@@ -1065,6 +1065,98 @@ button.reaction:hover {
   background: color-mix(in srgb, var(--on-surface) 8%, transparent);
   transform: scale(1.15);
 }
+.reply-action {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--on-surface-variant);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.reply-action svg {
+  width: 20px;
+  height: 20px;
+}
+.reply-action:hover {
+  background: color-mix(in srgb, var(--on-surface) 8%, transparent);
+}
+.row:hover .reply-action,
+.reply-action:focus-visible {
+  opacity: 1;
+}
+.quote {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  max-width: min(100%, 420px);
+  margin-bottom: 2px;
+  padding: 6px 12px;
+  border-left: 3px solid var(--primary);
+  border-radius: 4px 12px 12px 4px;
+  background: color-mix(in srgb, var(--on-surface) 5%, transparent);
+  color: var(--on-surface-variant);
+  font-size: 13px;
+  text-align: left;
+}
+.quote:not(:disabled) {
+  cursor: pointer;
+}
+.quote:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--on-surface) 9%, transparent);
+}
+.quote-author {
+  font-weight: 600;
+  color: var(--primary);
+}
+.quote-text {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.reply-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 8px 8px;
+  padding: 4px 4px 4px 12px;
+  border-left: 3px solid var(--primary);
+  border-radius: 4px 16px 16px 4px;
+  background: var(--surface-container);
+  font-size: 13px;
+  animation: fade-in var(--motion-short) var(--ease-standard);
+}
+.reply-bar[hidden] {
+  display: none;
+}
+.reply-bar > svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  fill: var(--primary);
+}
+.quote-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.row.flash .bubble {
+  animation: quote-flash 1.2s var(--ease-standard);
+}
+@keyframes quote-flash {
+  0%,
+  40% {
+    box-shadow: 0 0 0 3px var(--primary);
+  }
+  100% {
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
 .react-more svg {
   width: 20px;
   height: 20px;
@@ -1813,7 +1905,8 @@ button.reaction:hover {
   .row {
     max-width: 85%;
   }
-  .react {
+  .react,
+  .reply-action {
     opacity: 1;
   }
   .pending-send {

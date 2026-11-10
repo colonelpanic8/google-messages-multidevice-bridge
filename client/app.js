@@ -36,6 +36,8 @@ import {
   messageStatus,
   others,
   participantList,
+  quoteAuthor,
+  quoteSnippet,
   outboxAttachmentCount,
   outboxStatus,
   outboxText,
@@ -86,6 +88,7 @@ let conversationCursor = 0,
   cursor = 0;
 const drafts = new Map();
 const draftFiles = new Map();
+const replyTargets = new Map();
 const pendingReactions = new Map();
 let emojiCatalog, emojiTarget, emojiGroup;
 let sending = false,
@@ -938,6 +941,47 @@ function pendingReactionRows(message) {
   }
   return rows;
 }
+function storedMessage(conversationID, id) {
+  return threads.get(conversationID)?.messages.get(id);
+}
+function quoteSignature(id, conversation) {
+  if (!id) return "";
+  const target = storedMessage(conversation.id, id);
+  return `${quoteAuthor(target, conversation)}\n${quoteSnippet(target)}`;
+}
+function quoteNode(id, conversation) {
+  const target = storedMessage(conversation.id, id);
+  const node = button(undefined, "quote", () => jumpToMessage(id));
+  const author = quoteAuthor(target, conversation);
+  if (author) node.append(el("span", author, "quote-author"));
+  node.append(el("span", quoteSnippet(target), "quote-text"));
+  node.disabled = !target;
+  if (target) node.title = "Show the original message";
+  return node;
+}
+function jumpToMessage(id) {
+  const node = threadNodes.get(`m:${id}`)?.node;
+  if (!node) return;
+  node.scrollIntoView({
+    block: "center",
+    behavior: stillMotion.matches ? "auto" : "smooth",
+  });
+  node.classList.remove("flash");
+  requestAnimationFrame(() => node.classList.add("flash"));
+}
+function startReply(message) {
+  if (!selected || pendingSend) return;
+  replyTargets.set(selected, message.id);
+  invalidate("compose");
+  $("text").focus();
+}
+// The message a send from the open conversation would reply to, if it can
+// still take one.
+function replyTarget() {
+  const id = replyTargets.get(selected);
+  const target = id && storedMessage(selected, id);
+  return target && !target.deleted && !target.read_only ? target : undefined;
+}
 function buildMessageRow(row, conversation) {
   const message = row.message;
   const direction =
@@ -954,6 +998,8 @@ function buildMessageRow(row, conversation) {
   );
   if (direction === "incoming" && row.first && isGroup(conversation) && sender)
     node.append(el("div", sender.name || sender.address, "sender"));
+  if (message.reply_to && !message.deleted)
+    node.append(quoteNode(message.reply_to, conversation));
   const line = el("div", undefined, "bubble-line");
   const bubbles = el("div", undefined, "bubbles");
   const attachments = message.deleted ? [] : message.attachments || [];
@@ -982,8 +1028,13 @@ function buildMessageRow(row, conversation) {
   for (const bubble of bubbles.children)
     bubble.title = new Date(message.time).toLocaleString();
   line.append(bubbles);
-  if (!message.deleted && !readOnly && direction !== "system")
-    line.append(reactionPicker(message));
+  if (!message.deleted && !readOnly && direction !== "system") {
+    const reply = button(undefined, "reply-action", () => startReply(message));
+    reply.append(icon("reply"));
+    reply.title = "Reply";
+    reply.setAttribute("aria-label", "Reply");
+    line.append(reactionPicker(message), reply);
+  }
   node.append(line);
   if (message.reactions?.length) {
     const reactions = el("div", undefined, "reactions");
@@ -1035,6 +1086,9 @@ function buildOutboxRow(row) {
       row.last ? " last" : ""
     }`,
   );
+  const conversation = conversations.get(item.request?.conversation_id);
+  if (item.request?.reply_to && conversation)
+    node.append(quoteNode(item.request.reply_to, conversation));
   const line = el("div", undefined, "bubble-line");
   const bubbles = el("div", undefined, "bubbles");
   const text = outboxText(item);
@@ -1185,13 +1239,14 @@ function renderThread() {
       row.kind === "divider"
         ? row.label
         : row.kind === "message"
-          ? `${row.first}:${row.last}:${pending.get(row.message.id) || ""}:${context}:${findHighlight(row.message)}`
+          ? `${row.first}:${row.last}:${pending.get(row.message.id) || ""}:${context}:${findHighlight(row.message)}:${quoteSignature(row.message.reply_to, conversation)}`
           : JSON.stringify([
               row.item,
               row.first,
               row.last,
               currentSessionEpoch,
               providerState,
+              quoteSignature(row.item?.request?.reply_to, conversation),
             ]);
     let cached = threadNodes.get(row.key);
     const fresh = !cached;
@@ -1582,6 +1637,16 @@ function renderCompose() {
     : conversation.protocol === "rcs"
       ? "RCS message"
       : "Text message";
+  const replying = hasPending
+    ? storedMessage(pendingSend.conversationID, pendingSend.replyTo)
+    : replyTarget();
+  $("reply-bar").hidden = !replying || conversation.read_only;
+  if (replying) {
+    $("reply-author").textContent =
+      `Replying to ${quoteAuthor(replying, conversation)}`;
+    $("reply-text").textContent = quoteSnippet(replying);
+  }
+  $("cancel-reply").hidden = hasPending;
   $("pending-send").hidden = !hasPending;
   if (hasPending) {
     $("pending-send-text").textContent = sending
@@ -2407,6 +2472,7 @@ async function sendMessage() {
       files: [...selectedFiles],
       uploadIDs: [],
       text,
+      replyTo: replyTarget()?.id || "",
       requests: undefined,
       progress: "",
       error: "",
@@ -2424,6 +2490,7 @@ async function sendMessage() {
       pending.text,
       pending.uploadIDs,
       status.network,
+      pending.replyTo,
     );
     for (const item of pending.requests) {
       if (item.queued) continue;
@@ -2447,6 +2514,7 @@ async function sendMessage() {
     autogrow();
     drafts.delete(selected);
     draftFiles.delete(selected);
+    replyTargets.delete(selected);
     thread(selected).scrollToBottom = true;
     $("text").focus();
   } catch (error) {
@@ -3433,10 +3501,22 @@ $("text").onpaste = (event) => {
   if (!clipboardDataEmpty(event.clipboardData)) return;
   void clipboardImages(navigator.clipboard).then(attachPastedImages);
 };
+function cancelReply() {
+  if (pendingSend || !replyTargets.delete(selected)) return false;
+  invalidate("compose");
+  return true;
+}
+$("cancel-reply").onclick = () => {
+  cancelReply();
+  $("text").focus();
+};
 $("text").onkeydown = (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     if (!pendingSend) void sendMessage();
+  } else if (event.key === "Escape" && cancelReply()) {
+    event.preventDefault();
+    event.stopPropagation();
   }
 };
 $("attachments").onchange = () => {

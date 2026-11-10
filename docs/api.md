@@ -227,7 +227,8 @@ returns 409. Reusing a different key authorizes a distinct operation.
 {
   "conversation_id": "stored-conversation-id",
   "text": "Message text; empty when attachments are present",
-  "attachment_ids": ["opaque-upload-id"]
+  "attachment_ids": ["opaque-upload-id"],
+  "reply_to": "stored-message-id"
 }
 ```
 
@@ -236,6 +237,10 @@ at most 16,000 bytes. A request carries either nonblank text or one to ten disti
 stored upload IDs totaling at most 20 MiB, never both: the phone delivers only the
 text when media and text share one send. Queue a caption as a second message with
 its own key. The web client does this automatically.
+
+`reply_to` is optional and names a current, undeleted message in the same
+conversation; the send then quotes it. Stored messages carry `reply_to` when they
+quote another message, whether or not that message is stored locally.
 
 ### Conversation creation
 

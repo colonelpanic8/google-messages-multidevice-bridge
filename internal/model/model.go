@@ -90,6 +90,7 @@ type Message struct {
 	Deleted        bool         `json:"deleted"`
 	ReadOnly       bool         `json:"read_only,omitempty"`
 	TransactionID  string       `json:"transaction_id,omitempty"`
+	ReplyTo        string       `json:"reply_to,omitempty"`
 	Attachments    []Attachment `json:"attachments"`
 	Reactions      []Reaction   `json:"reactions"`
 }
@@ -115,6 +116,7 @@ type SendRequest struct {
 	MessageID      string   `json:"message_id,omitempty"`
 	Emoji          string   `json:"emoji,omitempty"`
 	Remove         bool     `json:"remove,omitempty"`
+	ReplyTo        string   `json:"reply_to,omitempty"`
 	ConversationID string   `json:"conversation_id"`
 	Text           string   `json:"text"`
 }
@@ -145,7 +147,7 @@ func (m Message) PreviewText() string {
 }
 
 func (r SendRequest) Equal(other SendRequest) bool {
-	return r.Kind == other.Kind && r.GroupName == other.GroupName && r.ConversationID == other.ConversationID && r.Text == other.Text && r.MessageID == other.MessageID && r.Emoji == other.Emoji && r.Remove == other.Remove && slices.Equal(r.Recipients, other.Recipients) && slices.Equal(r.AttachmentIDs, other.AttachmentIDs)
+	return r.Kind == other.Kind && r.GroupName == other.GroupName && r.ConversationID == other.ConversationID && r.Text == other.Text && r.MessageID == other.MessageID && r.Emoji == other.Emoji && r.Remove == other.Remove && r.ReplyTo == other.ReplyTo && slices.Equal(r.Recipients, other.Recipients) && slices.Equal(r.AttachmentIDs, other.AttachmentIDs)
 }
 
 type Outbox struct {
