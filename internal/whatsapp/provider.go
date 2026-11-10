@@ -418,6 +418,16 @@ func (p *Provider) Send(ctx context.Context, t provider.SendTarget, o model.Outb
 			return provider.ErrRejected
 		}
 	}
+	if o.Request.ReplyTo != "" {
+		quote, err := p.quote(o.Request.ReplyTo)
+		if err != nil {
+			return err
+		}
+		if m.Conversation != nil {
+			m = &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: m.Conversation}}
+		}
+		setContextInfo(m, quote)
+	}
 	mark, err := p.DB.HistoryWatermark()
 	if err != nil {
 		return err
@@ -426,7 +436,7 @@ func (p *Provider) Send(ctx context.Context, t provider.SendTarget, o model.Outb
 	if err != nil {
 		return Classify(err)
 	}
-	message := model.Message{Schema: 1, ID: messageID(j.String(), o.TransactionID), ConversationID: j.String(), SenderID: p.Device.GetLID().ToNonAD().String(), Time: response.Timestamp.UTC(), Direction: "outgoing", Status: "server_ack", Reactions: []model.Reaction{}}
+	message := model.Message{Schema: 1, ID: messageID(j.String(), o.TransactionID), ConversationID: j.String(), SenderID: p.Device.GetLID().ToNonAD().String(), Time: response.Timestamp.UTC(), Direction: "outgoing", Status: "server_ack", ReplyTo: o.Request.ReplyTo, Reactions: []model.Reaction{}}
 	private := content(&message, m)
 	snap, err := snapshot("message", message.ID, message)
 	if err != nil {
@@ -434,6 +444,20 @@ func (p *Provider) Send(ctx context.Context, t provider.SendTarget, o model.Outb
 	}
 	_, err = p.DB.Apply(snap.Event, private, &mark)
 	return p.Keys.failed(err)
+}
+
+// quote builds the context that makes a send a reply to a stored message. The
+// quoted copy carries only text, which is what recipients show above the reply.
+func (p *Provider) quote(id string) (*waE2E.ContextInfo, error) {
+	raw, err := p.DB.Record("message", id)
+	if err != nil {
+		return nil, provider.ErrRejected
+	}
+	var m model.Message
+	if json.Unmarshal(raw, &m) != nil || m.SenderID == "" {
+		return nil, provider.ErrRejected
+	}
+	return &waE2E.ContextInfo{StanzaID: proto.String(messageRemoteID(id)), Participant: proto.String(m.SenderID), QuotedMessage: &waE2E.Message{Conversation: proto.String(m.PreviewText())}}, nil
 }
 func (p *Provider) React(ctx context.Context, t provider.SendTarget, id, emoji string, remove bool) error {
 	raw, err := p.DB.Record("message", id)

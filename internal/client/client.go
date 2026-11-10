@@ -311,9 +311,12 @@ func (c *Client) CreateConversation(ctx context.Context, key string, recipients 
 	return out, c.do(ctx, "POST", "/v1/conversations", nil, body, key, &out)
 }
 
-func (c *Client) SendText(ctx context.Context, key, conversationID, text string) (model.Outbox, error) {
+func (c *Client) SendText(ctx context.Context, key, conversationID, text, replyTo string) (model.Outbox, error) {
 	var out model.Outbox
 	body := map[string]any{"conversation_id": conversationID, "text": text}
+	if replyTo != "" {
+		body["reply_to"] = replyTo
+	}
 	return out, c.do(ctx, "POST", "/v1/messages", nil, body, key, &out)
 }
 

@@ -37,11 +37,13 @@ export function newRequest(conversationID, text, attachmentIDs = []) {
 }
 
 // Media and text never share one send; a caption follows as its own message.
+// A reply quotes from the first of them.
 export function splitRequests(
   conversationID,
   text,
   attachmentIDs = [],
   network = "google-messages",
+  replyTo = "",
 ) {
   const requests = [];
   if (network === "whatsapp") {
@@ -50,6 +52,7 @@ export function splitRequests(
   } else if (attachmentIDs.length)
     requests.push(newRequest(conversationID, "", attachmentIDs));
   if (text.trim()) requests.push(newRequest(conversationID, text));
+  if (replyTo && requests.length) requests[0].body.reply_to = replyTo;
   return requests;
 }
 

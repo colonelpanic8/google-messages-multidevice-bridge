@@ -297,6 +297,7 @@ type sendOptions struct {
 	Conversation string
 	To           []string
 	Text         string
+	ReplyTo      string `json:"reply_to"`
 	Wait         bool
 }
 
@@ -308,6 +309,9 @@ func send(ctx context.Context, c *client.Client, o sendOptions) (model.Outbox, e
 	}
 	if (o.Conversation == "") == (len(o.To) == 0) {
 		return model.Outbox{}, errors.New("name exactly one of a conversation or recipient numbers")
+	}
+	if o.ReplyTo != "" && o.Conversation == "" {
+		return model.Outbox{}, errors.New("a reply goes to an existing conversation, not to recipient numbers")
 	}
 	conversationID := ""
 	if o.Conversation != "" {
@@ -335,7 +339,7 @@ func send(ctx context.Context, c *client.Client, o sendOptions) (model.Outbox, e
 		conversationID = created.ConversationID
 	}
 	key := client.NewKey()
-	queued, err := c.SendText(ctx, key, conversationID, o.Text)
+	queued, err := c.SendText(ctx, key, conversationID, o.Text, o.ReplyTo)
 	if err != nil || !o.Wait {
 		return queued, err
 	}

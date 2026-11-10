@@ -10,11 +10,13 @@
   dbus,
   libayatana-appindicator,
   glib-networking,
+  version,
+  commit ? "",
 }:
 
 rustPlatform.buildRustPackage {
   pname = "google-messages-desktop";
-  version = "0.1.3";
+  inherit version;
   # The desktop app bundles the client tree, so both have to be in scope even
   # though the crate itself lives in ./desktop.
   src = lib.fileset.toSource {
@@ -26,6 +28,7 @@ rustPlatform.buildRustPackage {
   };
   sourceRoot = "source/desktop";
   cargoLock.lockFile = ../desktop/Cargo.lock;
+  env.GMESSAGES_DESKTOP_COMMIT = commit;
 
   nativeBuildInputs = [
     pkg-config

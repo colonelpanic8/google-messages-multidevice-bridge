@@ -26,13 +26,15 @@ type fakeClient struct {
 	sendErr    error
 	sends      int
 	sentID     string
+	sent       *waE2E.Message
 	users      []types.IsOnWhatsAppResponse
 	uploadType whatsmeow.MediaType
 	group      *types.GroupInfo
 }
 
-func (f *fakeClient) SendMessage(_ context.Context, _ types.JID, _ *waE2E.Message, extra ...whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error) {
+func (f *fakeClient) SendMessage(_ context.Context, _ types.JID, m *waE2E.Message, extra ...whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error) {
 	f.sends++
+	f.sent = m
 	if len(extra) > 0 {
 		f.sentID = extra[0].ID
 	}
@@ -216,6 +218,41 @@ func TestSingleSendIDAndOutcome(t *testing.T) {
 				t.Fatal(err, f.sends, f.sentID)
 			}
 		})
+	}
+}
+func TestRepliesQuoteTheirTarget(t *testing.T) {
+	p := providerFixture(t)
+	ctx := context.Background()
+	chat := types.NewJID("123", types.HiddenUserServer)
+	for _, e := range []*events.Message{
+		{Info: types.MessageInfo{MessageSource: types.MessageSource{Chat: chat, Sender: chat}, ID: "A", Timestamp: time.Now()}, Message: &waE2E.Message{Conversation: proto.String("dinner at 7?")}},
+		{Info: types.MessageInfo{MessageSource: types.MessageSource{Chat: chat, Sender: chat}, ID: "B", Timestamp: time.Now()}, Message: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String("or 8"), ContextInfo: &waE2E.ContextInfo{StanzaID: proto.String("A")}}}},
+	} {
+		snaps, err := p.Message(ctx, e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range snaps {
+			if err = persistFixture(p)(s); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	target := messageID(chat.String(), "A")
+	if m := readMessage(t, p, messageID(chat.String(), "B")); m.ReplyTo != target {
+		t.Fatalf("incoming reply_to %q", m.ReplyTo)
+	}
+	f := &fakeClient{}
+	p.Client = f
+	if err := p.Send(ctx, provider.SendTarget{ConversationID: chat.String()}, model.Outbox{TransactionID: "R", Request: model.SendRequest{ConversationID: chat.String(), Text: "8 works", ReplyTo: target}}); err != nil {
+		t.Fatal(err)
+	}
+	quote := f.sent.GetExtendedTextMessage().GetContextInfo()
+	if f.sent.GetExtendedTextMessage().GetText() != "8 works" || quote.GetStanzaID() != "A" || quote.GetParticipant() != chat.String() || quote.GetQuotedMessage().GetConversation() != "dinner at 7?" {
+		t.Fatalf("sent %v", f.sent)
+	}
+	if m := readMessage(t, p, messageID(chat.String(), "R")); m.ReplyTo != target || m.Text != "8 works" {
+		t.Fatal(m)
 	}
 }
 func TestUnregisteredRecipientRejected(t *testing.T) {

@@ -211,6 +211,42 @@ export function outboxAttachmentCount(item) {
 
 const messageTime = (m) => new Date(m.time || 0).getTime() || 0;
 
+// One line standing in for the message a reply quotes. The target may not be
+// loaded, or may never have been stored at all.
+export function quoteSnippet(message) {
+  if (!message) return "Original message";
+  if (message.deleted) return "Message deleted";
+  const line = [message.subject, message.text]
+    .filter(Boolean)
+    .join(" ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ");
+  if (line) return Array.from(line).slice(0, 200).join("");
+  if (!message.attachments?.length) return "Message";
+  const kind = message.attachments[0].mime?.split("/")[0];
+  return kind === "image"
+    ? "Photo"
+    : kind === "video"
+      ? "Video"
+      : kind === "audio"
+        ? "Audio message"
+        : "Attachment";
+}
+
+export function quoteAuthor(message, conversation) {
+  if (!message) return "";
+  if (message.direction === "outgoing") return "You";
+  const sender = conversation?.participants?.find(
+    (participant) => participant.id === message.sender_id,
+  );
+  return (
+    sender?.name ||
+    sender?.address ||
+    (conversation ? displayName(conversation) : "")
+  );
+}
+
 export function sortMessages(messages) {
   return [...messages].sort(
     (a, b) =>

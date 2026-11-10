@@ -41,6 +41,39 @@ func unwrap(m *waE2E.Message) *waE2E.Message {
 	}
 	return &waE2E.Message{}
 }
+func contextInfo(m *waE2E.Message) *waE2E.ContextInfo {
+	switch {
+	case m.ExtendedTextMessage != nil:
+		return m.ExtendedTextMessage.GetContextInfo()
+	case m.ImageMessage != nil:
+		return m.ImageMessage.GetContextInfo()
+	case m.VideoMessage != nil:
+		return m.VideoMessage.GetContextInfo()
+	case m.AudioMessage != nil:
+		return m.AudioMessage.GetContextInfo()
+	case m.DocumentMessage != nil:
+		return m.DocumentMessage.GetContextInfo()
+	case m.StickerMessage != nil:
+		return m.StickerMessage.GetContextInfo()
+	}
+	return nil
+}
+func setContextInfo(m *waE2E.Message, info *waE2E.ContextInfo) {
+	switch {
+	case m.ExtendedTextMessage != nil:
+		m.ExtendedTextMessage.ContextInfo = info
+	case m.ImageMessage != nil:
+		m.ImageMessage.ContextInfo = info
+	case m.VideoMessage != nil:
+		m.VideoMessage.ContextInfo = info
+	case m.AudioMessage != nil:
+		m.AudioMessage.ContextInfo = info
+	case m.DocumentMessage != nil:
+		m.DocumentMessage.ContextInfo = info
+	case m.StickerMessage != nil:
+		m.StickerMessage.ContextInfo = info
+	}
+}
 func mediaSize(m *waE2E.Message) uint64 {
 	switch {
 	case m.ImageMessage != nil:
@@ -231,6 +264,9 @@ func (p *Provider) Message(ctx context.Context, e *events.Message) ([]provider.S
 			return nil, nil
 		}
 		private = content(&m, body)
+		if quoted := contextInfo(body).GetStanzaID(); quoted != "" {
+			m.ReplyTo = messageID(chat.String(), quoted)
+		}
 	}
 	if !mutation && m.Text == "" && len(m.Attachments) == 0 {
 		return nil, nil

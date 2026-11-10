@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/buildinfo"
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/client"
 )
 
@@ -210,6 +211,7 @@ var tools = []tool{
 			"text":         prop("string", "Message text"),
 			"conversation": conversationProp,
 			"to":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "E.164 recipients for a new or existing conversation, instead of conversation"},
+			"reply_to":     prop("string", "ID of a message in the conversation to reply to"),
 		}),
 		Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
 		send:        true,
@@ -304,7 +306,7 @@ func (s *mcpServer) dispatch(ctx context.Context, req rpcRequest) (any, *rpcErro
 		return map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "gmessages", "version": "0.1.0"},
+			"serverInfo":      map[string]any{"name": "gmessages", "version": buildinfo.Version},
 			"instructions":    mcpInstructions,
 		}, nil
 	case "ping":

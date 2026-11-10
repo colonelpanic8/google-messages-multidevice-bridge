@@ -506,6 +506,29 @@ func TestUploadSerializesPrivateMediaAndSendAppendsIt(t *testing.T) {
 	}
 }
 
+func TestRepliesNameTheirTarget(t *testing.T) {
+	snap, err := SnapshotOf(&gmproto.Message{MessageID: "m2", ConversationID: "c1", ReplyMessage: &gmproto.ReplyMessage{MessageID: "m1"}, MessageStatus: &gmproto.MessageStatus{Status: gmproto.MessageStatusType_INCOMING_COMPLETE}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m model.Message
+	if err = json.Unmarshal(snap.Event.Data, &m); err != nil || m.ReplyTo != "m1" {
+		t.Fatalf("reply_to %q %v", m.ReplyTo, err)
+	}
+	var sent *gmproto.SendMessageRequest
+	g := newGoogle(&fakeGoogleClient{send: func(_ context.Context, req *gmproto.SendMessageRequest) (*gmproto.SendMessageResponse, error) {
+		sent = req
+		return &gmproto.SendMessageResponse{Status: gmproto.SendMessageResponse_SUCCESS}, nil
+	}})
+	target := SendTarget{ConversationID: "c1", participantID: "self", sim: &gmproto.SIMPayload{}}
+	if err = g.Send(context.Background(), target, model.Outbox{TransactionID: "tmp", Request: model.SendRequest{ConversationID: "c1", Text: "yes", ReplyTo: "m1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if sent.GetReply().GetMessageID() != "m1" {
+		t.Fatalf("reply payload %v", sent.GetReply())
+	}
+}
+
 func TestSendRejectsMediaOverCombinedLimit(t *testing.T) {
 	key := bytes.Repeat([]byte{2}, 32)
 	first, _ := marshalPrivate(&gmproto.MediaContent{MediaID: "one", Size: MaxAttachmentBytes, DecryptionKey: key})
