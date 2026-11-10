@@ -690,7 +690,20 @@ async function loadPreview(img) {
   }
   try {
     const url = await pending;
-    if (!signal.aborted && img.isConnected) img.src = url;
+    if (signal.aborted || !img.isConnected) return;
+    // A preview has no size until it loads, so a thread resting at the bottom
+    // follows it down instead of being left short of its newest message.
+    const container = $("messages");
+    if (
+      container.scrollHeight - container.scrollTop - container.clientHeight <
+      80
+    )
+      img.addEventListener(
+        "load",
+        () => (container.scrollTop = container.scrollHeight),
+        { once: true },
+      );
+    img.src = url;
   } catch {
     if (previewCache.get(id) === pending) previewCache.delete(id);
     if (!signal.aborted && img.isConnected) img.closest(".bubble")?.remove();
