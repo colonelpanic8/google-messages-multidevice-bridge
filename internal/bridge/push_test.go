@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
+	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/store"
 )
 
 type recordingNotifier struct {
@@ -105,5 +106,29 @@ func TestPushDescribesAttachmentsAndUnknownSenders(t *testing.T) {
 	}
 	if title, body = b.describe(model.Message{ID: "m", ConversationID: "missing"}); title != "New message" || body != "" {
 		t.Fatalf("unknown conversation: %q %q", title, body)
+	}
+}
+
+// The hub evicts a subscriber that does not keep up with typing events, and
+// the watcher has no use for them.
+func TestPushSurvivesTypingBursts(t *testing.T) {
+	b := testBridge(t)
+	b.persist(snapshot(t, "conversation", "c1", model.Conversation{Schema: 1, ID: "c1", Participants: []model.Participant{{ID: "p2", Name: "Dana"}}}))
+	notifier := &recordingNotifier{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- b.WatchForPush(ctx, notifier) }()
+	for range 200 {
+		b.Hub.Publish(store.Event{Type: "typing", EntityID: "c1", Time: time.Now(), Data: []byte(`{}`)})
+	}
+	b.persist(snapshot(t, "message", "m1", model.Message{Schema: 1, ID: "m1", ConversationID: "c1", SenderID: "p2", Time: time.Now().UTC(), Direction: "incoming", Text: "hello", Status: "incoming_complete"}))
+	if got := b.settle(notifier, 1); len(got) != 1 {
+		t.Fatalf("no push after a typing burst: %q", got)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("watcher stopped while its context was live: %v", err)
+	default:
 	}
 }
