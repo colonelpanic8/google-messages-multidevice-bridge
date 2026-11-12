@@ -12,7 +12,7 @@
         "x86_64-linux"
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
-      version = "0.1.4";
+      version = "0.1.5";
       commit = self.rev or self.dirtyRev or "";
     in
     {
