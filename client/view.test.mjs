@@ -30,6 +30,7 @@ import {
   searchMatches,
   slidingRows,
   threadOutbox,
+  sendRetryDelay,
 } from "./view.mjs";
 
 const at = (minutes) =>
@@ -520,4 +521,16 @@ test("quotes name their author and summarize the original", () => {
     "Ada",
   );
   assert.equal(quoteAuthor({ direction: "outgoing" }, conversation), "You");
+});
+
+test("unanswered sends retry with backoff while refusals wait for the user", () => {
+  const offline = new TypeError("Failed to fetch");
+  assert.equal(sendRetryDelay(offline, 1), 2_000);
+  assert.equal(sendRetryDelay(offline, 3), 8_000);
+  assert.equal(sendRetryDelay(offline, 20), 60_000);
+  assert.equal(sendRetryDelay({ status: 502 }, 1), 2_000);
+  assert.equal(sendRetryDelay({ status: 429 }, 2), 4_000);
+  assert.equal(sendRetryDelay({ status: 400 }, 1), 0);
+  assert.equal(sendRetryDelay({ status: 401 }, 1), 0);
+  assert.equal(sendRetryDelay({ status: 409 }, 1), 0);
 });

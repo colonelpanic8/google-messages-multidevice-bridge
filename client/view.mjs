@@ -196,6 +196,14 @@ export function outboxStatus(item, connected = true) {
   }
 }
 
+// A send the bridge never answered, or answered with a server-side failure,
+// is retried on its own with backoff; one it refused is left for the user.
+export function sendRetryDelay(error, failures) {
+  const status = error?.status;
+  if (status && status < 500 && status !== 408 && status !== 429) return 0;
+  return Math.min(60_000, 2_000 * 2 ** Math.max(0, failures - 1));
+}
+
 export function outboxText(item) {
   const body = item.request || {};
   if (body.kind === "reaction")

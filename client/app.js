@@ -46,6 +46,7 @@ import {
   reactedByMe,
   reactionTitle,
   searchMatches,
+  sendRetryDelay,
   slidingRows,
   sortConversations,
   summarizeHistory,
@@ -90,11 +91,12 @@ const drafts = new Map();
 const draftFiles = new Map();
 const replyTargets = new Map();
 const pendingReactions = new Map();
+// Messages the bridge has not accepted yet, by conversation. Each keeps its
+// finished uploads and idempotency keys, so retrying never duplicates a send.
+const pendingSends = new Map();
 let emojiCatalog, emojiTarget, emojiGroup;
-let sending = false,
-  adopting = false,
+let adopting = false,
   creatingConversation = false,
-  pendingSend,
   pendingConversation,
   createdConversation,
   selectedFiles = [];
@@ -970,7 +972,7 @@ function jumpToMessage(id) {
   requestAnimationFrame(() => node.classList.add("flash"));
 }
 function startReply(message) {
-  if (!selected || pendingSend) return;
+  if (!selected || pendingSends.has(selected)) return;
   replyTargets.set(selected, message.id);
   invalidate("compose");
   $("text").focus();
@@ -1607,7 +1609,7 @@ function renderNewChat() {
 }
 
 function renderSelectedAttachments() {
-  const files = pendingSend?.files || selectedFiles;
+  const files = pendingSends.get(selected)?.files || selectedFiles;
   const chips = $("selected-attachments");
   chips.replaceChildren();
   for (const file of files)
@@ -1626,7 +1628,9 @@ function renderSelectedAttachments() {
 function renderCompose() {
   const conversation = conversations.get(selected);
   if (!conversation) return;
+  const pendingSend = pendingSends.get(selected);
   const hasPending = !!pendingSend;
+  const sending = !!pendingSend?.sending;
   $("text").disabled = conversation.read_only;
   // Read-only rather than disabled, which would throw away keyboard focus.
   $("text").readOnly = hasPending;
@@ -1654,6 +1658,9 @@ function renderCompose() {
       : pendingSend.error || "Message not sent.";
     $("retry-send").hidden = sending;
     $("discard-send").hidden = sending;
+    $("retry-send").textContent = pendingSend.retryTimer
+      ? "Retry now"
+      : "Retry";
   }
   $("send-hint").textContent =
     providerState === "connected"
@@ -2188,12 +2195,6 @@ function stashDraft() {
   draftFiles.set(selected, selectedFiles);
 }
 async function select(id) {
-  if (pendingSend && id !== selected) {
-    notice(
-      "Retry or discard the pending message before switching conversations.",
-    );
-    return;
-  }
   stashDraft();
   stopFullHistory();
   if (id !== selected) closeFind();
@@ -2484,9 +2485,20 @@ async function uploadFiles(pending) {
     pending.uploadIDs.push(upload.id);
   }
 }
-async function sendMessage() {
-  if (sending) return;
+function clearPendingSend(pending) {
+  clearTimeout(pending.retryTimer);
+  pending.retryTimer = undefined;
+  if (pendingSends.get(pending.conversationID) === pending)
+    pendingSends.delete(pending.conversationID);
+}
+function clearPendingSends() {
+  for (const pending of [...pendingSends.values()]) clearPendingSend(pending);
+}
+async function sendMessage(conversationID = selected) {
+  let pendingSend = pendingSends.get(conversationID);
+  if (pendingSend?.sending) return;
   if (!pendingSend) {
+    if (conversationID !== selected) return;
     const text = $("text").value;
     try {
       validateAttachments(selectedFiles);
@@ -2504,11 +2516,20 @@ async function sendMessage() {
       requests: undefined,
       progress: "",
       error: "",
+      sending: false,
+      failures: 0,
+      retryTimer: undefined,
     };
+    pendingSends.set(conversationID, pendingSend);
   }
   const pending = pendingSend,
     sendGeneration = generation;
-  sending = true;
+  const current = () =>
+    sendGeneration === generation &&
+    pendingSends.get(conversationID) === pending;
+  clearTimeout(pending.retryTimer);
+  pending.retryTimer = undefined;
+  pending.sending = true;
   pending.error = "";
   invalidate("compose");
   try {
@@ -2534,24 +2555,42 @@ async function sendMessage() {
       });
       item.queued = true;
     }
-    if (sendGeneration !== generation || pendingSend !== pending) return;
-    pendingSend = undefined;
-    selectedFiles = [];
-    $("attachments").value = "";
-    $("text").value = "";
-    autogrow();
-    drafts.delete(selected);
-    draftFiles.delete(selected);
-    replyTargets.delete(selected);
-    thread(selected).scrollToBottom = true;
-    $("text").focus();
+    if (!current()) return;
+    clearPendingSend(pending);
+    drafts.delete(conversationID);
+    draftFiles.delete(conversationID);
+    replyTargets.delete(conversationID);
+    thread(conversationID).scrollToBottom = true;
+    if (conversationID === selected) {
+      selectedFiles = [];
+      $("attachments").value = "";
+      $("text").value = "";
+      autogrow();
+      if (!composing) $("text").focus();
+    }
   } catch (error) {
-    if (sendGeneration !== generation || pendingSend !== pending) return;
+    if (!current()) return;
     pending.progress = "";
-    pending.error = `${error.message} Retry keeps the same message and finished uploads.`;
+    pending.failures++;
+    const delay = sendRetryDelay(error, pending.failures);
+    if (delay) {
+      pending.error = `${error.message} Retrying in ${Math.round(delay / 1000)} s.`;
+      pending.retryTimer = setTimeout(() => {
+        pending.retryTimer = undefined;
+        if (current()) void sendMessage(conversationID);
+      }, delay);
+    } else {
+      pending.error = `${error.message} Retry keeps the same message and finished uploads.`;
+    }
+    if (conversationID !== selected && (!delay || pending.failures === 1))
+      notice(
+        `Message to ${displayName(conversations.get(conversationID))} not sent yet. ${
+          delay ? "Retrying in the background." : pending.error
+        }`,
+      );
   } finally {
     if (sendGeneration === generation) {
-      sending = false;
+      pending.sending = false;
       invalidate("compose", "thread");
     }
   }
@@ -2566,7 +2605,7 @@ function scheduleTyping() {
     providerState !== "connected" ||
     !$("send-typing").checked ||
     !typingContentPresent() ||
-    pendingSend
+    pendingSends.has(selected)
   )
     return;
   clearTimeout(typingTimer);
@@ -2752,7 +2791,8 @@ function clearPrivateUI() {
   notified.clear();
   receiptAttempts.clear();
   clearTimeout(receiptTimer);
-  pendingSend = pendingConversation = createdConversation = undefined;
+  clearPendingSends();
+  pendingConversation = createdConversation = undefined;
   selectedFiles = [];
   conversations.clear();
   conversationOrder = undefined;
@@ -2776,7 +2816,6 @@ function clearPrivateUI() {
   $("wa-qr").removeAttribute("src");
   $("wa-code").textContent = "";
   providerState = "offline";
-  sending = false;
   creatingConversation = false;
   importing = 0;
   clearTimeout(typingTimer);
@@ -3202,7 +3241,7 @@ $("open-settings").onclick = () => {
 $("open-history").onclick = () => openDialog("history-dialog");
 async function startPairing(reuseSignIn = false) {
   if (
-    sending ||
+    [...pendingSends.values()].some((pending) => pending.sending) ||
     creatingConversation ||
     [...pendingReactions.values()].some((pending) => pending.sending)
   ) {
@@ -3224,8 +3263,10 @@ async function startPairing(reuseSignIn = false) {
     if (actionGeneration !== generation) return;
     pairingState = state;
     const clearedLocalRetry =
-      !!pendingSend || !!pendingConversation || pendingReactions.size > 0;
-    pendingSend = undefined;
+      pendingSends.size > 0 ||
+      !!pendingConversation ||
+      pendingReactions.size > 0;
+    clearPendingSends();
     pendingConversation = undefined;
     pendingReactions.clear();
     $("recipients").disabled = false;
@@ -3313,10 +3354,6 @@ for (const copy of document.querySelectorAll("[data-copy]"))
     $("pairing-status").textContent = "Copied.";
   };
 $("new-conversation").onclick = () => {
-  if (pendingSend) {
-    notice("Retry or discard the pending message before starting a chat.");
-    return;
-  }
   stashDraft();
   composing = true;
   invalidate("thread", "newchat");
@@ -3489,9 +3526,10 @@ $("compose").onsubmit = (event) => {
 };
 $("retry-send").onclick = () => void sendMessage();
 $("discard-send").onclick = () => {
-  if (sending) return;
-  const uploaded = pendingSend?.uploadIDs.length || 0;
-  pendingSend = undefined;
+  const pendingSend = pendingSends.get(selected);
+  if (!pendingSend || pendingSend.sending) return;
+  const uploaded = pendingSend.uploadIDs.length;
+  clearPendingSend(pendingSend);
   notice(
     uploaded
       ? "Pending message discarded. Already uploaded bytes are no longer attached to a draft."
@@ -3525,7 +3563,7 @@ function attachPastedImages(images) {
   invalidate("compose");
 }
 $("text").onpaste = (event) => {
-  if (pendingSend) return;
+  if (pendingSends.has(selected)) return;
   const pasted = pastedImages(event.clipboardData);
   if (pasted.length) {
     event.preventDefault();
@@ -3539,7 +3577,8 @@ $("text").onpaste = (event) => {
   void clipboardImages(navigator.clipboard).then(attachPastedImages);
 };
 function cancelReply() {
-  if (pendingSend || !replyTargets.delete(selected)) return false;
+  if (pendingSends.has(selected) || !replyTargets.delete(selected))
+    return false;
   invalidate("compose");
   return true;
 }
@@ -3550,7 +3589,7 @@ $("cancel-reply").onclick = () => {
 $("text").onkeydown = (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
-    if (!pendingSend) void sendMessage();
+    if (!pendingSends.has(selected)) void sendMessage();
   } else if (event.key === "Escape" && cancelReply()) {
     event.preventDefault();
     event.stopPropagation();
