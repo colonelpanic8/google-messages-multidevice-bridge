@@ -217,6 +217,19 @@ func (b *Bridge) Queue(id string, req model.SendRequest) (model.Outbox, bool, er
 			return model.Outbox{}, false, ErrInvalid
 		}
 		target := req.ReplyTo
+		if len(req.Mentions) > 0 {
+			known := make(map[string]bool, len(conv.Participants))
+			for _, p := range conv.Participants {
+				if p.ID != "" {
+					known[p.ID] = true
+				}
+			}
+			for _, m := range req.Mentions {
+				if !known[m.ParticipantID] {
+					return model.Outbox{}, false, ErrInvalid
+				}
+			}
+		}
 		if req.Kind == "reaction" {
 			target = req.MessageID
 		}

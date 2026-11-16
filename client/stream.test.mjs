@@ -298,11 +298,23 @@ test("paging stops when cancelled or when a page repeats its cursor", async () =
 });
 
 test("WhatsApp attachments get separate durable requests", () => {
-  const requests = splitRequests("chat@lid", "caption", ["a", "b"], "whatsapp");
+  const requests = splitRequests(
+    "chat@lid",
+    "@Ada caption",
+    ["a", "b"],
+    "whatsapp",
+    "",
+    [{ participant_id: "15550100@s.whatsapp.net", name: "Ada" }],
+  );
   assert.equal(requests.length, 3);
   assert.deepEqual(
     requests.map((r) => r.body.attachment_ids),
     [["a"], ["b"], []],
   );
+  assert.equal(requests[0].body.mentions, undefined);
+  assert.equal(requests[1].body.mentions, undefined);
+  assert.deepEqual(requests[2].body.mentions, [
+    { participant_id: "15550100@s.whatsapp.net", name: "Ada" },
+  ]);
   assert.equal(new Set(requests.map((r) => r.key)).size, 3);
 });

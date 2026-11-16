@@ -355,3 +355,64 @@ func TestGroupNameOnlyRidesAlongWithAGroup(t *testing.T) {
 		})
 	}
 }
+
+func TestMessageMentionsValidationAndIdempotency(t *testing.T) {
+	b, server := fixture(t)
+	appendAPIRecord(t, b, "conversation", "c1", model.Conversation{
+		Schema: model.Schema,
+		ID:     "c1",
+		Participants: []model.Participant{
+			{ID: "me", Name: "Me", IsMe: true},
+			{ID: "p1", Name: "Ada Lovelace", Address: "+14155550100"},
+		},
+		Updated: time.Now().UTC(),
+	})
+
+	key := "mention-msg-key-0001"
+	body := `{"conversation_id":"c1","text":"Hello @Ada Lovelace","mentions":[{"participant_id":"p1","name":"Ada Lovelace"},{"participant_id":"p1"}]}`
+	status, first := featureRequest(t, server, "POST", "/v1/messages", "application/json", key, bytes.NewBufferString(body))
+	requireStatus(t, status, first, http.StatusAccepted)
+	var out model.Outbox
+	if err := json.Unmarshal(first, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Request.Mentions) != 1 || out.Request.Mentions[0].ParticipantID != "p1" || out.Request.Mentions[0].Name != "Ada Lovelace" {
+		t.Fatalf("unexpected normalized mentions: %+v", out.Request.Mentions)
+	}
+
+	// Idempotent retry with normalized equivalent mentions succeeds with 200;
+	// changing mentions under the same key conflicts with 409.
+	status, second := featureRequest(t, server, "POST", "/v1/messages", "application/json", key, bytes.NewBufferString(`{"conversation_id":"c1","text":"Hello @Ada Lovelace","mentions":[{"participant_id":"p1","name":"Ada Lovelace"}]}`))
+	requireStatus(t, status, second, http.StatusOK)
+	status, conflict := featureRequest(t, server, "POST", "/v1/messages", "application/json", key, bytes.NewBufferString(`{"conversation_id":"c1","text":"Hello @Ada Lovelace"}`))
+	requireStatus(t, status, conflict, http.StatusConflict)
+
+	for _, test := range []struct {
+		name, key, body string
+		want            int
+	}{
+		{
+			name: "unknown participant",
+			key:  "mention-msg-key-0002",
+			body: `{"conversation_id":"c1","text":"Hello","mentions":[{"participant_id":"stranger"}]}`,
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "empty participant id",
+			key:  "mention-msg-key-0003",
+			body: `{"conversation_id":"c1","text":"Hello","mentions":[{"participant_id":"  "}]}`,
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "conflicting duplicate names",
+			key:  "mention-msg-key-0004",
+			body: `{"conversation_id":"c1","text":"Hello","mentions":[{"participant_id":"p1","name":"Ada"},{"participant_id":"p1","name":"Grace"}]}`,
+			want: http.StatusBadRequest,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			status, resp := featureRequest(t, server, "POST", "/v1/messages", "application/json", test.key, bytes.NewBufferString(test.body))
+			requireStatus(t, status, resp, test.want)
+		})
+	}
+}

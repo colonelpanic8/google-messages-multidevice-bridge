@@ -352,3 +352,95 @@ func TestDisplayedMessageClearsUnreadAndHistoricalMessagesDoNotRaiseIt(t *testin
 		t.Fatal("history raised unread")
 	}
 }
+
+func TestMessageMentionsExtractionAndOutboxEcho(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "mentions.db"), bytes.Repeat([]byte{11}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UTC()
+	conv := model.Conversation{
+		Schema: model.Schema,
+		ID:     "c1",
+		Participants: []model.Participant{
+			{ID: "me", Name: "My Self", Address: "+15550000000", IsMe: true},
+			{ID: "p1", Name: "Ada Lovelace", Address: "+14155550100"},
+			{ID: "p2", Name: "Grace Hopper", Address: "+14155550101"},
+		},
+		Updated: now,
+	}
+	if _, err = s.Append(conversationEvent(t, conv)); err != nil {
+		t.Fatal(err)
+	}
+
+	incoming := model.Message{
+		Schema:         model.Schema,
+		ID:             "m1",
+		ConversationID: "c1",
+		SenderID:       "p1",
+		Time:           now.Add(time.Second),
+		Text:           "Hey @Grace Hopper and @My Self, check this out",
+		Direction:      "incoming",
+		Status:         "incoming_complete",
+	}
+	if _, err = s.Append(messageEvent(t, incoming)); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := s.Record("message", "m1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got model.Message
+	if err = json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Mentions) != 2 || got.Mentions[0].ParticipantID != "p2" || got.Mentions[0].Name != "Grace Hopper" || got.Mentions[1].ParticipantID != "me" || got.Mentions[1].Name != "My Self" {
+		t.Fatalf("unexpected extracted mentions: %+v", got.Mentions)
+	}
+
+	// Outbox echo with matching TransactionID preserves structured mentions, and
+	// subsequent status updates retain them until deletion.
+	req := model.SendRequest{
+		Kind:           "message",
+		ConversationID: "c1",
+		Text:           "Ping @Ada",
+		Mentions:       []model.Mention{{ParticipantID: "p1"}},
+	}
+	out, _, err := s.Enqueue("mention-outbox-01", "txn-mention-1", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.ClaimQueued(out.ID); err != nil {
+		t.Fatal(err)
+	}
+	echo := model.Message{
+		Schema:         model.Schema,
+		ID:             "m2",
+		ConversationID: "c1",
+		SenderID:       "me",
+		Time:           now.Add(2 * time.Second),
+		Text:           "Ping @Ada",
+		Direction:      "outgoing",
+		Status:         "outgoing_sending",
+		TransactionID:  "txn-mention-1",
+	}
+	if _, err = s.Append(messageEvent(t, echo)); err != nil {
+		t.Fatal(err)
+	}
+	echo.Status = "outgoing_complete"
+	echo.TransactionID = ""
+	if _, err = s.Append(messageEvent(t, echo)); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = s.Record("message", "m2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Mentions) != 1 || got.Mentions[0].ParticipantID != "p1" || got.Mentions[0].Name != "Ada Lovelace" {
+		t.Fatalf("outbox mention lost across status update: %+v", got.Mentions)
+	}
+}

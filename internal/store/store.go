@@ -191,6 +191,7 @@ func (s *Store) Apply(event Event, private map[string][]byte, watermark *uint64)
 			previous := tx.Bucket([]byte("latest")).Get([]byte(key))
 			fresh := previous == nil
 			previousStatus := ""
+			var previousMessage *model.Message
 			if event.Type == "message" && previous != nil {
 				plain, err := s.decrypt(previous, key)
 				if err != nil {
@@ -201,6 +202,12 @@ func (s *Store) Apply(event Event, private map[string][]byte, watermark *uint64)
 					return err
 				}
 				previousStatus = message.Status
+				previousMessage = &message
+			}
+			if event.Type == "message" {
+				if applied.Data, err = s.enrichMessage(tx, event.Data, previousMessage); err != nil {
+					return err
+				}
 			}
 			changed, err = s.appendTx(tx, applied)
 			if err != nil {
@@ -215,7 +222,7 @@ func (s *Store) Apply(event Event, private map[string][]byte, watermark *uint64)
 				}
 			}
 			if event.Type == "message" {
-				refreshed, err := s.refreshConversationTx(tx, event.Data, fresh && !event.Historical, previousStatus)
+				refreshed, err := s.refreshConversationTx(tx, applied.Data, fresh && !event.Historical, previousStatus)
 				if err != nil {
 					return err
 				}

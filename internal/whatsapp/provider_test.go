@@ -399,3 +399,72 @@ func TestGroupSubjectParticipantsAndKnownAddresses(t *testing.T) {
 		t.Fatal(c)
 	}
 }
+
+func TestMentionsRoundTripOnWhatsApp(t *testing.T) {
+	p := providerFixture(t)
+	ctx := context.Background()
+	lid := types.NewJID("123", types.HiddenUserServer)
+	pn := types.NewJID("14155550100", types.DefaultUserServer)
+	group := types.NewJID("12345-6789", types.GroupServer)
+	if err := p.Keys.PutLIDMapping(ctx, lid, pn); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Keys.PutContactName(ctx, pn, "Alice", "Alice Example"); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeClient{group: &types.GroupInfo{JID: group, GroupName: types.GroupName{Name: "Book club"}, Participants: []types.GroupParticipant{{JID: lid, LID: lid, PhoneNumber: pn}}}}
+	p.Client = f
+
+	// Incoming message with MentionedJID resolves to canonical LID and contact name.
+	incoming := &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: group, Sender: lid, IsGroup: true},
+			ID:            "INCOMING-MENTION",
+			Timestamp:     time.Now(),
+		},
+		Message: &waE2E.Message{
+			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text: proto.String("Hey @Alice Example"),
+				ContextInfo: &waE2E.ContextInfo{
+					MentionedJID: []string{pn.String(), lid.String()},
+				},
+			},
+		},
+	}
+	snaps, err := p.Message(ctx, incoming)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range snaps {
+		if err = persistFixture(p)(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gotIn := readMessage(t, p, messageID(group.String(), "INCOMING-MENTION"))
+	if len(gotIn.Mentions) != 1 || gotIn.Mentions[0].ParticipantID != lid.String() || gotIn.Mentions[0].Name != "Alice Example" {
+		t.Fatalf("unexpected incoming WhatsApp mentions: %+v", gotIn.Mentions)
+	}
+
+	// Outgoing message with Mentions populates ExtendedTextMessage.ContextInfo.MentionedJID.
+	req := model.SendRequest{
+		Kind:           "message",
+		ConversationID: group.String(),
+		Text:           "Hello @Alice Example",
+		Mentions:       []model.Mention{{ParticipantID: lid.String(), Name: "Alice Example"}},
+	}
+	out := model.Outbox{
+		ID:            "wa-mention-outbox-1",
+		TransactionID: "TXN-MENTION-1",
+		Request:       req,
+	}
+	if err = p.Send(ctx, provider.SendTarget{ConversationID: group.String()}, out); err != nil {
+		t.Fatal(err)
+	}
+	if f.sent.GetExtendedTextMessage() == nil || len(f.sent.GetExtendedTextMessage().GetContextInfo().GetMentionedJID()) != 1 || f.sent.GetExtendedTextMessage().GetContextInfo().GetMentionedJID()[0] != lid.String() {
+		t.Fatalf("expected MentionedJID [%s], got %+v", lid.String(), f.sent)
+	}
+	gotOut := readMessage(t, p, messageID(group.String(), f.sentID))
+	if len(gotOut.Mentions) != 1 || gotOut.Mentions[0].ParticipantID != lid.String() || gotOut.Mentions[0].Name != "Alice Example" {
+		t.Fatalf("unexpected outgoing WhatsApp mentions: %+v", gotOut.Mentions)
+	}
+}

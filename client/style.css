@@ -908,6 +908,22 @@ svg {
   color: inherit;
   text-decoration: underline;
 }
+.bubble .mention {
+  display: inline-block;
+  padding: 0 5px;
+  margin: 0 1px;
+  border-radius: 6px;
+  font-weight: 500;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+.bubble .mention.me {
+  font-weight: 600;
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+}
+.row.outgoing .bubble .mention {
+  background: color-mix(in srgb, currentColor 20%, transparent);
+}
 .bubble.media {
   padding: 0;
   background: transparent;
@@ -1354,8 +1370,21 @@ button.reaction:hover {
   font-weight: 600;
 }
 .compose {
+  position: relative;
   flex-shrink: 0;
   padding: 8px 16px 12px;
+}
+.mention-list {
+  position: absolute;
+  left: 64px;
+  right: 64px;
+  bottom: calc(100% + 4px);
+  max-height: 220px;
+  padding: 4px;
+  border-radius: 16px;
+  background: var(--surface-container);
+  box-shadow: var(--shadow);
+  z-index: 6;
 }
 .chips {
   display: flex;

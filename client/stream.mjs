@@ -25,14 +25,26 @@ export function idempotencyKey() {
   return key;
 }
 
-export function newRequest(conversationID, text, attachmentIDs = []) {
+export function newRequest(
+  conversationID,
+  text,
+  attachmentIDs = [],
+  mentions = [],
+) {
+  const body = {
+    conversation_id: conversationID,
+    text,
+    attachment_ids: [...attachmentIDs],
+  };
+  if (mentions.length) {
+    body.mentions = mentions.map((mention) => ({
+      participant_id: mention.participant_id,
+      ...(mention.name ? { name: mention.name } : {}),
+    }));
+  }
   return {
     key: idempotencyKey(),
-    body: {
-      conversation_id: conversationID,
-      text,
-      attachment_ids: [...attachmentIDs],
-    },
+    body,
   };
 }
 
@@ -44,6 +56,7 @@ export function splitRequests(
   attachmentIDs = [],
   network = "google-messages",
   replyTo = "",
+  mentions = [],
 ) {
   const requests = [];
   if (network === "whatsapp") {
@@ -51,7 +64,8 @@ export function splitRequests(
       requests.push(newRequest(conversationID, "", [id]));
   } else if (attachmentIDs.length)
     requests.push(newRequest(conversationID, "", attachmentIDs));
-  if (text.trim()) requests.push(newRequest(conversationID, text));
+  if (text.trim())
+    requests.push(newRequest(conversationID, text, [], mentions));
   if (replyTo && requests.length) requests[0].body.reply_to = replyTo;
   return requests;
 }

@@ -42,6 +42,9 @@ func unwrap(m *waE2E.Message) *waE2E.Message {
 	return &waE2E.Message{}
 }
 func contextInfo(m *waE2E.Message) *waE2E.ContextInfo {
+	if m == nil {
+		return nil
+	}
 	switch {
 	case m.ExtendedTextMessage != nil:
 		return m.ExtendedTextMessage.GetContextInfo()
@@ -88,6 +91,37 @@ func mediaSize(m *waE2E.Message) uint64 {
 		return m.StickerMessage.GetFileLength()
 	}
 	return 0
+}
+func (p *Provider) mentions(ctx context.Context, body *waE2E.Message) ([]model.Mention, error) {
+	raw := contextInfo(body).GetMentionedJID()
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]model.Mention, 0, len(raw))
+	seen := make(map[string]bool, len(raw))
+	for _, item := range raw {
+		j, err := types.ParseJID(item)
+		if err != nil || j.IsEmpty() {
+			continue
+		}
+		person, err := p.participant(ctx, j)
+		if err != nil {
+			return nil, err
+		}
+		if seen[person.ID] {
+			continue
+		}
+		seen[person.ID] = true
+		name := person.Name
+		if name == "" {
+			name = person.Address
+		}
+		out = append(out, model.Mention{ParticipantID: person.ID, Name: name})
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 func content(m *model.Message, body *waE2E.Message) map[string][]byte {
 	m.Text = displayText(body)
@@ -210,18 +244,26 @@ func (p *Provider) Message(ctx context.Context, e *events.Message) ([]provider.S
 		m.Deleted = true
 		m.Text = ""
 		m.Attachments = []model.Attachment{}
+		m.Mentions = nil
 	case body.ProtocolMessage != nil && body.ProtocolMessage.GetType() == waE2E.ProtocolMessage_MESSAGE_EDIT:
 		if !existing {
 			return nil, provider.ErrUnavailable
 		}
 		m = old
-		private = content(&m, unwrap(body.ProtocolMessage.EditedMessage))
+		edited := unwrap(body.ProtocolMessage.EditedMessage)
+		private = content(&m, edited)
+		if m.Mentions, err = p.mentions(ctx, edited); err != nil {
+			return nil, err
+		}
 	case e.IsEdit || e.Info.Edit == types.EditAttributeMessageEdit:
 		if !existing {
 			return nil, provider.ErrUnavailable
 		}
 		m = old
 		private = content(&m, body)
+		if m.Mentions, err = p.mentions(ctx, body); err != nil {
+			return nil, err
+		}
 	case body.ReactionMessage != nil:
 		if !existing {
 			return nil, provider.ErrUnavailable
@@ -266,6 +308,9 @@ func (p *Provider) Message(ctx context.Context, e *events.Message) ([]provider.S
 		private = content(&m, body)
 		if quoted := contextInfo(body).GetStanzaID(); quoted != "" {
 			m.ReplyTo = messageID(chat.String(), quoted)
+		}
+		if m.Mentions, err = p.mentions(ctx, body); err != nil {
+			return nil, err
 		}
 	}
 	if !mutation && m.Text == "" && len(m.Attachments) == 0 {

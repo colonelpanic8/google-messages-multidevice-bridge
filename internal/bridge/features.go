@@ -27,7 +27,7 @@ func validateRequest(req *model.SendRequest) error {
 		req.Kind = ""
 	}
 	if req.Kind == "conversation" {
-		if req.ConversationID != "" || req.Text != "" || len(req.AttachmentIDs) > 0 || req.MessageID != "" || req.Emoji != "" || req.Remove || req.ReplyTo != "" || len(req.Recipients) < 1 || len(req.Recipients) > 20 {
+		if req.ConversationID != "" || req.Text != "" || len(req.AttachmentIDs) > 0 || len(req.Mentions) > 0 || req.MessageID != "" || req.Emoji != "" || req.Remove || req.ReplyTo != "" || len(req.Recipients) < 1 || len(req.Recipients) > 20 {
 			return ErrInvalid
 		}
 		req.GroupName = strings.TrimSpace(req.GroupName)
@@ -49,17 +49,20 @@ func validateRequest(req *model.SendRequest) error {
 		return ErrInvalid
 	}
 	if req.Kind == "reaction" {
-		if req.MessageID == "" || len(req.MessageID) > 256 || strings.TrimSpace(req.Emoji) == "" || len(req.Emoji) > 64 || !utf8.ValidString(req.Emoji) || req.Text != "" || len(req.AttachmentIDs) > 0 || req.ReplyTo != "" {
+		if req.MessageID == "" || len(req.MessageID) > 256 || strings.TrimSpace(req.Emoji) == "" || len(req.Emoji) > 64 || !utf8.ValidString(req.Emoji) || req.Text != "" || len(req.AttachmentIDs) > 0 || req.ReplyTo != "" || len(req.Mentions) > 0 {
 			return ErrInvalid
 		}
 		return nil
 	}
-	if req.Kind != "" || req.MessageID != "" || req.Emoji != "" || req.Remove || len(req.ReplyTo) > 256 || len(req.Text) > 16000 || !utf8.ValidString(req.Text) || len(req.AttachmentIDs) > 10 {
+	if req.Kind != "" || req.MessageID != "" || req.Emoji != "" || req.Remove || len(req.ReplyTo) > 256 || len(req.Text) > 16000 || !utf8.ValidString(req.Text) || len(req.AttachmentIDs) > 10 || len(req.Mentions) > 50 {
 		return ErrInvalid
 	}
 	// The phone drops media when text rides in the same send, so a message
 	// carries either text or attachments; clients queue a caption separately.
 	if (strings.TrimSpace(req.Text) == "") == (len(req.AttachmentIDs) == 0) {
+		return ErrInvalid
+	}
+	if len(req.Mentions) > 0 && len(req.AttachmentIDs) > 0 {
 		return ErrInvalid
 	}
 	seen := map[string]bool{}
@@ -68,6 +71,30 @@ func validateRequest(req *model.SendRequest) error {
 			return ErrInvalid
 		}
 		seen[id] = true
+	}
+	if len(req.Mentions) > 0 {
+		mentions := make([]model.Mention, 0, len(req.Mentions))
+		seenMention := map[string]int{}
+		for _, m := range req.Mentions {
+			id := strings.TrimSpace(m.ParticipantID)
+			name := strings.TrimSpace(m.Name)
+			if id == "" || len(id) > 256 || !utf8.ValidString(id) || strings.ContainsAny(id, "\r\n\x00") || len(name) > 256 || !utf8.ValidString(name) || strings.ContainsAny(name, "\r\n\x00") {
+				return ErrInvalid
+			}
+			if idx, exists := seenMention[id]; exists {
+				prev := mentions[idx].Name
+				if prev != "" && name != "" && prev != name {
+					return ErrInvalid
+				}
+				if prev == "" && name != "" {
+					mentions[idx].Name = name
+				}
+				continue
+			}
+			seenMention[id] = len(mentions)
+			mentions = append(mentions, model.Mention{ParticipantID: id, Name: name})
+		}
+		req.Mentions = mentions
 	}
 	return nil
 }

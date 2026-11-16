@@ -77,6 +77,10 @@ type Reaction struct {
 	Emoji        string   `json:"emoji"`
 	Participants []string `json:"participants"`
 }
+type Mention struct {
+	ParticipantID string `json:"participant_id"`
+	Name          string `json:"name,omitempty"`
+}
 type Message struct {
 	Schema         int          `json:"schema"`
 	ID             string       `json:"id"`
@@ -93,6 +97,7 @@ type Message struct {
 	ReplyTo        string       `json:"reply_to,omitempty"`
 	Attachments    []Attachment `json:"attachments"`
 	Reactions      []Reaction   `json:"reactions"`
+	Mentions       []Mention    `json:"mentions,omitempty"`
 }
 type Typing struct {
 	Schema         int    `json:"schema"`
@@ -109,16 +114,17 @@ type Upload struct {
 	Created time.Time `json:"created"`
 }
 type SendRequest struct {
-	Kind           string   `json:"kind,omitempty"`
-	Recipients     []string `json:"recipients,omitempty"`
-	GroupName      string   `json:"group_name,omitempty"`
-	AttachmentIDs  []string `json:"attachment_ids,omitempty"`
-	MessageID      string   `json:"message_id,omitempty"`
-	Emoji          string   `json:"emoji,omitempty"`
-	Remove         bool     `json:"remove,omitempty"`
-	ReplyTo        string   `json:"reply_to,omitempty"`
-	ConversationID string   `json:"conversation_id"`
-	Text           string   `json:"text"`
+	Kind           string    `json:"kind,omitempty"`
+	Recipients     []string  `json:"recipients,omitempty"`
+	GroupName      string    `json:"group_name,omitempty"`
+	AttachmentIDs  []string  `json:"attachment_ids,omitempty"`
+	MessageID      string    `json:"message_id,omitempty"`
+	Emoji          string    `json:"emoji,omitempty"`
+	Remove         bool      `json:"remove,omitempty"`
+	ReplyTo        string    `json:"reply_to,omitempty"`
+	ConversationID string    `json:"conversation_id"`
+	Text           string    `json:"text"`
+	Mentions       []Mention `json:"mentions,omitempty"`
 }
 
 // PreviewLimit bounds a derived conversation preview so a long message does not
@@ -147,7 +153,7 @@ func (m Message) PreviewText() string {
 }
 
 func (r SendRequest) Equal(other SendRequest) bool {
-	return r.Kind == other.Kind && r.GroupName == other.GroupName && r.ConversationID == other.ConversationID && r.Text == other.Text && r.MessageID == other.MessageID && r.Emoji == other.Emoji && r.Remove == other.Remove && r.ReplyTo == other.ReplyTo && slices.Equal(r.Recipients, other.Recipients) && slices.Equal(r.AttachmentIDs, other.AttachmentIDs)
+	return r.Kind == other.Kind && r.GroupName == other.GroupName && r.ConversationID == other.ConversationID && r.Text == other.Text && r.MessageID == other.MessageID && r.Emoji == other.Emoji && r.Remove == other.Remove && r.ReplyTo == other.ReplyTo && slices.Equal(r.Recipients, other.Recipients) && slices.Equal(r.AttachmentIDs, other.AttachmentIDs) && slices.Equal(r.Mentions, other.Mentions)
 }
 
 type Outbox struct {

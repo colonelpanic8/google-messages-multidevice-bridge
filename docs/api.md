@@ -228,7 +228,8 @@ returns 409. Reusing a different key authorizes a distinct operation.
   "conversation_id": "stored-conversation-id",
   "text": "Message text; empty when attachments are present",
   "attachment_ids": ["opaque-upload-id"],
-  "reply_to": "stored-message-id"
+  "reply_to": "stored-message-id",
+  "mentions": [{ "participant_id": "participant-id", "name": "Display Name" }]
 }
 ```
 
@@ -241,6 +242,16 @@ its own key. The web client does this automatically.
 `reply_to` is optional and names a current, undeleted message in the same
 conversation; the send then quotes it. Stored messages carry `reply_to` when they
 quote another message, whether or not that message is stored locally.
+
+`mentions` is optional and allowed only on text messages (up to 50 entries). Each
+entry requires a `participant_id` belonging to the target conversation and an optional
+display `name` (up to 256 bytes, no control characters); duplicates are collapsed by
+`participant_id` and conflicting names for the same `participant_id` are rejected with
+400. On WhatsApp, mentions are transmitted in `ExtendedTextMessage.ContextInfo.MentionedJID`
+and extracted from incoming and edited messages. On Google Messages (whose paired-web
+`SendMessageRequest` protobuf has no structured mention range field), mentions are
+preserved across the outbox `TransactionID` echo and resolved against conversation
+participants on stored message snapshots.
 
 ### Conversation creation
 

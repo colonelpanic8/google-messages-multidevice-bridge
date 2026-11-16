@@ -408,6 +408,26 @@ func (p *Provider) Send(ctx context.Context, t provider.SendTarget, o model.Outb
 		return provider.ErrRejected
 	}
 	m := &waE2E.Message{Conversation: proto.String(o.Request.Text)}
+	if len(o.Request.Mentions) > 0 {
+		mentioned := make([]string, 0, len(o.Request.Mentions))
+		for _, mention := range o.Request.Mentions {
+			mj, err := types.ParseJID(mention.ParticipantID)
+			if err != nil || mj.IsEmpty() {
+				return provider.ErrRejected
+			}
+			canonical, err := p.Canonical(ctx, mj)
+			if err != nil {
+				return err
+			}
+			mentioned = append(mentioned, canonical.String())
+		}
+		m = &waE2E.Message{
+			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text:        proto.String(o.Request.Text),
+				ContextInfo: &waE2E.ContextInfo{MentionedJID: mentioned},
+			},
+		}
+	}
 	// One outbox attempt is one WhatsApp stanza. Albums must be queued separately.
 	if len(t.Media) > 1 {
 		return provider.ErrRejected
@@ -423,6 +443,9 @@ func (p *Provider) Send(ctx context.Context, t provider.SendTarget, o model.Outb
 		if err != nil {
 			return err
 		}
+		if existing := contextInfo(m); existing != nil {
+			quote.MentionedJID = existing.MentionedJID
+		}
 		if m.Conversation != nil {
 			m = &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: m.Conversation}}
 		}
@@ -436,7 +459,7 @@ func (p *Provider) Send(ctx context.Context, t provider.SendTarget, o model.Outb
 	if err != nil {
 		return Classify(err)
 	}
-	message := model.Message{Schema: 1, ID: messageID(j.String(), o.TransactionID), ConversationID: j.String(), SenderID: p.Device.GetLID().ToNonAD().String(), Time: response.Timestamp.UTC(), Direction: "outgoing", Status: "server_ack", ReplyTo: o.Request.ReplyTo, Reactions: []model.Reaction{}}
+	message := model.Message{Schema: 1, ID: messageID(j.String(), o.TransactionID), ConversationID: j.String(), SenderID: p.Device.GetLID().ToNonAD().String(), Time: response.Timestamp.UTC(), Direction: "outgoing", Status: "server_ack", ReplyTo: o.Request.ReplyTo, Reactions: []model.Reaction{}, Mentions: append([]model.Mention(nil), o.Request.Mentions...)}
 	private := content(&message, m)
 	snap, err := snapshot("message", message.ID, message)
 	if err != nil {

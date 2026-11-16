@@ -14,13 +14,17 @@ import {
   highlightRuns,
   importStatus,
   initials,
+  insertMention,
   layoutThread,
   linkify,
   listTime,
   matchContacts,
+  matchMentions,
+  mentionQuery,
   participantList,
   previewLine,
   queuePosition,
+  resolveMentions,
   typedRecipient,
   reactedByMe,
   reactionNames,
@@ -533,4 +537,86 @@ test("unanswered sends retry with backoff while refusals wait for the user", () 
   assert.equal(sendRetryDelay({ status: 400 }, 1), 0);
   assert.equal(sendRetryDelay({ status: 401 }, 1), 0);
   assert.equal(sendRetryDelay({ status: 409 }, 1), 0);
+});
+
+test("mentionQuery detects active @triggers and ignores email addresses", () => {
+  assert.deepEqual(mentionQuery("@ad", 3), {
+    start: 0,
+    end: 3,
+    query: "ad",
+  });
+  assert.deepEqual(mentionQuery("hey @Ada Lo", 11), {
+    start: 4,
+    end: 11,
+    query: "Ada Lo",
+  });
+  assert.equal(mentionQuery("user@example.com", 16), null);
+  assert.equal(mentionQuery("hey @ada\nnext", 13), null);
+  assert.equal(mentionQuery("hey @ ada", 9), null);
+});
+
+test("matchMentions, insertMention, resolveMentions, and linkify mentions", () => {
+  const conversation = {
+    id: "g",
+    participants: [
+      { id: "me", name: "My Self", address: "+15550000000", is_me: true },
+      { id: "p1", name: "Ada Lovelace", address: "+14155550100" },
+      { id: "p2", name: "Grace Hopper", address: "+14155550101" },
+    ],
+  };
+
+  assert.deepEqual(
+    matchMentions(conversation, "hop").map((c) => c.id),
+    ["p2"],
+  );
+  assert.deepEqual(
+    matchMentions(conversation, "").map((c) => c.id),
+    ["p1", "p2"],
+  );
+
+  const inserted = insertMention(
+    "Hello @ad",
+    { start: 6, end: 9 },
+    conversation.participants[1],
+  );
+  assert.equal(inserted.text, "Hello @Ada Lovelace ");
+  assert.equal(inserted.cursor, 20);
+  assert.deepEqual(inserted.mention, {
+    participant_id: "p1",
+    name: "Ada Lovelace",
+  });
+
+  assert.deepEqual(
+    resolveMentions("Hello @Ada Lovelace and @Grace Hopper!", conversation, [
+      inserted.mention,
+    ]),
+    [
+      { participant_id: "p1", name: "Ada Lovelace" },
+      { participant_id: "p2", name: "Grace Hopper" },
+    ],
+  );
+
+  assert.deepEqual(
+    linkify("Ping @Ada Lovelace and @15550000000 at https://example.com", {
+      conversation,
+      mentions: [
+        { participant_id: "p1", name: "Ada Lovelace" },
+        { participant_id: "me", name: "My Self" },
+      ],
+    }),
+    [
+      { text: "Ping " },
+      {
+        text: "@Ada Lovelace",
+        mention: { participant_id: "p1", name: "Ada Lovelace", is_me: false },
+      },
+      { text: " and " },
+      {
+        text: "@My Self",
+        mention: { participant_id: "me", name: "My Self", is_me: true },
+      },
+      { text: " at " },
+      { text: "https://example.com", href: "https://example.com" },
+    ],
+  );
 });

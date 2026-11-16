@@ -374,13 +374,287 @@ export function layoutThread(messages, outbox, options = {}) {
 }
 
 const URL_PATTERN = /\b(?:https?:\/\/|www\.)[^\s<>"']+[^\s<>"'.,;:!?)\]]/gi;
+const WORD_CHAR = /[\p{L}\p{N}_]/u;
 
-export function linkify(text) {
+// Google repeats the owner across SIM legs, so every self participant id counts
+// as "you" when attributing a reaction or highlighting a mention.
+function selfParticipantIDs(conversation) {
+  const participants = conversation?.participants || [];
+  const addresses = new Set(
+    participants
+      .filter((participant) => participant.is_me && participant.address)
+      .map((participant) => participant.address),
+  );
+  return new Set(
+    participants
+      .filter(
+        (participant) =>
+          participant.is_me ||
+          (participant.address && addresses.has(participant.address)),
+      )
+      .map((participant) => participant.id),
+  );
+}
+
+export function mentionLabel(participant) {
+  return (
+    participant?.name ||
+    participant?.address ||
+    participant?.id ||
+    ""
+  ).trim();
+}
+
+export function mentionCandidates(conversation) {
+  if (!conversation) return [];
+  return others(conversation)
+    .map((participant) => ({
+      id: participant.id,
+      name: mentionLabel(participant),
+      address: (participant.address || "").trim(),
+      participant,
+    }))
+    .filter((candidate) => candidate.id && candidate.name);
+}
+
+// Active @mention token immediately preceding the cursor, or null when the
+// cursor is not inside a mention trigger.
+export function mentionQuery(text, cursor = (text || "").length) {
+  const value = String(text || "");
+  const pos = Math.max(0, Math.min(cursor, value.length));
+  const before = value.slice(0, pos);
+  const at = before.lastIndexOf("@");
+  if (at < 0) return null;
+  if (at > 0 && WORD_CHAR.test(before[at - 1])) return null;
+  const query = before.slice(at + 1);
+  if (query.length > 64 || /[\r\n]/.test(query) || /^\s/.test(query))
+    return null;
+  return { start: at, end: pos, query };
+}
+
+export function matchMentions(conversation, query = "") {
+  const needle = String(query || "")
+    .trim()
+    .toLowerCase();
+  const candidates = mentionCandidates(conversation);
+  if (!needle) {
+    return [...candidates].sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+    );
+  }
+  const scored = [];
+  for (const candidate of candidates) {
+    const nameLower = candidate.name.toLowerCase();
+    const addrLower = candidate.address.toLowerCase();
+    const words = nameLower.split(/\s+/);
+    let rank = 0;
+    if (nameLower.startsWith(needle)) rank = 3;
+    else if (words.some((word) => word.startsWith(needle))) rank = 2;
+    else if (nameLower.includes(needle) || addrLower.includes(needle)) rank = 1;
+    if (rank > 0) scored.push({ candidate, rank });
+  }
+  return scored
+    .sort(
+      (a, b) =>
+        b.rank - a.rank ||
+        a.candidate.name.localeCompare(b.candidate.name, undefined, {
+          sensitivity: "base",
+        }),
+    )
+    .map((entry) => entry.candidate);
+}
+
+export function insertMention(text, range, participant) {
+  const value = String(text || "");
+  const start = Math.max(
+    0,
+    Math.min(range?.start ?? value.length, value.length),
+  );
+  const end = Math.max(start, Math.min(range?.end ?? start, value.length));
+  const label = mentionLabel(participant);
+  const after = value.slice(end);
+  const token = `@${label}`;
+  const spacer = after.startsWith(" ") ? "" : " ";
+  const nextText = `${value.slice(0, start)}${token}${spacer}${after}`;
+  const cursor = start + token.length + 1;
+  return {
+    text: nextText,
+    cursor: Math.min(cursor, nextText.length),
+    mention: {
+      participant_id: participant.id,
+      name: label,
+    },
+  };
+}
+
+function bareDigits(value) {
+  return String(value || "")
+    .split("@")[0]
+    .replace(/\D+/g, "");
+}
+
+function mentionPatterns(
+  conversation,
+  mentions = [],
+  { includeSelf = true } = {},
+) {
+  const self = selfParticipantIDs(conversation);
+  const byID = new Map(
+    (conversation?.participants || []).map((participant) => [
+      participant.id,
+      participant,
+    ]),
+  );
+  const entries = [];
+  const addEntry = (token, participantID, display, isMe) => {
+    const clean = String(token || "").trim();
+    if (!clean || !participantID) return;
+    entries.push({
+      token: clean,
+      tokenLower: clean.toLowerCase(),
+      participant_id: participantID,
+      name: display || clean,
+      is_me: Boolean(isMe),
+    });
+  };
+
+  for (const mention of mentions || []) {
+    const id = mention?.participant_id || "";
+    if (!id) continue;
+    const participant = byID.get(id);
+    const display = (
+      mention.name ||
+      mentionLabel(participant) ||
+      id.split("@")[0]
+    ).trim();
+    const isMe = self.has(id) || Boolean(participant?.is_me);
+    addEntry(display, id, display, isMe);
+    if (participant) {
+      const pName = mentionLabel(participant);
+      if (pName && pName !== display) addEntry(pName, id, display, isMe);
+      const digits = bareDigits(participant.address || id);
+      if (digits) addEntry(digits, id, display, isMe);
+      if (participant.address)
+        addEntry(participant.address.trim(), id, display, isMe);
+    } else {
+      const digits = bareDigits(id);
+      if (digits) addEntry(digits, id, display, isMe);
+    }
+  }
+
+  const participants = includeSelf
+    ? conversation?.participants || []
+    : others(conversation || {});
+  for (const participant of participants) {
+    if (!participant?.id) continue;
+    const display = mentionLabel(participant);
+    if (!display) continue;
+    const isMe = self.has(participant.id) || Boolean(participant.is_me);
+    addEntry(display, participant.id, display, isMe);
+  }
+
+  const seen = new Set();
+  return entries
+    .filter((entry) => {
+      const key = `${entry.tokenLower}\0${entry.participant_id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => b.token.length - a.token.length);
+}
+
+function findNextMention(text, fromIndex, patterns) {
+  const lower = text.toLowerCase();
+  let at = text.indexOf("@", fromIndex);
+  while (at >= 0) {
+    if (at === 0 || !WORD_CHAR.test(text[at - 1])) {
+      for (const pattern of patterns) {
+        const end = at + 1 + pattern.token.length;
+        if (
+          end <= text.length &&
+          lower.slice(at + 1, end) === pattern.tokenLower &&
+          (end === text.length || !WORD_CHAR.test(text[end]))
+        ) {
+          return { start: at, end, pattern };
+        }
+      }
+    }
+    at = text.indexOf("@", at + 1);
+  }
+  return null;
+}
+
+export function resolveMentions(text, conversation, drafted = []) {
+  const value = String(text || "");
+  if (!value.includes("@")) return [];
+  const patterns = mentionPatterns(conversation, drafted, {
+    includeSelf: false,
+  });
+  if (!patterns.length) return [];
+  const resolved = [];
+  const seen = new Set();
+  let index = 0;
+  while (index < value.length) {
+    const match = findNextMention(value, index, patterns);
+    if (!match) break;
+    const { pattern } = match;
+    if (!seen.has(pattern.participant_id)) {
+      seen.add(pattern.participant_id);
+      resolved.push({
+        participant_id: pattern.participant_id,
+        name: pattern.name,
+      });
+    }
+    index = match.end;
+  }
+  return resolved;
+}
+
+function segmentMentions(text, patterns) {
+  if (!patterns.length || !text.includes("@")) return [{ text }];
   const segments = [];
   let index = 0;
-  for (const match of (text || "").matchAll(URL_PATTERN)) {
+  while (index < text.length) {
+    const match = findNextMention(text, index, patterns);
+    if (!match) break;
+    if (match.start > index) {
+      segments.push({ text: text.slice(index, match.start) });
+    }
+    const { pattern } = match;
+    segments.push({
+      text: `@${pattern.name}`,
+      mention: {
+        participant_id: pattern.participant_id,
+        name: pattern.name,
+        is_me: pattern.is_me,
+      },
+    });
+    index = match.end;
+  }
+  if (index < text.length) segments.push({ text: text.slice(index) });
+  return segments;
+}
+
+export function linkify(text, options = {}) {
+  const source = String(text || "");
+  const patterns =
+    options?.mentions?.length || options?.conversation
+      ? mentionPatterns(options.conversation, options.mentions)
+      : [];
+  const pushText = (segments, chunk) => {
+    if (!chunk) return;
+    if (!patterns.length) {
+      segments.push({ text: chunk });
+      return;
+    }
+    segments.push(...segmentMentions(chunk, patterns));
+  };
+  const segments = [];
+  let index = 0;
+  for (const match of source.matchAll(URL_PATTERN)) {
     if (match.index > index)
-      segments.push({ text: text.slice(index, match.index) });
+      pushText(segments, source.slice(index, match.index));
     const url = match[0];
     segments.push({
       text: url,
@@ -388,7 +662,7 @@ export function linkify(text) {
     });
     index = match.index + url.length;
   }
-  if (index < (text || "").length) segments.push({ text: text.slice(index) });
+  if (index < source.length) pushText(segments, source.slice(index));
   return segments;
 }
 
@@ -450,26 +724,6 @@ export function summarizeHistory(jobs) {
     else summary.active++;
   }
   return summary;
-}
-
-// Google repeats the owner across SIM legs, so every self participant id counts
-// as "you" when attributing a reaction.
-function selfParticipantIDs(conversation) {
-  const participants = conversation?.participants || [];
-  const addresses = new Set(
-    participants
-      .filter((participant) => participant.is_me && participant.address)
-      .map((participant) => participant.address),
-  );
-  return new Set(
-    participants
-      .filter(
-        (participant) =>
-          participant.is_me ||
-          (participant.address && addresses.has(participant.address)),
-      )
-      .map((participant) => participant.id),
-  );
 }
 
 export function reactedByMe(reaction, conversation) {

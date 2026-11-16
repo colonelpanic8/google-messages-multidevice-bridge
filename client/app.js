@@ -27,11 +27,14 @@ import {
   highlightRuns,
   importStatus,
   initials,
+  insertMention,
   isGroup,
   layoutThread,
   linkify,
   listTime,
   matchContacts,
+  matchMentions,
+  mentionQuery,
   messageMatches,
   messageStatus,
   others,
@@ -45,6 +48,7 @@ import {
   queuePosition,
   reactedByMe,
   reactionTitle,
+  resolveMentions,
   searchMatches,
   sendRetryDelay,
   slidingRows,
@@ -90,6 +94,7 @@ let conversationCursor = 0,
 const drafts = new Map();
 const draftFiles = new Map();
 const replyTargets = new Map();
+const draftMentions = new Map();
 const pendingReactions = new Map();
 // Messages the bridge has not accepted yet, by conversation. Each keeps its
 // finished uploads and idempotency keys, so retrying never duplicates a send.
@@ -99,7 +104,10 @@ let adopting = false,
   creatingConversation = false,
   pendingConversation,
   createdConversation,
-  selectedFiles = [];
+  selectedFiles = [],
+  selectedMentions = [],
+  mentionActive = -1,
+  mentionDismissedAt = -1;
 let status = {},
   providerState = "offline",
   currentSessionEpoch = 0,
@@ -825,20 +833,32 @@ function appendHighlighted(parent, text, query) {
   for (const run of highlightRuns(text, query))
     parent.append(run.match ? el("mark", run.text) : run.text);
 }
-function textBubble(text, extraClass = "", highlight = "") {
+function textBubble(text, extraClass = "", options = {}) {
+  const opts = typeof options === "string" ? { highlight: options } : options;
+  const highlight = opts.highlight || "";
   const bubble = el("div", undefined, `bubble ${extraClass}`.trim());
   const paragraph = el("p");
-  for (const segment of linkify(text)) {
-    if (!segment.href) {
-      appendHighlighted(paragraph, segment.text, highlight);
+  for (const segment of linkify(text, opts)) {
+    if (segment.href) {
+      const link = el("a");
+      appendHighlighted(link, segment.text, highlight);
+      link.href = segment.href;
+      link.target = "_blank";
+      link.rel = "noreferrer noopener";
+      paragraph.append(link);
       continue;
     }
-    const link = el("a");
-    appendHighlighted(link, segment.text, highlight);
-    link.href = segment.href;
-    link.target = "_blank";
-    link.rel = "noreferrer noopener";
-    paragraph.append(link);
+    if (segment.mention) {
+      const span = el(
+        "span",
+        undefined,
+        `mention${segment.mention.is_me ? " me" : ""}`,
+      );
+      appendHighlighted(span, segment.text, highlight);
+      paragraph.append(span);
+      continue;
+    }
+    appendHighlighted(paragraph, segment.text, highlight);
   }
   bubble.append(paragraph);
   return bubble;
@@ -1016,7 +1036,12 @@ function buildMessageRow(row, conversation) {
     const bubble = textBubble(
       message.text || (attachments.length ? "" : "Message content unavailable"),
       bubbleClass,
-      highlight,
+      {
+        highlight,
+        ...(message.text
+          ? { mentions: message.mentions, conversation }
+          : undefined),
+      },
     );
     if (message.subject) {
       const subject = el("strong", undefined, "subject");
@@ -1077,7 +1102,7 @@ function buildMessageRow(row, conversation) {
     node.append(el("div", meta.join(" · "), `meta${failed ? " error" : ""}`));
   return node;
 }
-function buildOutboxRow(row) {
+function buildOutboxRow(row, conversation) {
   const item = row.item;
   const kind = item.request?.kind;
   const status = outboxStatus(item, providerState === "connected");
@@ -1088,14 +1113,20 @@ function buildOutboxRow(row) {
       row.last ? " last" : ""
     }`,
   );
-  const conversation = conversations.get(item.request?.conversation_id);
   if (item.request?.reply_to && conversation)
     node.append(quoteNode(item.request.reply_to, conversation));
   const line = el("div", undefined, "bubble-line");
   const bubbles = el("div", undefined, "bubbles");
   const text = outboxText(item);
   const count = outboxAttachmentCount(item);
-  if (text || !count) bubbles.append(textBubble(text || "Message"));
+  if (text || !count)
+    bubbles.append(
+      textBubble(
+        text || "Message",
+        "",
+        text ? { mentions: item.request?.mentions, conversation } : undefined,
+      ),
+    );
   if (count)
     bubbles.append(textBubble(`${count} attachment${count === 1 ? "" : "s"}`));
   for (const bubble of bubbles.children)
@@ -1249,6 +1280,7 @@ function renderThread() {
               currentSessionEpoch,
               providerState,
               quoteSignature(row.item?.request?.reply_to, conversation),
+              context,
             ]);
     let cached = threadNodes.get(row.key);
     const fresh = !cached;
@@ -1262,7 +1294,7 @@ function renderThread() {
           ? el("div", row.label, "divider")
           : row.kind === "message"
             ? buildMessageRow(row, conversation)
-            : buildOutboxRow(row);
+            : buildOutboxRow(row, conversation);
       if (cached) {
         unobservePreviews(cached.node);
         cached.node.replaceWith(node);
@@ -1625,6 +1657,89 @@ function renderSelectedAttachments() {
     );
   }
 }
+function closeMentionSuggestions() {
+  mentionActive = -1;
+  const list = $("mention-suggestions");
+  if (!list.hidden) {
+    list.hidden = true;
+    list.replaceChildren();
+  }
+}
+
+function activeMentionSuggestions() {
+  const conversation = conversations.get(selected);
+  if (!conversation || conversation.read_only || pendingSends.has(selected))
+    return null;
+  const text = $("text").value;
+  if (!text.includes("@")) return null;
+  const cursor = $("text").selectionStart ?? text.length;
+  const range = mentionQuery(text, cursor);
+  if (!range || range.start === mentionDismissedAt) return null;
+  const matches = matchMentions(conversation, range.query);
+  if (!matches.length) return null;
+  return { range, matches };
+}
+
+function chooseMention(candidate) {
+  const state = activeMentionSuggestions();
+  if (!state) return false;
+  const inserted = insertMention(
+    $("text").value,
+    state.range,
+    candidate.participant || candidate,
+  );
+  $("text").value = inserted.text;
+  $("text").setSelectionRange(inserted.cursor, inserted.cursor);
+  if (
+    !selectedMentions.some(
+      (item) => item.participant_id === inserted.mention.participant_id,
+    )
+  ) {
+    selectedMentions = [...selectedMentions, inserted.mention];
+  }
+  if (selected) {
+    drafts.set(selected, inserted.text);
+    draftMentions.set(selected, selectedMentions);
+  }
+  mentionDismissedAt = -1;
+  closeMentionSuggestions();
+  autogrow();
+  scheduleTyping();
+  $("text").focus();
+  return true;
+}
+
+function renderMentionSuggestions() {
+  const list = $("mention-suggestions");
+  if (!$("text").value.includes("@") && list.hidden) return;
+  const state = activeMentionSuggestions();
+  if (!state) {
+    closeMentionSuggestions();
+    return;
+  }
+  if (mentionActive < 0 || mentionActive >= state.matches.length)
+    mentionActive = 0;
+  list.replaceChildren();
+  for (const [index, candidate] of state.matches.entries()) {
+    const row = button("", "contact-row", () => chooseMention(candidate));
+    row.onmousedown = (event) => event.preventDefault();
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", String(index === mentionActive));
+    if (index === mentionActive) row.classList.add("active");
+    const avatar = el("span", initials(candidate.name), "avatar");
+    avatar.style.background = avatarColor(candidate.name);
+    if (!avatar.textContent) avatar.append(icon("person"));
+    row.append(avatar);
+    const text = el("span", undefined, "contact-text");
+    text.append(el("span", candidate.name, "name"));
+    if (candidate.address && candidate.address !== candidate.name)
+      text.append(el("span", candidate.address, "detail"));
+    row.append(text);
+    list.append(row);
+  }
+  list.hidden = false;
+}
+
 function renderCompose() {
   const conversation = conversations.get(selected);
   if (!conversation) return;
@@ -1671,6 +1786,7 @@ function renderCompose() {
           ? "Phone connection failed. Messages queue until it reconnects."
           : "Phone offline. Messages queue until it connects.";
   renderSelectedAttachments();
+  renderMentionSuggestions();
 }
 
 // --- Status, banner, settings ----------------------------------------------
@@ -2193,6 +2309,7 @@ function stashDraft() {
   if (!selected) return;
   drafts.set(selected, $("text").value);
   draftFiles.set(selected, selectedFiles);
+  draftMentions.set(selected, selectedMentions);
 }
 async function select(id) {
   stashDraft();
@@ -2201,6 +2318,9 @@ async function select(id) {
   selected = id;
   composing = false;
   selectedFiles = draftFiles.get(id) || [];
+  selectedMentions = draftMentions.get(id) || [];
+  mentionDismissedAt = -1;
+  closeMentionSuggestions();
   $("text").value = drafts.get(id) || "";
   $("attachments").value = "";
   autogrow();
@@ -2219,6 +2339,7 @@ function deselect() {
   stashDraft();
   stopFullHistory();
   closeFind();
+  closeMentionSuggestions();
   selected = "";
   composing = false;
   invalidate("list", "thread");
@@ -2507,12 +2628,18 @@ async function sendMessage(conversationID = selected) {
       return;
     }
     if (!text.trim() && !selectedFiles.length) return;
+    const mentions = resolveMentions(
+      text,
+      conversations.get(selected),
+      selectedMentions,
+    );
     pendingSend = {
       conversationID: selected,
       files: [...selectedFiles],
       uploadIDs: [],
       text,
       replyTo: replyTarget()?.id || "",
+      mentions,
       requests: undefined,
       progress: "",
       error: "",
@@ -2522,6 +2649,7 @@ async function sendMessage(conversationID = selected) {
     };
     pendingSends.set(conversationID, pendingSend);
   }
+  closeMentionSuggestions();
   const pending = pendingSend,
     sendGeneration = generation;
   const current = () =>
@@ -2540,6 +2668,7 @@ async function sendMessage(conversationID = selected) {
       pending.uploadIDs,
       status.network,
       pending.replyTo,
+      pending.mentions || [],
     );
     for (const item of pending.requests) {
       if (item.queued) continue;
@@ -2560,9 +2689,12 @@ async function sendMessage(conversationID = selected) {
     drafts.delete(conversationID);
     draftFiles.delete(conversationID);
     replyTargets.delete(conversationID);
+    draftMentions.delete(conversationID);
     thread(conversationID).scrollToBottom = true;
     if (conversationID === selected) {
       selectedFiles = [];
+      selectedMentions = [];
+      mentionDismissedAt = -1;
       $("attachments").value = "";
       $("text").value = "";
       autogrow();
@@ -2794,6 +2926,12 @@ function clearPrivateUI() {
   clearPendingSends();
   pendingConversation = createdConversation = undefined;
   selectedFiles = [];
+  selectedMentions = [];
+  mentionDismissedAt = -1;
+  closeMentionSuggestions();
+  drafts.clear();
+  draftFiles.clear();
+  draftMentions.clear();
   conversations.clear();
   conversationOrder = undefined;
   outbox.clear();
@@ -3539,9 +3677,13 @@ $("discard-send").onclick = () => {
 };
 $("text").oninput = () => {
   if (selected) drafts.set(selected, $("text").value);
+  mentionDismissedAt = -1;
   autogrow();
+  renderMentionSuggestions();
   scheduleTyping();
 };
+$("text").onclick = () => renderMentionSuggestions();
+$("text").onblur = () => closeMentionSuggestions();
 function attachPastedImages(images) {
   if (!images.length) return;
   const files = images.map((image, index) =>
@@ -3587,6 +3729,33 @@ $("cancel-reply").onclick = () => {
   $("text").focus();
 };
 $("text").onkeydown = (event) => {
+  const state = !$("mention-suggestions").hidden && activeMentionSuggestions();
+  if (state) {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      mentionActive =
+        (mentionActive +
+          (event.key === "ArrowDown" ? 1 : state.matches.length - 1)) %
+        state.matches.length;
+      renderMentionSuggestions();
+      return;
+    }
+    if (
+      event.key === "Tab" ||
+      (event.key === "Enter" && !event.shiftKey && !event.isComposing)
+    ) {
+      event.preventDefault();
+      chooseMention(state.matches[mentionActive] || state.matches[0]);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      mentionDismissedAt = state.range.start;
+      closeMentionSuggestions();
+      return;
+    }
+  }
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     if (!pendingSends.has(selected)) void sendMessage();

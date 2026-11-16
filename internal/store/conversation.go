@@ -3,8 +3,11 @@ package store
 import (
 	"bytes"
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/colonelpanic8/google-messages-multidevice-bridge/internal/model"
 	bolt "go.etcd.io/bbolt"
@@ -273,4 +276,144 @@ func (s *Store) ensureConversationPreviews(tx *bolt.Tx) error {
 		}
 	}
 	return nil
+}
+
+// enrichMessage preserves mentions across provider echoes and status updates,
+// and resolves @Participant Name mentions against the stored conversation.
+func (s *Store) enrichMessage(tx *bolt.Tx, data json.RawMessage, previous *model.Message) (json.RawMessage, error) {
+	var m model.Message
+	if json.Unmarshal(data, &m) != nil || m.Schema != model.Schema || m.ID == "" {
+		return data, nil
+	}
+	changed := false
+	if m.Deleted {
+		if len(m.Mentions) > 0 {
+			m.Mentions = nil
+			changed = true
+		}
+		if !changed {
+			return data, nil
+		}
+		return json.Marshal(m)
+	}
+	if len(m.Mentions) == 0 && previous != nil && len(previous.Mentions) > 0 {
+		m.Mentions = append([]model.Mention(nil), previous.Mentions...)
+		changed = true
+	}
+	if len(m.Mentions) == 0 && m.TransactionID != "" {
+		if outboxID := tx.Bucket([]byte("outbox-txn")).Get([]byte(m.TransactionID)); outboxID != nil {
+			if o, err := s.readOutbox(tx, outboxID); err == nil && o.SessionEpoch == epoch(tx) && o.Request.ConversationID == m.ConversationID && len(o.Request.Mentions) > 0 {
+				m.Mentions = append([]model.Mention(nil), o.Request.Mentions...)
+				changed = true
+			}
+		}
+	}
+	if m.ConversationID != "" {
+		convKey := "conversation:" + m.ConversationID
+		if raw := tx.Bucket([]byte("latest")).Get([]byte(convKey)); raw != nil {
+			plain, err := s.decrypt(raw, convKey)
+			if err != nil {
+				return nil, err
+			}
+			var conv model.Conversation
+			if json.Unmarshal(plain, &conv) == nil && len(conv.Participants) > 0 {
+				if len(m.Mentions) > 0 {
+					byID := make(map[string]model.Participant, len(conv.Participants))
+					for _, p := range conv.Participants {
+						byID[p.ID] = p
+					}
+					for i := range m.Mentions {
+						if m.Mentions[i].Name == "" {
+							if p, ok := byID[m.Mentions[i].ParticipantID]; ok {
+								name := p.Name
+								if name == "" {
+									name = p.Address
+								}
+								if name != "" {
+									m.Mentions[i].Name = name
+									changed = true
+								}
+							}
+						}
+					}
+				} else if strings.Contains(m.Text, "@") {
+					if inferred := extractMentions(m.Text, conv.Participants); len(inferred) > 0 {
+						m.Mentions = inferred
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	if !changed {
+		return data, nil
+	}
+	return json.Marshal(m)
+}
+
+func extractMentions(text string, participants []model.Participant) []model.Mention {
+	if !strings.Contains(text, "@") || len(participants) == 0 {
+		return nil
+	}
+	type candidate struct {
+		id   string
+		name string
+	}
+	var candidates []candidate
+	for _, p := range participants {
+		name := strings.TrimSpace(p.Name)
+		if p.ID == "" || name == "" {
+			continue
+		}
+		candidates = append(candidates, candidate{id: p.ID, name: name})
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return len(candidates[i].name) > len(candidates[j].name)
+	})
+	var mentions []model.Mention
+	seen := map[string]bool{}
+	for i := 0; i < len(text); {
+		at := strings.IndexByte(text[i:], '@')
+		if at < 0 {
+			break
+		}
+		pos := i + at
+		validStart := pos == 0
+		if !validStart {
+			prev, _ := utf8.DecodeLastRuneInString(text[:pos])
+			validStart = unicode.IsSpace(prev) || strings.ContainsRune("([{\"'", prev)
+		}
+		if !validStart {
+			i = pos + 1
+			continue
+		}
+		rest := text[pos+1:]
+		matched := 0
+		for _, c := range candidates {
+			if len(rest) < len(c.name) || !strings.EqualFold(rest[:len(c.name)], c.name) {
+				continue
+			}
+			if len(rest) > len(c.name) {
+				next, _ := utf8.DecodeRuneInString(rest[len(c.name):])
+				if unicode.IsLetter(next) || unicode.IsDigit(next) {
+					continue
+				}
+			}
+			if !seen[c.id] {
+				seen[c.id] = true
+				mentions = append(mentions, model.Mention{ParticipantID: c.id, Name: c.name})
+			}
+			matched = 1 + len(c.name)
+			break
+		}
+		if matched > 0 {
+			i = pos + matched
+		} else {
+			i = pos + 1
+		}
+	}
+	return mentions
 }
