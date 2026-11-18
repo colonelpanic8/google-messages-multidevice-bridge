@@ -697,11 +697,11 @@ function clearPreviews() {
   previewCache.clear();
 }
 function unobservePreviews(node) {
-  for (const img of node.querySelectorAll("img.preview"))
-    previewObserver?.unobserve(img);
+  for (const media of node.querySelectorAll("img.preview, audio.preview"))
+    previewObserver?.unobserve(media);
 }
-async function loadPreview(img) {
-  const id = img.dataset.attachmentId;
+async function loadPreview(media) {
+  const id = media.dataset.attachmentId;
   const signal = previewAbort.signal;
   let pending = previewCache.get(id);
   if (!pending) {
@@ -713,14 +713,14 @@ async function loadPreview(img) {
       return response
         .blob()
         .then((blob) =>
-          URL.createObjectURL(new Blob([blob], { type: img.dataset.mime })),
+          URL.createObjectURL(new Blob([blob], { type: media.dataset.mime })),
         );
     });
     previewCache.set(id, pending);
   }
   try {
     const url = await pending;
-    if (signal.aborted || !img.isConnected) return;
+    if (signal.aborted || !media.isConnected) return;
     // A preview has no size until it loads, so a thread resting at the bottom
     // follows it down instead of being left short of its newest message.
     const container = $("messages");
@@ -728,15 +728,17 @@ async function loadPreview(img) {
       container.scrollHeight - container.scrollTop - container.clientHeight <
       80
     )
-      img.addEventListener(
+      media.addEventListener(
         "load",
         () => (container.scrollTop = container.scrollHeight),
         { once: true },
       );
-    img.src = url;
+    media.src = url;
   } catch {
     if (previewCache.get(id) === pending) previewCache.delete(id);
-    if (!signal.aborted && img.isConnected) img.closest(".bubble")?.remove();
+    if (signal.aborted || !media.isConnected) return;
+    if (media.tagName === "IMG") media.closest(".bubble")?.remove();
+    else media.remove();
   }
 }
 async function downloadAttachment(attachment) {
@@ -748,7 +750,9 @@ async function downloadAttachment(attachment) {
     throw new Error(
       "Attachment unavailable. It may require the phone or exceed 20 MiB.",
     );
-  const url = URL.createObjectURL(await response.blob());
+  const url = URL.createObjectURL(
+    new Blob([await response.blob()], { type: attachment.mime || "" }),
+  );
   const link = el("a");
   link.href = url;
   link.download = attachment.name || "attachment";
@@ -769,7 +773,13 @@ function renderAttachment(attachment, readOnly) {
     else void loadPreview(img);
     return bubble;
   }
-  const node = el("div", undefined, "attachment");
+  const playable =
+    attachment.available && /^audio\//.test(attachment.mime || "");
+  const node = el(
+    "div",
+    undefined,
+    playable ? "attachment audio" : "attachment",
+  );
   const info = el("div", undefined, "file-info");
   info.append(
     el("strong", attachment.name || "Attachment"),
@@ -780,7 +790,17 @@ function renderAttachment(attachment, readOnly) {
       }`,
     ),
   );
-  node.append(icon("file"), info);
+  if (playable) {
+    const audio = el("audio", undefined, "preview");
+    audio.controls = true;
+    audio.preload = "metadata";
+    audio.dataset.attachmentId = attachment.id;
+    audio.dataset.mime = attachment.mime;
+    info.append(audio);
+    if (previewObserver) previewObserver.observe(audio);
+    else void loadPreview(audio);
+  }
+  node.append(icon(playable ? "mic" : "file"), info);
   if (attachment.available) {
     const download = button(undefined, "icon-button", async () => {
       download.disabled = true;

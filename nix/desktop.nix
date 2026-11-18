@@ -12,6 +12,7 @@
   glib-networking,
   version,
   commit ? "",
+  gst_all_1,
 }:
 
 rustPlatform.buildRustPackage {
@@ -42,6 +43,12 @@ rustPlatform.buildRustPackage {
     dbus
     libayatana-appindicator
     glib-networking
+    # WebKitGTK plays <audio>/<video> through GStreamer; wrapGAppsHook3 puts
+    # these on GST_PLUGIN_SYSTEM_PATH_1_0. gst-libav decodes AAC and AMR.
+    gst_all_1.gst-plugins-base
+    gst_all_1.gst-plugins-good
+    gst_all_1.gst-plugins-bad
+    gst_all_1.gst-libav
   ];
 
   postInstall = ''
