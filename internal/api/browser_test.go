@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -43,12 +45,18 @@ func TestBrowserFixture(t *testing.T) {
 	now := time.Now().UTC()
 	availableMediaID := strings.Repeat("a", 64)
 	unavailableMediaID := strings.Repeat("b", 64)
+	audioMediaID := strings.Repeat("c", 64)
+	audio := syntheticTone()
+	if err := s.PutMedia(audioMediaID, audio); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.PutMedia(availableMediaID, []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#e4f1ed"/><text x="24" y="96" fill="#186a65">Synthetic attachment</text></svg>`)); err != nil {
 		t.Fatal(err)
 	}
 	appendRecord("message", "m1", model.Message{Schema: 1, ID: "m1", ConversationID: "synthetic-conversation", SenderID: "friend", Time: now.Add(-3 * time.Minute), Text: "Want to meet at the park this afternoon?", Direction: "incoming", Status: "incoming_displayed", Reactions: []model.Reaction{}, Attachments: []model.Attachment{}})
 	appendRecord("message", "m2", model.Message{Schema: 1, ID: "m2", ConversationID: "synthetic-conversation", SenderID: "me", Time: now.Add(-2 * time.Minute), Text: "Sounds good! Around 3 works for me.", Direction: "outgoing", Status: "outgoing_displayed", Reactions: []model.Reaction{{Emoji: "👍", Participants: []string{"friend", "me"}}, {Emoji: "🎉", Participants: []string{"friend"}}}, Attachments: []model.Attachment{}})
 	appendRecord("message", "m3", model.Message{Schema: 1, ID: "m3", ConversationID: "synthetic-conversation", SenderID: "friend", Time: now.Add(-time.Minute), Text: "See you at the park! The video is still on the phone.", Direction: "incoming", Status: "incoming_complete", Reactions: []model.Reaction{}, Attachments: []model.Attachment{{ID: unavailableMediaID, Name: "park-preview.mp4", MIME: "video/mp4", Size: 7340032, Available: false}}})
+	appendRecord("message", "m3a", model.Message{Schema: 1, ID: "m3a", ConversationID: "synthetic-conversation", SenderID: "friend", Time: now.Add(-30 * time.Second), Direction: "incoming", Status: "incoming_complete", Reactions: []model.Reaction{}, Attachments: []model.Attachment{{ID: audioMediaID, Name: "voice-note.wav", MIME: "audio/wav", Size: int64(len(audio)), Available: true}}})
 	appendRecord("message", "m4", model.Message{Schema: 1, ID: "m4", ConversationID: "synthetic-conversation", SenderID: "me", Time: now, Direction: "outgoing", Status: "outgoing_complete", Reactions: []model.Reaction{}, Attachments: []model.Attachment{{ID: availableMediaID, Name: "park-map.svg", MIME: "image/svg+xml", Size: 171, Available: true}}})
 	// The conversation snapshots arrive after the messages they describe, as
 	// they do from Google.
@@ -118,4 +126,28 @@ func TestBrowserFixture(t *testing.T) {
 	shutdownCtx, finish := context.WithTimeout(context.Background(), time.Second)
 	defer finish()
 	_ = server.Shutdown(shutdownCtx)
+}
+
+// syntheticTone is a one-second 440 Hz mono 8 kHz WAV.
+func syntheticTone() []byte {
+	const rate, samples = 8000, 8000
+	out := make([]byte, 44+samples*2)
+	put32 := func(at int, v uint32) { binary.LittleEndian.PutUint32(out[at:], v) }
+	put16 := func(at int, v uint16) { binary.LittleEndian.PutUint16(out[at:], v) }
+	copy(out, "RIFF")
+	put32(4, uint32(len(out)-8))
+	copy(out[8:], "WAVEfmt ")
+	put32(16, 16)
+	put16(20, 1)
+	put16(22, 1)
+	put32(24, rate)
+	put32(28, rate*2)
+	put16(32, 2)
+	put16(34, 16)
+	copy(out[36:], "data")
+	put32(40, samples*2)
+	for i := range samples {
+		put16(44+i*2, uint16(int16(8000*math.Sin(2*math.Pi*440*float64(i)/rate))))
+	}
+	return out
 }
