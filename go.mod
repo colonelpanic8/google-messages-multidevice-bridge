@@ -6,7 +6,7 @@ require (
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/rs/zerolog v1.35.1
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
-	go.etcd.io/bbolt v1.4.3
+	go.etcd.io/bbolt v1.5.0
 	go.mau.fi/mautrix-gmessages v0.2608.1-0.20260911171723-e6cc29974f92
 	go.mau.fi/util v0.10.1
 	go.mau.fi/whatsmeow v0.0.0-20260925162019-b3832c2bd1d1
