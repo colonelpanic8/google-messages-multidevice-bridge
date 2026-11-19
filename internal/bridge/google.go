@@ -20,6 +20,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// Each ditto ping tells the phone a web client is in active use, and Google Messages
+// keeps phone notifications silent while one is. libgm's one-minute default therefore
+// mutes the phone permanently; this matches mautrix-gmessages' default instead.
+const dittoPingInterval = 20 * time.Minute
+
 type googleConnection struct{ client *libgm.Client }
 
 func (g *googleConnection) ingest(b *Bridge, msg proto.Message) error {
@@ -236,6 +241,7 @@ func (g *googleConnection) Run(b *Bridge, ctx context.Context, offline bool, coo
 		pairGeneration = state.generation
 	}
 	g.client = libgm.NewClient(auth, nil, providerLog, exhttp.SensibleClientSettings)
+	g.client.SetPingInterval(dittoPingInterval)
 	g.client.SetEventHandlerWithError(func(e any) error { return g.Handle(b, e) })
 	b.mu.Lock()
 	b.providerCtx = providerCtx
