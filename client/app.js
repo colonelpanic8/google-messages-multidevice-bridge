@@ -3828,7 +3828,8 @@ $("text").onpaste = async (event) => {
   const conversationID = selected,
     pasteGeneration = generation;
   try {
-    const bytes = desktop ? await desktop("read_clipboard_image") : null;
+    const payload = desktop ? await desktop("read_clipboard_image") : null;
+    const bytes = payload === null ? null : new Uint8Array(payload);
     const images =
       bytes === null
         ? await clipboardImages(navigator.clipboard)
@@ -4360,7 +4361,7 @@ if (desktop) {
         const response = await fetch(url);
         await desktop("write_clipboard_image", await response.arrayBuffer());
       } catch (error) {
-        notice(`Could not copy image: ${error.message || error}`);
+        notice(`Could not copy image. ${error.message || error}`);
       }
     })
     .catch(() => {});

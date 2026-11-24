@@ -48,7 +48,11 @@ fn read_files(paths: &[PathBuf], mut remaining: usize) -> io::Result<Vec<u8>> {
         );
         #[cfg(not(target_os = "linux"))]
         let mime: Option<String> = None;
-        let mime = mime.as_deref().unwrap_or("application/octet-stream");
+        let mime = mime
+            .as_deref()
+            .filter(|mime| *mime != "application/octet-stream")
+            .or_else(|| infer::get(&bytes).map(|kind| kind.mime_type()))
+            .unwrap_or("application/octet-stream");
 
         // Each file is a little-endian byte count, a NUL-terminated MIME type,
         // and the original bytes. The invoke response carries the batch as binary.
@@ -97,16 +101,15 @@ mod tests {
         assert_eq!(dropped.take(&second), None);
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn drop_preserves_the_image_type_and_bytes_within_the_budget() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../client/icons/favicon-32.png");
         let original = fs::read(&path).unwrap();
-        let mut expected = (original.len() as u32).to_le_bytes().to_vec();
-        expected.extend_from_slice(b"image/png\0");
-        expected.extend_from_slice(&original);
 
         assert!(read_files(std::slice::from_ref(&path), original.len() - 1).is_err());
-        assert_eq!(read_files(&[path], original.len()).unwrap(), expected);
+        let encoded = read_files(&[path], original.len()).unwrap();
+        assert_eq!(&encoded[..4], &(original.len() as u32).to_le_bytes());
+        assert_eq!(&encoded[4..14], b"image/png\0");
+        assert!(&encoded[14..] == original);
     }
 }
