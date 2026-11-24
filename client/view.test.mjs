@@ -21,6 +21,7 @@ import {
   matchContacts,
   matchMentions,
   mentionQuery,
+  newestMessage,
   participantList,
   previewLine,
   queuePosition,
@@ -33,6 +34,7 @@ import {
   outboxStatus,
   searchMatches,
   slidingRows,
+  sortConversations,
   threadOutbox,
   sendRetryDelay,
 } from "./view.mjs";
@@ -633,5 +635,21 @@ test("matchMentions, insertMention, resolveMentions, and linkify mentions", () =
       { text: " at " },
       { text: "https://example.com", href: "https://example.com" },
     ],
+  );
+});
+
+test("timestamps with trimmed fractions order by instant, not text", () => {
+  const messages = [
+    { id: "1", time: "2000-01-01T00:00:00.85Z" },
+    { id: "3", time: "2000-01-01T00:00:00.852Z" },
+    { id: "2", time: "2000-01-01T00:00:00.851Z" },
+  ];
+  assert.equal(newestMessage(messages).id, "3");
+  assert.deepEqual(
+    sortConversations([
+      { id: "a", updated: "2000-01-01T00:00:00.85Z" },
+      { id: "b", updated: "2000-01-01T00:00:00.852Z" },
+    ]).map((c) => c.id),
+    ["b", "a"],
   );
 });

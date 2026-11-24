@@ -37,6 +37,8 @@ import {
   mentionQuery,
   messageMatches,
   messageStatus,
+  newerFirst,
+  newestMessage,
   others,
   participantList,
   quoteAuthor,
@@ -2262,8 +2264,7 @@ function renderHistory() {
   const shown = jobs
     .sort(
       (a, b) =>
-        (a.state === "complete") - (b.state === "complete") ||
-        (b.updated || "").localeCompare(a.updated || ""),
+        (a.state === "complete") - (b.state === "complete") || newerFirst(a, b),
     )
     .slice(0, 100);
   for (const job of shown) {
@@ -4095,9 +4096,11 @@ $("find-input").onkeydown = (event) => {
 // over from a previous session are no longer current and the phone rejects
 // them.
 function newestReadable(id) {
-  return [...(threads.get(id)?.messages.values() || [])]
-    .filter((message) => !message.read_only)
-    .sort((a, b) => (b.time || "").localeCompare(a.time || ""))[0];
+  return newestMessage(
+    [...(threads.get(id)?.messages.values() || [])].filter(
+      (message) => !message.read_only,
+    ),
+  );
 }
 async function sendReadReceipt(id, messageID) {
   await request(`/v1/conversations/${encodeURIComponent(id)}/read`, {
