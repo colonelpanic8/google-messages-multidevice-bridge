@@ -217,7 +217,10 @@ export function outboxAttachmentCount(item) {
   return item.request?.attachment_ids?.length || 0;
 }
 
-const messageTime = (m) => new Date(m.time || 0).getTime() || 0;
+// Timestamps drop trailing fractional zeros (".85Z" vs ".852Z"), so they only
+// order correctly once parsed.
+const instant = (value) => new Date(value || 0).getTime() || 0;
+const messageTime = (m) => instant(m.time);
 
 // One line standing in for the message a reply quotes. The target may not be
 // loaded, or may never have been stored at all.
@@ -264,11 +267,17 @@ export function sortMessages(messages) {
   );
 }
 
+export function newestMessage(messages) {
+  return sortMessages(messages).at(-1);
+}
+
+export function newerFirst(a, b) {
+  return instant(b.updated) - instant(a.updated);
+}
+
 export function sortConversations(conversations) {
   return [...conversations].sort(
-    (a, b) =>
-      (b.updated || "").localeCompare(a.updated || "") ||
-      b.id.localeCompare(a.id),
+    (a, b) => newerFirst(a, b) || b.id.localeCompare(a.id),
   );
 }
 
@@ -772,7 +781,7 @@ export function reactionTitle(reaction, conversation) {
 export function queuePosition(jobs, id) {
   return [...jobs]
     .filter((job) => job.state === "queued")
-    .sort((a, b) => (a.updated || "").localeCompare(b.updated || ""))
+    .sort((a, b) => newerFirst(b, a))
     .findIndex((job) => job.id === id);
 }
 
