@@ -1,10 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"math"
 	"net"
 	"net/http"
@@ -50,14 +54,22 @@ func TestBrowserFixture(t *testing.T) {
 	if err := s.PutMedia(audioMediaID, audio); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutMedia(availableMediaID, []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#e4f1ed"/><text x="24" y="96" fill="#186a65">Synthetic attachment</text></svg>`)); err != nil {
+	var photo bytes.Buffer
+	landscape := image.NewPaletted(image.Rect(0, 0, 3840, 2160), color.Palette{color.RGBA{228, 241, 237, 255}, color.RGBA{24, 106, 101, 255}})
+	for i := len(landscape.Pix) / 2; i < len(landscape.Pix); i++ {
+		landscape.Pix[i] = 1
+	}
+	if err := png.Encode(&photo, landscape); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutMedia(availableMediaID, photo.Bytes()); err != nil {
 		t.Fatal(err)
 	}
 	appendRecord("message", "m1", model.Message{Schema: 1, ID: "m1", ConversationID: "synthetic-conversation", SenderID: "friend", Time: now.Add(-3 * time.Minute), Text: "Want to meet at the park this afternoon?", Direction: "incoming", Status: "incoming_displayed", Reactions: []model.Reaction{}, Attachments: []model.Attachment{}})
 	appendRecord("message", "m2", model.Message{Schema: 1, ID: "m2", ConversationID: "synthetic-conversation", SenderID: "me", Time: now.Add(-2 * time.Minute), Text: "Sounds good! Around 3 works for me.", Direction: "outgoing", Status: "outgoing_displayed", Reactions: []model.Reaction{{Emoji: "👍", Participants: []string{"friend", "me"}}, {Emoji: "🎉", Participants: []string{"friend"}}}, Attachments: []model.Attachment{}})
 	appendRecord("message", "m3", model.Message{Schema: 1, ID: "m3", ConversationID: "synthetic-conversation", SenderID: "friend", Time: now.Add(-time.Minute), Text: "See you at the park! The video is still on the phone.", Direction: "incoming", Status: "incoming_complete", Reactions: []model.Reaction{}, Attachments: []model.Attachment{{ID: unavailableMediaID, Name: "park-preview.mp4", MIME: "video/mp4", Size: 7340032, Available: false}}})
 	appendRecord("message", "m3a", model.Message{Schema: 1, ID: "m3a", ConversationID: "synthetic-conversation", SenderID: "friend", Time: now.Add(-30 * time.Second), Direction: "incoming", Status: "incoming_complete", Reactions: []model.Reaction{}, Attachments: []model.Attachment{{ID: audioMediaID, Name: "voice-note.wav", MIME: "audio/wav", Size: int64(len(audio)), Available: true}}})
-	appendRecord("message", "m4", model.Message{Schema: 1, ID: "m4", ConversationID: "synthetic-conversation", SenderID: "me", Time: now, Direction: "outgoing", Status: "outgoing_complete", Reactions: []model.Reaction{}, Attachments: []model.Attachment{{ID: availableMediaID, Name: "park-map.svg", MIME: "image/svg+xml", Size: 171, Available: true}}})
+	appendRecord("message", "m4", model.Message{Schema: 1, ID: "m4", ConversationID: "synthetic-conversation", SenderID: "me", Time: now, Direction: "outgoing", Status: "outgoing_complete", Reactions: []model.Reaction{}, Attachments: []model.Attachment{{ID: availableMediaID, Name: "park.png", MIME: "image/png", Size: int64(photo.Len()), Available: true}}})
 	// The conversation snapshots arrive after the messages they describe, as
 	// they do from Google.
 	appendRecord("conversation", "synthetic-conversation", model.Conversation{Schema: 1, ID: "synthetic-conversation", Name: "Weekend plans", Preview: "See you at the park!", Protocol: "rcs", State: "active", Updated: now, Unread: true, Participants: []model.Participant{{ID: "friend", Name: "Alex (synthetic)", Address: "+1 555 0100"}, {ID: "me", Name: "You", IsMe: true}}})
