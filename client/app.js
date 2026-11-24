@@ -1664,8 +1664,20 @@ function renderSelectedAttachments() {
   const files = pendingSends.get(selected)?.files || selectedFiles;
   const chips = $("selected-attachments");
   chips.replaceChildren();
-  for (const file of files)
-    chips.append(el("span", `${file.name} (${formatSize(file.size)})`, "chip"));
+  for (const [index, file] of files.entries()) {
+    const chip = el("span", `${file.name} (${formatSize(file.size)})`, "chip");
+    if (!$("attachments").disabled) {
+      const remove = button("", "chip-remove", () => {
+        selectedFiles = selectedFiles.filter((_, i) => i !== index);
+        draftFiles.set(selected, selectedFiles);
+        invalidate("compose");
+      });
+      remove.setAttribute("aria-label", `Remove ${file.name}`);
+      remove.append(icon("close"));
+      chip.append(remove);
+    }
+    chips.append(chip);
+  }
   if (files.length) {
     const total = files.reduce((sum, file) => sum + file.size, 0);
     chips.append(
@@ -3704,25 +3716,30 @@ $("text").oninput = () => {
 };
 $("text").onclick = () => renderMentionSuggestions();
 $("text").onblur = () => closeMentionSuggestions();
-function attachPastedImages(images) {
-  if (!images.length) return;
-  const files = images.map((image, index) =>
-    image.name
-      ? image
-      : new File([image], pastedImageName(image, index), {
-          type: image.type,
-          lastModified: image.lastModified,
-        }),
-  );
+function addAttachments(files) {
+  if (!files.length || !selected || pendingSends.has(selected)) return;
+  const next = [...selectedFiles, ...files];
   try {
-    validateAttachments([...selectedFiles, ...files]);
-    selectedFiles = [...selectedFiles, ...files];
+    validateAttachments(next);
+    selectedFiles = next;
     draftFiles.set(selected, selectedFiles);
     scheduleTyping();
   } catch (error) {
     notice(error.message);
   }
   invalidate("compose");
+}
+function attachPastedImages(images) {
+  addAttachments(
+    images.map((image, index) =>
+      image.name
+        ? image
+        : new File([image], pastedImageName(image, index), {
+            type: image.type,
+            lastModified: image.lastModified,
+          }),
+    ),
+  );
 }
 $("text").onpaste = (event) => {
   if (pendingSends.has(selected)) return;
@@ -3736,7 +3753,12 @@ $("text").onpaste = (event) => {
   // only reaches us through a clipboard read started inside this gesture.
   // Whatever text the engine pastes on its own is left alone.
   if (!clipboardDataEmpty(event.clipboardData)) return;
-  void clipboardImages(navigator.clipboard).then(attachPastedImages);
+  const conversationID = selected,
+    pasteGeneration = generation;
+  void clipboardImages(navigator.clipboard).then((images) => {
+    if (selected === conversationID && generation === pasteGeneration)
+      attachPastedImages(images);
+  });
 };
 function cancelReply() {
   if (pendingSends.has(selected) || !replyTargets.delete(selected))
@@ -3786,18 +3808,8 @@ $("text").onkeydown = (event) => {
 };
 $("attachments").onchange = () => {
   const files = [...$("attachments").files];
-  try {
-    validateAttachments(files);
-    selectedFiles = files;
-    draftFiles.set(selected, selectedFiles);
-    scheduleTyping();
-  } catch (error) {
-    $("attachments").value = "";
-    selectedFiles = [];
-    draftFiles.delete(selected);
-    notice(error.message);
-  }
-  invalidate("compose");
+  $("attachments").value = "";
+  addAttachments(files);
 };
 async function loadOlder() {
   const id = selected;

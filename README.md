@@ -409,6 +409,10 @@ draft restoration, and clearing on lock. It reports input-handler timing without
 a machine-dependent pass threshold. Run with `--browser webkit` as well when that
 browser is installed to cover the desktop app's rendering engine.
 
+Run `tools/check-uploads.mjs` the same way from the repository root in a fresh
+session to verify multi-photo selection, removal, and retry after an interrupted
+upload. It checks the photo order in the synthetic bridge's outbox.
+
 `tools/check-performance.mjs` runs against the same fixture. It checks live
 message updates, lazy reaction menus, background import updates, cached navigation,
 pending sends in empty threads, and attachment cleanup. It also measures redraws
