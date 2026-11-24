@@ -8,6 +8,11 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
+mod clipboard;
+mod dropped_files;
+
+const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
+
 const KEYRING_SERVICE: &str = "google-messages-multidevice-bridge";
 const KEYRING_USER: &str = "api-token";
 
@@ -80,7 +85,10 @@ fn validate_bridge_url(raw: &str) -> Option<String> {
 
 /// The preseed wins over whatever is stored. The stored lookup stays lazy so a
 /// preseeded token never touches the keyring.
-fn select_token(preseed: Option<String>, stored: impl FnOnce() -> Option<String>) -> Option<String> {
+fn select_token(
+    preseed: Option<String>,
+    stored: impl FnOnce() -> Option<String>,
+) -> Option<String> {
     preseed.or_else(stored)
 }
 
@@ -324,45 +332,51 @@ fn download_name(suggested: &str, mime: Option<&str>) -> String {
     format!("{stem}.{ext}")
 }
 
-// WebKitGTK's own "Save Image As" saves straight into the downloads directory
-// without asking, and an image shown from a blob URL has no filename, so it
-// landed there unnamed. The item is swapped for one that asks first.
 #[cfg(target_os = "linux")]
-fn ask_where_to_save_images(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+fn customize_image_menu(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     use webkit2gtk::{
         ContextMenuAction, ContextMenuExt, ContextMenuItem, ContextMenuItemExt, HitTestResultExt,
         WebViewExt,
     };
 
+    let app = window.app_handle().clone();
     window.with_webview(|webview| {
-        webview.inner().connect_context_menu(|view, menu, _, hit| {
-            let Some(uri) = hit.image_uri() else {
-                return false;
-            };
-            let items = menu.items();
-            let Some(position) = items
-                .iter()
-                .position(|item| item.stock_action() == ContextMenuAction::DownloadImageToDisk)
-            else {
-                return false;
-            };
-            let action = webkit2gtk::gio::SimpleAction::new("save-image-as", None);
-            let view = view.clone();
-            action.connect_activate(move |_, _| {
-                // Started here, the download can be claimed before WebKit
-                // decides its destination; the context-wide download-started
-                // signal arrives too late for that.
-                if let Some(download) = view.download_uri(&uri) {
-                    ask_for_destination(&download);
+        webview
+            .inner()
+            .connect_context_menu(move |view, menu, _, hit| {
+                let Some(uri) = hit.image_uri() else {
+                    return false;
+                };
+                for (position, item) in menu.items().iter().enumerate() {
+                    let (action, label) = match item.stock_action() {
+                        ContextMenuAction::DownloadImageToDisk => {
+                            let action = webkit2gtk::gio::SimpleAction::new("save-image-as", None);
+                            let (view, uri) = (view.clone(), uri.clone());
+                            action.connect_activate(move |_, _| {
+                                if let Some(download) = view.download_uri(&uri) {
+                                    ask_for_destination(&download);
+                                }
+                            });
+                            (action, "Save Image As")
+                        }
+                        ContextMenuAction::CopyImageToClipboard if uri.starts_with("blob:") => {
+                            let action = webkit2gtk::gio::SimpleAction::new("copy-image", None);
+                            let (app, uri) = (app.clone(), uri.clone());
+                            action.connect_activate(move |_, _| {
+                                let _ = app.emit_to("main", "copy-image", uri.as_str());
+                            });
+                            (action, "Copy Image")
+                        }
+                        _ => continue,
+                    };
+                    menu.remove(item);
+                    menu.insert(
+                        &ContextMenuItem::from_gaction(&action, label, None),
+                        position as i32,
+                    );
                 }
+                false
             });
-            menu.remove(&items[position]);
-            menu.insert(
-                &ContextMenuItem::from_gaction(&action, "Save Image As", None),
-                position as i32,
-            );
-            false
-        });
     })
 }
 
@@ -431,6 +445,7 @@ fn main() {
         }))
         .plugin(tauri_plugin_notification::init())
         .manage(Unread(Mutex::new(0)))
+        .manage(dropped_files::DroppedFiles::default())
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
             let paths = Paths { config_dir };
@@ -441,7 +456,9 @@ fn main() {
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &setup, &quit])?;
             TrayIconBuilder::with_id("main")
-                .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?)
+                .icon(tauri::image::Image::from_bytes(include_bytes!(
+                    "../icons/tray.png"
+                ))?)
                 .tooltip("Messages")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -465,16 +482,22 @@ fn main() {
             if let Some(window) = app.get_webview_window("main") {
                 reload_when_renderer_dies(&window)?;
                 pin_webview_gtk_style(&window)?;
-                ask_where_to_save_images(&window)?;
+                customize_image_menu(&window)?;
             }
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 let _ = window.hide();
                 api.prevent_close();
             }
+            WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                window
+                    .state::<dropped_files::DroppedFiles>()
+                    .remember(paths);
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
@@ -485,7 +508,11 @@ fn main() {
             save_token,
             clear_token,
             set_unread,
-            notify
+            notify,
+            dropped_files::read_dropped_files,
+            clipboard::read_clipboard_image,
+            #[cfg(target_os = "linux")]
+            clipboard::write_clipboard_image
         ])
         .run(tauri::generate_context!())
         .expect("error while running Messages");

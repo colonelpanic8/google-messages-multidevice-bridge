@@ -42,11 +42,39 @@ export default async function checkUploads(page) {
     "client/icons/icon-192.png",
     "client/icons/favicon-32.png",
   ]);
-  await picker.setInputFiles({
-    name: "park.png",
-    mimeType: "image/png",
-    buffer: photo,
+  await picker.setInputFiles("client/icons/icon-512.png");
+  await page
+    .getByRole("button", { name: "Remove icon-512.png" })
+    .press("Enter");
+  const draft = page.getByRole("textbox", { name: "Message", exact: true });
+  await draft.evaluate((input) => {
+    const drop = new DataTransfer();
+    drop.items.add(new File(["file"], "dropped.png", { type: "image/png" }));
+    input.dispatchEvent(
+      new DragEvent("drop", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: drop,
+      }),
+    );
   });
+  await page.getByRole("button", { name: "Remove dropped.png" }).press("Enter");
+  await draft.evaluate(
+    (input, bytes) => {
+      const clipboard = new DataTransfer();
+      clipboard.items.add(
+        new File([new Uint8Array(bytes)], "park.png", { type: "image/png" }),
+      );
+      input.dispatchEvent(
+        new ClipboardEvent("paste", {
+          cancelable: true,
+          clipboardData: clipboard,
+        }),
+      );
+    },
+    [...photo],
+  );
+  await page.getByRole("button", { name: "Remove park.png" }).waitFor();
   await picker.setInputFiles(Array(8).fill("client/icons/icon-192.png"));
   await page.getByText("Choose no more than 10 attachments.").waitFor();
   await page
