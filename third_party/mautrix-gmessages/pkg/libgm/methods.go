@@ -2,6 +2,7 @@ package libgm
 
 import (
 	"context"
+	"errors"
 
 	"go.mau.fi/util/ptr"
 
@@ -43,13 +44,32 @@ func (c *Client) DeleteConversation(ctx context.Context, conversationID, phone s
 }
 
 func (c *Client) ListContacts(ctx context.Context) (*gmproto.ListContactsResponse, error) {
-	payload := &gmproto.ListContactsRequest{
-		I1: 1,
-		I2: 350,
-		I3: 50,
+	return listContactPages(func(req *gmproto.ListContactsRequest) (*gmproto.ListContactsResponse, error) {
+		return typedResponse[*gmproto.ListContactsResponse](c.sessionHandler.sendMessage(ctx, gmproto.ActionType_LIST_CONTACTS, req))
+	})
+}
+
+func listContactPages(fetch func(*gmproto.ListContactsRequest) (*gmproto.ListContactsResponse, error)) (*gmproto.ListContactsResponse, error) {
+	const pageSize = 350
+	book := &gmproto.ListContactsResponse{}
+	seen := make(map[string]bool)
+	token := ""
+	for {
+		// Equal request and batch sizes keep each page in one RPC response.
+		page, err := fetch(&gmproto.ListContactsRequest{I1: 1, I2: pageSize, I3: pageSize, PageToken: token})
+		if err != nil {
+			return nil, err
+		}
+		book.Contacts = append(book.Contacts, page.Contacts...)
+		token = page.NextPageToken
+		if token == "" {
+			return book, nil
+		}
+		if seen[token] {
+			return nil, errors.New("repeated contact page token")
+		}
+		seen[token] = true
 	}
-	actionType := gmproto.ActionType_LIST_CONTACTS
-	return typedResponse[*gmproto.ListContactsResponse](c.sessionHandler.sendMessage(ctx, actionType, payload))
 }
 
 func (c *Client) ListTopContacts(ctx context.Context) (*gmproto.ListTopContactsResponse, error) {

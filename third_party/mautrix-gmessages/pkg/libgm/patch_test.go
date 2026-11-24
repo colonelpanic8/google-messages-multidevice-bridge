@@ -27,6 +27,47 @@ func testClient() *Client {
 	return NewClient(NewAuthData(), nil, zerolog.Nop(), exhttp.SensibleClientSettings)
 }
 
+func TestListContactPages(t *testing.T) {
+	book, err := listContactPages(func(req *gmproto.ListContactsRequest) (*gmproto.ListContactsResponse, error) {
+		if req.I2 != req.I3 {
+			t.Fatal("requested page would span multiple RPC replies")
+		}
+		page := &gmproto.ListContactsResponse{}
+		switch req.PageToken {
+		case "":
+			page.Contacts = []*gmproto.Contact{{Name: "First"}}
+			page.NextPageToken = "next"
+		case "next":
+			page.Contacts = []*gmproto.Contact{{Name: "Last"}}
+		default:
+			t.Fatalf("unexpected token %q", req.PageToken)
+		}
+		return page, nil
+	})
+	if err != nil || len(book.GetContacts()) != 2 || book.Contacts[1].Name != "Last" {
+		t.Fatalf("incomplete address book: %v, %v", book, err)
+	}
+}
+
+func TestListContactPagesDiscardsPartialBook(t *testing.T) {
+	for _, repeated := range []bool{false, true} {
+		calls := 0
+		book, err := listContactPages(func(req *gmproto.ListContactsRequest) (*gmproto.ListContactsResponse, error) {
+			calls++
+			if calls > 2 {
+				t.Fatal("retried a repeated token")
+			}
+			if req.PageToken != "" && !repeated {
+				return nil, context.DeadlineExceeded
+			}
+			return &gmproto.ListContactsResponse{Contacts: []*gmproto.Contact{{Name: "First"}}, NextPageToken: "same"}, nil
+		})
+		if calls != 2 || err == nil || book != nil {
+			t.Fatalf("calls %d, book %v, error %v", calls, book, err)
+		}
+	}
+}
+
 func testClientWithServer(server *httptest.Server) (*Client, *rewriteTransport) {
 	transport := &rewriteTransport{target: server.Listener.Addr().String(), inner: http.DefaultTransport}
 	settings := exhttp.SensibleClientSettings

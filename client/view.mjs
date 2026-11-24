@@ -863,18 +863,23 @@ export function matchContacts(
   );
   const needle = (query || "").trim().toLowerCase();
   if (!needle) return available.slice(0, limit);
-  const needleDigits = digitsOf(query);
+  const terms = needle.split(/\s+/);
+  const needleDigits = /^[+\d().\s-]+$/.test(needle) ? digitsOf(needle) : "";
   const ranked = [];
   for (const contact of available) {
     const name = (contact.name || "").toLowerCase();
-    const number = digitsOf(contact.address || contact.formatted);
+    const words = name.split(/\s+/);
+    const numbers = needleDigits
+      ? [contact.address, contact.formatted].map(digitsOf)
+      : [];
     let rank = -1;
     if (name.startsWith(needle)) rank = 0;
-    else if (name.split(/\s+/).some((word) => word.startsWith(needle)))
+    else if (terms.every((term) => words.some((word) => word.startsWith(term))))
       rank = 1;
-    else if (needleDigits && number.startsWith(needleDigits)) rank = 2;
+    else if (numbers.some((number) => number.startsWith(needleDigits)))
+      rank = 2;
     else if (name.includes(needle)) rank = 3;
-    else if (needleDigits && number.includes(needleDigits)) rank = 4;
+    else if (numbers.some((number) => number.includes(needleDigits))) rank = 4;
     if (rank >= 0) ranked.push({ rank, contact });
   }
   return ranked

@@ -412,6 +412,21 @@ test("contacts match by name, by word, and by the digits of a number", () => {
   );
 });
 
+test("typing another name fragment narrows the whole address book", () => {
+  const contacts = [
+    ...Array.from({ length: 8 }, (_, i) => ({
+      name: "Ada Jones",
+      address: `+1415555010${i}`,
+    })),
+    { name: "Ada Marie Lovelace", address: "+14155550108" },
+  ];
+  assert.ok(!matchContacts(contacts, "ad").includes(contacts[8]));
+  for (const query of ["ad l", "ad lov", "LOV ad"]) {
+    assert.deepEqual(matchContacts(contacts, query), [contacts[8]]);
+  }
+  assert.deepEqual(matchContacts(contacts, "absent 555"), []);
+});
+
 test("the picker offers only contacts that can be addressed", () => {
   assert.ok(!matchContacts(addressBook, "").some((c) => c.id === "p4"));
   assert.deepEqual(
