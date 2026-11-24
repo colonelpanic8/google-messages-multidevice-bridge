@@ -24,6 +24,7 @@ import {
   displayName,
   filterConversations,
   formatSize,
+  fullImageFor,
   highlightRuns,
   importStatus,
   initials,
@@ -335,6 +336,8 @@ function loadThread(id, before = "", { limit = 100, quiet = false } = {}) {
       );
       if (requestGeneration !== generation || threads.get(id) !== entry) return;
       mergeMessagePage(entry, page);
+      if (viewedPreview?.conversationID === id)
+        void updateImageViewer(entry.messages.get(viewedPreview.messageID));
       entry.layout = undefined;
       if (before || !entry.fetched) entry.before = page.next_before || "";
       entry.fetched = true;
@@ -462,6 +465,7 @@ function applyEvent(event) {
       const entry = threads.get(data.conversation_id);
       if (!entry) break;
       if (applyMessageEvent(entry, event)) {
+        void updateImageViewer(data);
         entry.layout = undefined;
         if (data.conversation_id === selected) {
           invalidate("thread", "compose");
@@ -680,6 +684,7 @@ function reportUnread() {
 
 const previewCache = new Map();
 let previewAbort = new AbortController();
+let viewedPreview;
 const previewObserver =
   typeof IntersectionObserver === "function"
     ? new IntersectionObserver((entries) => {
@@ -702,26 +707,33 @@ function unobservePreviews(node) {
   for (const media of node.querySelectorAll("img.preview, audio.preview"))
     previewObserver?.unobserve(media);
 }
-async function loadPreview(media) {
-  const id = media.dataset.attachmentId;
-  const signal = previewAbort.signal;
+function previewURL(id, mime) {
   let pending = previewCache.get(id);
   if (!pending) {
     pending = fetch(api(`/v1/attachments/${encodeURIComponent(id)}`), {
-      signal,
+      signal: previewAbort.signal,
       headers: { Authorization: `Bearer ${token}` },
-    }).then((response) => {
-      if (!response.ok) throw new Error("preview unavailable");
-      return response
-        .blob()
-        .then((blob) =>
-          URL.createObjectURL(new Blob([blob], { type: media.dataset.mime })),
-        );
-    });
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("preview unavailable");
+        const blob = await response.blob();
+        return URL.createObjectURL(new Blob([blob], { type: mime }));
+      })
+      .catch((error) => {
+        if (previewCache.get(id) === pending) previewCache.delete(id);
+        throw error;
+      });
     previewCache.set(id, pending);
   }
+  return pending;
+}
+async function loadPreview(media) {
+  const signal = previewAbort.signal;
   try {
-    const url = await pending;
+    const url = await previewURL(
+      media.dataset.attachmentId,
+      media.dataset.mime,
+    );
     if (signal.aborted || !media.isConnected) return;
     // A preview has no size until it loads, so a thread resting at the bottom
     // follows it down instead of being left short of its newest message.
@@ -737,9 +749,8 @@ async function loadPreview(media) {
       );
     media.src = url;
   } catch {
-    if (previewCache.get(id) === pending) previewCache.delete(id);
     if (signal.aborted || !media.isConnected) return;
-    if (media.tagName === "IMG") media.closest(".bubble")?.remove();
+    if (media.tagName === "IMG") media.dispatchEvent(new Event("error"));
     else media.remove();
   }
 }
@@ -761,20 +772,32 @@ async function downloadAttachment(attachment) {
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
-function renderAttachment(attachment, readOnly) {
-  if (attachment.available && /^image\//.test(attachment.mime || "")) {
+function renderAttachment(message, index, readOnly) {
+  const attachment = message.attachments[index];
+  if (attachment.available && attachment.mime?.startsWith("image/")) {
     const bubble = el("div", undefined, "bubble media");
     const img = el("img", undefined, "preview");
     img.alt = attachment.name || "Image attachment";
     img.loading = "lazy";
     img.dataset.attachmentId = attachment.id;
     img.dataset.mime = attachment.mime;
-    img.onclick = () => img.src && showImage(img);
+    img.onclick = () =>
+      img.naturalWidth && showImage(img, message, index, readOnly);
+    img.onerror = () =>
+      bubble.replaceWith(renderFileAttachment(attachment, readOnly));
     bubble.append(img);
     if (previewObserver) previewObserver.observe(img);
     else void loadPreview(img);
     return bubble;
   }
+  return renderFileAttachment(attachment, readOnly);
+}
+function requestFullMedia(id) {
+  return request(`/v1/attachments/${encodeURIComponent(id)}/request`, {
+    method: "POST",
+  });
+}
+function renderFileAttachment(attachment, readOnly) {
   const playable =
     attachment.available && /^audio\//.test(attachment.mime || "");
   const node = el(
@@ -822,10 +845,7 @@ function renderAttachment(attachment, readOnly) {
     const requestButton = button("Get from phone", "request", async () => {
       requestButton.disabled = true;
       try {
-        await request(
-          `/v1/attachments/${encodeURIComponent(attachment.id)}/request`,
-          { method: "POST" },
-        );
+        await requestFullMedia(attachment.id);
         notice("Requested. The message updates when the phone uploads it.");
       } catch (error) {
         notice(error.message);
@@ -836,11 +856,76 @@ function renderAttachment(attachment, readOnly) {
   }
   return node;
 }
-function showImage(img) {
+function imageStatus(text) {
+  const label = $("image-status");
+  label.textContent = text;
+  label.hidden = !text;
+}
+function showImage(img, message, index, readOnly) {
+  const attachment = message.attachments[index];
   const viewer = $("image-viewer");
   viewer.src = img.src;
   viewer.alt = img.alt;
+  imageStatus(attachment.preview ? "Preview" : "");
   $("image-dialog").showModal();
+  if (!attachment.requestable || readOnly) return;
+  const preview = {
+    conversationID: message.conversation_id,
+    messageID: message.id,
+    attachments: message.attachments,
+    index,
+  };
+  viewedPreview = preview;
+  imageStatus("Getting full image from phone…");
+  preview.timer = setTimeout(() => {
+    if (viewedPreview === preview && $("image-dialog").open)
+      imageStatus("Preview · Still waiting for the full image");
+  }, 30000);
+  void updateImageViewer(
+    storedMessage(preview.conversationID, preview.messageID),
+  );
+  if (preview.fullID) return;
+  void requestFullMedia(attachment.id).catch((error) => {
+    if (viewedPreview !== preview || preview.fullID || !$("image-dialog").open)
+      return;
+    clearTimeout(preview.timer);
+    imageStatus(`Preview · ${error.message}`);
+  });
+}
+async function updateImageViewer(message) {
+  const preview = viewedPreview;
+  if (
+    !preview ||
+    message?.id !== preview.messageID ||
+    message.conversation_id !== preview.conversationID ||
+    !$("image-dialog").open
+  )
+    return;
+  if (message.deleted) {
+    $("image-dialog").close();
+    return;
+  }
+  if (preview.fullID) return;
+  const full = fullImageFor(
+    message.attachments || [],
+    preview.attachments,
+    preview.index,
+  );
+  if (!full) return;
+  preview.fullID = full.id;
+  clearTimeout(preview.timer);
+  imageStatus("Loading full image…");
+  try {
+    const img = new Image();
+    img.src = await previewURL(full.id, full.mime);
+    await img.decode();
+    if (viewedPreview !== preview || !$("image-dialog").open) return;
+    $("image-viewer").src = img.src;
+    imageStatus("");
+  } catch {
+    if (viewedPreview === preview && $("image-dialog").open)
+      imageStatus("Preview · Could not load full image");
+  }
 }
 // The desktop window has no new-window handler, so WebKitGTK silently drops
 // target="_blank" and window.open. There the shell opens the link instead.
@@ -1072,8 +1157,8 @@ function buildMessageRow(row, conversation) {
     }
     bubbles.append(bubble);
   }
-  for (const attachment of attachments)
-    bubbles.append(renderAttachment(attachment, message.read_only));
+  for (const [index] of attachments.entries())
+    bubbles.append(renderAttachment(message, index, message.read_only));
   for (const bubble of bubbles.children)
     bubble.title = new Date(message.time).toLocaleString();
   line.append(bubbles);
@@ -2016,7 +2101,11 @@ for (const dialog of document.querySelectorAll("dialog")) {
   };
 }
 $("image-dialog").onclick = () => $("image-dialog").close();
-$("image-dialog").onclose = () => $("image-viewer").removeAttribute("src");
+$("image-dialog").onclose = () => {
+  clearTimeout(viewedPreview?.timer);
+  viewedPreview = undefined;
+  $("image-viewer").removeAttribute("src");
+};
 $("pairing-dialog").onclose = () => {
   pairingPanelOpen = false;
   clearTimeout(pairingPoll);

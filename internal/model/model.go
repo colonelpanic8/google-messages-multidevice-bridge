@@ -67,6 +67,8 @@ type Attachment struct {
 	MIME      string `json:"mime"`
 	Size      int64  `json:"size"`
 	Available bool   `json:"available"`
+	// PartID stays the same when Google replaces a preview with full media.
+	PartID string `json:"part_id,omitempty"`
 	// Preview means only a thumbnail or inline preview can be downloaded.
 	Preview bool `json:"preview"`
 	// Requestable means the phone can be asked to upload the full media.

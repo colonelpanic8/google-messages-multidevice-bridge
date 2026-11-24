@@ -11,6 +11,7 @@ import {
   quoteAuthor,
   quoteSnippet,
   filterConversations,
+  fullImageFor,
   highlightRuns,
   importStatus,
   initials,
@@ -42,6 +43,36 @@ import {
 const at = (minutes) =>
   new Date(Date.UTC(2026, 8, 13, 12, minutes)).toISOString();
 const now = new Date(Date.UTC(2026, 8, 13, 13, 0));
+
+test("an image viewer follows its part even when the full media arrives out of order", () => {
+  const thumbnail = {
+    id: "thumb",
+    part_id: "first",
+    available: true,
+    preview: true,
+    mime: "image/png",
+  };
+  const other = {
+    id: "other",
+    part_id: "second",
+    available: true,
+    mime: "image/png",
+  };
+  const full = { ...thumbnail, id: "full", preview: false };
+  assert.equal(fullImageFor([other, full], [thumbnail, other], 0), full);
+  assert.equal(
+    fullImageFor([other, thumbnail], [thumbnail, other], 0),
+    undefined,
+  );
+  assert.equal(fullImageFor([other], [thumbnail], 0), undefined);
+
+  const legacyThumbnail = { ...thumbnail, part_id: undefined };
+  assert.equal(fullImageFor([full, other], [legacyThumbnail, other], 0), full);
+  assert.equal(
+    fullImageFor([other, full], [legacyThumbnail, other], 0),
+    undefined,
+  );
+});
 
 test("cached date formatters preserve local date labels and invalid dates", () => {
   const date = new Date(2024, 4, 12, 16, 30);
