@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -203,5 +204,67 @@ func TestSendReportsARejectedMessage(t *testing.T) {
 	}()
 	if out, err := cli(t, "", append([]string{"send", "--conversation", "Bank", "hello"}, flags...)...); err == nil {
 		t.Fatalf("a rejected send reported success: %q", out)
+	}
+}
+
+func TestAttachmentsSaveAndInlineForAgents(t *testing.T) {
+	s, flags := fixture(t)
+	png := append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{0}, 32)...)
+	id := strings.Repeat("ab", 32)
+	if err := s.PutMedia(id, png); err != nil {
+		t.Fatal(err)
+	}
+	appendRecord(t, s, "message", model.Message{Schema: 1, ID: "photo", ConversationID: "c1", SenderID: "bank", Time: time.Now(), Direction: "incoming",
+		Attachments: []model.Attachment{{ID: id, Name: "IMG_1.png", MIME: "image/png", Size: int64(len(png)), Available: true, Preview: true, Requestable: true}}})
+
+	out, err := cli(t, "", append([]string{"search", "--attachments"}, flags...)...)
+	if err != nil || strings.Contains(out, "123456") || !strings.Contains(out, "IMG_1.png image/png 40 B thumbnail-only full-requestable id="+id) {
+		t.Fatalf("search --attachments: %q %v", out, err)
+	}
+
+	dir := t.TempDir()
+	out, err = cli(t, "", append([]string{"attachment", id, "-o", dir}, flags...)...)
+	path := filepath.Join(dir, id[:16]+".png")
+	if err != nil || !strings.HasPrefix(out, path+"  image/png") {
+		t.Fatalf("attachment -o dir: %q %v", out, err)
+	}
+	if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, png) {
+		t.Fatalf("saved bytes: %v", err)
+	}
+	if _, err = cli(t, "", append([]string{"attachment", "../etc"}, flags...)...); err == nil {
+		t.Fatal("accepted a malformed attachment ID")
+	}
+
+	call := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_attachment","arguments":{"attachment_id":"` + id + `","save_to":"` + dir + `"}}}`
+	out, err = cli(t, call+"\n", append([]string{"mcp"}, flags...)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp struct {
+		Result struct {
+			Content []map[string]string `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatal(err)
+	}
+	content := resp.Result.Content
+	if len(content) != 2 || !strings.Contains(content[0]["text"], path) || content[1]["type"] != "image" || content[1]["mimeType"] != "image/png" ||
+		content[1]["data"] != base64.StdEncoding.EncodeToString(png) {
+		t.Fatalf("get_attachment: %s", out)
+	}
+}
+
+func TestSniffMIMECoversPhoneFormats(t *testing.T) {
+	for data, want := range map[string]string{
+		"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00": "image/heic",
+		"\x00\x00\x00\x18ftyp3gp5\x00\x00\x00\x00": "video/3gpp",
+		"#!AMR\n":                    "audio/amr",
+		"BEGIN:VCARD\r\nVERSION:3.0": "text/vcard",
+		"\xff\xd8\xff\xe0":           "image/jpeg",
+	} {
+		if got := sniffMIME([]byte(data)); got != want {
+			t.Errorf("sniffMIME(%q) = %s, want %s", data, got, want)
+		}
 	}
 }

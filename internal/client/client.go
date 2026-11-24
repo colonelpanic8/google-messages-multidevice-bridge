@@ -355,3 +355,9 @@ func NewKey() string {
 	_, _ = rand.Read(b)
 	return "gmessages-" + hex.EncodeToString(b)
 }
+
+// RequestAttachment asks the phone to upload full media for a requestable
+// attachment; the result arrives later as a message update.
+func (c *Client) RequestAttachment(ctx context.Context, id string) error {
+	return c.do(ctx, "POST", "/v1/attachments/"+url.PathEscape(id)+"/request", nil, nil, "", nil)
+}
