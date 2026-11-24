@@ -168,6 +168,7 @@ type searchOptions struct {
 	Direction    string
 	Conversation string
 	Limit        int
+	Attachments  bool
 }
 
 func search(ctx context.Context, c *client.Client, o searchOptions) ([]messageView, error) {
@@ -177,7 +178,7 @@ func search(ctx context.Context, c *client.Client, o searchOptions) ([]messageVi
 	}
 	limit := cmpLimit(o.Limit, 20)
 	q := client.SearchQuery{Text: o.Query, Since: since, Direction: o.Direction, Limit: limit}
-	if o.Conversation != "" {
+	if o.Conversation != "" || o.Attachments {
 		q.Limit = 500
 	}
 	messages, _, err := c.Search(ctx, q)
@@ -194,6 +195,9 @@ func search(ctx context.Context, c *client.Client, o searchOptions) ([]messageVi
 			break
 		}
 		if o.Conversation != "" && !matches(cs.byID[m.ConversationID], o.Conversation) {
+			continue
+		}
+		if o.Attachments && len(m.Attachments) == 0 {
 			continue
 		}
 		out = append(out, cs.view(m))
@@ -239,7 +243,7 @@ func wait(ctx context.Context, c *client.Client, o searchOptions, timeout time.D
 	for _, m := range existing {
 		if watching {
 			stored[m.ID] = true
-		} else if matches(cs.byID[m.ConversationID], o.Conversation) {
+		} else if matches(cs.byID[m.ConversationID], o.Conversation) && (!o.Attachments || len(m.Attachments) > 0) {
 			return cs.view(m), nil
 		}
 	}
@@ -268,6 +272,9 @@ func wait(ctx context.Context, c *client.Client, o searchOptions, timeout time.D
 				continue
 			}
 			if o.Direction != "" && m.Direction != o.Direction {
+				continue
+			}
+			if o.Attachments && len(m.Attachments) == 0 {
 				continue
 			}
 			if query != "" && !strings.Contains(strings.ToLower(m.Text), query) && !strings.Contains(strings.ToLower(m.Subject), query) {
@@ -396,7 +403,7 @@ func formatMessage(v messageView, withConversation bool) string {
 	}
 	fmt.Fprintf(&b, "%s: %s", cmpOr(v.SenderName, v.SenderID, "unknown"), v.Text)
 	for _, a := range v.Attachments {
-		fmt.Fprintf(&b, " [attachment %s %s id=%s]", a.Name, a.MIME, a.ID)
+		b.WriteString(formatAttachment(a))
 	}
 	if withConversation {
 		fmt.Fprintf(&b, "  (conversation=%s message=%s)", v.ConversationID, v.ID)

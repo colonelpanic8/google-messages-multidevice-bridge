@@ -26,7 +26,7 @@ Commands:
   status                         connection and phone status
   conversations [--query Q]      recent conversations, newest first
   messages <conversation>        one conversation's messages, oldest first
-  search [--query Q] [--since 15m] [--direction incoming] [--conversation C]
+  search [--query Q] [--since 15m] [--direction incoming] [--conversation C] [--attachments]
                                  messages across every conversation, newest first
   wait [--query Q] [--conversation C] [--since D] [--timeout 2m]
                                  block until a matching message arrives, then print it
@@ -34,11 +34,16 @@ Commands:
   send (--conversation C | --to +15550100) [--reply-to M] [--no-wait] <text|->
                                  send a text message, optionally replying to message M
   outbox <idempotency-key>       one queued operation
-  attachment <id> [-o path]      download an attachment
+  attachment <id> [-o path|dir|-] [--request]
+                                 save an attachment and print its path and type (-o -
+                                 writes the bytes to stdout); --request asks the phone
+                                 to upload full media for a thumbnail-only attachment
   profiles                       configured bridge profiles
   mcp [--allow-send]             serve these operations over MCP on stdio
 
 A conversation is named by ID, by part of its name, or by a phone number.
+Messages list their attachments as [attachment NAME TYPE SIZE id=ID]. Attachments
+save to $XDG_RUNTIME_DIR/gmessages/attachments unless -o says otherwise.
 
 Global flags (also accepted after the command):
   --profile NAME   profile from the config file (env GOOGLE_MESSAGES_BRIDGE_PROFILE)
@@ -291,6 +296,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 
 	case "attachment":
 		output := fs.String("o", "", "")
+		request := fs.Bool("request", false, "")
 		positional, err := parse(fs, args)
 		if err != nil {
 			return err
@@ -298,19 +304,33 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		if len(positional) != 1 {
 			return errors.New("attachment takes one attachment ID")
 		}
+		id := positional[0]
+		if err := checkAttachmentID(id); err != nil {
+			return err
+		}
 		c, err := g.client()
 		if err != nil {
 			return err
 		}
-		data, err := c.Attachment(ctx, positional[0])
-		if err != nil {
-			return err
+		if *request {
+			if err := c.RequestAttachment(ctx, id); err != nil {
+				return err
+			}
+			return print(map[string]any{"id": id, "requested": true}, func() string { return requestedText })
 		}
-		if *output == "" || *output == "-" {
+		if *output == "-" {
+			data, err := c.Attachment(ctx, id)
+			if err != nil {
+				return err
+			}
 			_, err = stdout.Write(data)
 			return err
 		}
-		return os.WriteFile(*output, data, 0o600)
+		saved, _, err := saveAttachment(ctx, c, id, *output)
+		if err != nil {
+			return err
+		}
+		return print(saved, func() string { return formatSaved(saved) })
 
 	case "profiles":
 		if _, err := parse(fs, args); err != nil {
@@ -352,6 +372,7 @@ func searchFlags(fs *flag.FlagSet, o *searchOptions) {
 	fs.StringVar(&o.Since, "since", "", "")
 	fs.StringVar(&o.Direction, "direction", "", "")
 	fs.StringVar(&o.Conversation, "conversation", "", "")
+	fs.BoolVar(&o.Attachments, "attachments", false, "")
 }
 
 func conversationMessages(ctx context.Context, c *client.Client, filter string, limit int, before string) ([]messageView, string, error) {

@@ -283,11 +283,23 @@ gmessages search --query code --since 15m
 gmessages wait --query code --timeout 2m      # exits 2 if nothing arrives
 gmessages send --to +15125550111 "On my way"
 gmessages --profile whatsapp --json search --since 1h
+gmessages search --conversation Lisa --attachments --limit 1
+gmessages attachment <id>                     # saves it, prints path and type
+gmessages attachment <id> -o photo.jpg        # or -o DIR, or -o - for stdout
+gmessages attachment <id> --request           # ask the phone for the original
 ```
+
+Messages list attachments as `[attachment NAME TYPE SIZE id=ID]`, flagged
+`thumbnail-only` or `full-requestable` when only a preview is downloadable.
+Without `-o`, attachments save under `$XDG_RUNTIME_DIR/gmessages/attachments`,
+which is private to the user and cleared at logout.
 
 `gmessages mcp` serves the same operations as MCP tools over stdio:
 `bridge_status`, `list_conversations`, `read_messages`, `search_messages`,
-`wait_for_message`, and `list_contacts`. `send_message` is offered only under
+`wait_for_message`, `list_contacts`, `get_attachment`, and `request_attachment`.
+`get_attachment` saves the file and returns its path, and also returns photos up to
+3.5 MB inline as image content an agent can look at directly, and text attachments
+such as contact cards inline as text. `send_message` is offered only under
 `gmessages mcp --allow-send`, so registering the server never by itself lets an
 agent text people.
 
