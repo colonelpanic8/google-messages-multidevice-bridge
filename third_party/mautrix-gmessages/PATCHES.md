@@ -95,6 +95,11 @@ be disabled from outside the package.
    instead of only `Got unexpected response`. Answers arriving hours late are
    how a phone that cannot receive requests shows itself.
 
+11. `methods.go`, `gmproto/client.proto`: `ListContacts` follows the phone's
+    continuation token (response field 3, echoed in request field 3). It sets
+    the page and batch sizes equally so each request needs one response.
+    Failed or looping pages discard the incomplete snapshot.
+
 ## Known wrong upstream behavior, not fixed here
 
 - The version 1 verification emoji list does not match what the phone displays,

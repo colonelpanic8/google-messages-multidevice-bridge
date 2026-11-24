@@ -31,8 +31,7 @@ type Contact struct {
 	Frequent bool `json:"frequent,omitempty"`
 }
 
-// ContactBook is the whole address book as one record, because the phone only
-// ever hands it over in full.
+// ContactBook stores the whole address book as one snapshot.
 type ContactBook struct {
 	Schema   int       `json:"schema"`
 	Contacts []Contact `json:"contacts"`
