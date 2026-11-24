@@ -841,6 +841,9 @@ svg {
 .row.outgoing .bubble-line {
   flex-direction: row-reverse;
 }
+.bubbles {
+  min-width: 0;
+}
 .bubble {
   position: relative;
   min-width: 0;
@@ -924,10 +927,15 @@ svg {
 .row.outgoing .bubble .mention {
   background: color-mix(in srgb, currentColor 20%, transparent);
 }
-.bubble.media {
+.row .bubble.media {
+  width: fit-content;
+  max-width: 360px;
   padding: 0;
   background: transparent;
   overflow: hidden;
+}
+.row.outgoing .bubble.media {
+  margin-inline-start: auto;
 }
 .bubble.media + .bubble,
 .bubble + .bubble {
@@ -935,9 +943,8 @@ svg {
 }
 .bubble img.preview {
   display: block;
-  max-width: min(100%, 360px);
+  max-width: 100%;
   max-height: 360px;
-  border-radius: 20px;
   cursor: zoom-in;
 }
 .attachment {

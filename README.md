@@ -228,8 +228,9 @@ waiting for Google's own conversation update, labels it "You" or names the group
 member who sent it, and moves its unread badge with the same message. An open
 conversation clears that badge itself: while its thread is on screen the client
 sends a read receipt for the newest message, which a settings toggle disables for
-anyone who would rather send them by hand. Local upload bytes are encrypted before
-they are needed by the provider; provider media descriptors remain private.
+anyone who would rather send them by hand. The bridge uploads the original image
+bytes at full resolution, up to the 20 MiB upload limit. The bridge encrypts
+the files locally and keeps provider media descriptors private.
 
 Conversation creation may receive Google's `CREATE_RCS` response. In that case the
 provider sends exactly one explicit unnamed-group confirmation as the second RPC in
@@ -411,7 +412,8 @@ browser is installed to cover the desktop app's rendering engine.
 
 Run `tools/check-uploads.mjs` the same way from the repository root in a fresh
 session to verify multi-photo selection, removal, and retry after an interrupted
-upload. It checks the photo order in the synthetic bridge's outbox.
+upload. It checks that a 4K photo fits its bubble on desktop and mobile, uploads
+byte-for-byte, and keeps its selection order in the synthetic bridge's outbox.
 
 `tools/check-performance.mjs` runs against the same fixture. It checks live
 message updates, lazy reaction menus, background import updates, cached navigation,
