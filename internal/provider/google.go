@@ -126,15 +126,19 @@ func SnapshotOf(msg proto.Message) (Snapshot, error) {
 				remoteID, _ := remoteMedia(media)
 				full := media.GetMediaID() != "" && len(media.GetDecryptionKey()) == 32
 				available := remoteID != "" || len(media.GetMediaData()) > 0
-				requestable := !full && info.GetActionMessageID() != ""
-				if requestable {
+				partID := ""
+				if info.GetActionMessageID() != "" {
 					part, err := json.Marshal(mediaPart{MessageID: id, ActionMessageID: info.GetActionMessageID()})
 					if err != nil {
 						return Snapshot{}, err
 					}
-					private[aid+partSuffix] = part
+					partHash := sha256.Sum256(part)
+					partID = hex.EncodeToString(partHash[:])
+					if !full {
+						private[PartKey(aid)] = part
+					}
 				}
-				out.Attachments = append(out.Attachments, model.Attachment{ID: aid, Name: media.GetMediaName(), MIME: mime, Size: media.GetSize(), Available: available, Preview: available && !full, Requestable: requestable})
+				out.Attachments = append(out.Attachments, model.Attachment{ID: aid, Name: media.GetMediaName(), MIME: mime, Size: media.GetSize(), Available: available, PartID: partID, Preview: available && !full, Requestable: !full && partID != ""})
 			}
 		}
 		for _, r := range m.GetReactions() {

@@ -723,6 +723,31 @@ export function formatSize(size) {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+export function fullImageFor(attachments, previous, index) {
+  const preview = previous[index];
+  const partID = preview.part_id;
+  let full =
+    partID && attachments.find((attachment) => attachment.part_id === partID);
+  // Older snapshots lack part IDs. Match by position only if the other parts agree.
+  if (
+    !full &&
+    attachments.length === previous.length &&
+    !(partID && attachments[index]?.part_id) &&
+    previous.every(
+      (attachment, i) => i === index || attachment.id === attachments[i].id,
+    )
+  ) {
+    full = attachments[index];
+  }
+  if (
+    full?.available &&
+    full.id !== preview.id &&
+    !full.preview &&
+    full.mime?.startsWith("image/")
+  )
+    return full;
+}
+
 export function summarizeHistory(jobs) {
   const summary = { total: 0, active: 0, complete: 0, failed: 0, paused: 0 };
   for (const job of jobs) {

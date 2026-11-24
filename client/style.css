@@ -1686,9 +1686,20 @@ button.reaction:hover {
 }
 .viewer img {
   display: block;
+  margin-inline: auto;
   max-width: 100%;
   max-height: calc(100vh - 48px);
   border-radius: var(--radius);
+}
+#image-status {
+  padding: 8px 12px;
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--surface-container);
+  text-align: center;
+  font-size: 13px;
+}
+.viewer:has(#image-status:not([hidden])) img {
+  max-height: calc(100vh - 96px);
 }
 .dialog::backdrop {
   background: var(--scrim);

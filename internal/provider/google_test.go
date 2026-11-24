@@ -640,6 +640,19 @@ func TestThumbnailOnlyMediaIsPreviewAndRequestable(t *testing.T) {
 	if err = g.RequestMedia(context.Background(), []byte("{}")); !errors.Is(err, ErrRejected) {
 		t.Fatalf("empty part: %v", err)
 	}
+	first := msg.MessageInfo[0].GetMediaContent()
+	first.MediaID, first.DecryptionKey = "full-1", key
+	snap, err = SnapshotOf(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(snap.Event.Data, &out); err != nil {
+		t.Fatal(err)
+	}
+	upgraded := out.Attachments[0]
+	if upgraded.ID == thumb.ID || upgraded.PartID == "" || upgraded.PartID != thumb.PartID || upgraded.PartID == full.PartID || upgraded.Preview || upgraded.Requestable {
+		t.Fatalf("upgrade did not preserve the part identity: before=%+v after=%+v", thumb, upgraded)
+	}
 }
 
 func TestContactsKeepOnlyAddressableNumbersAndMarkFrequentOnes(t *testing.T) {

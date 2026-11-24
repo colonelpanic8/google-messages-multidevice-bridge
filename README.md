@@ -204,10 +204,12 @@ guidance, and offline-consistent backups, see [deployment](docs/deployment.md).
 The browser keeps the bearer token only in that tab's memory; locking or reloading
 requires it again. After unlocking, the client loads one snapshot of each record kind
 and then applies durable SSE events in place, so the view stays current without
-polling or re-rendering the whole list. Image attachments render as inline previews that are discarded on
-lock. An opt-in toggle raises browser notifications for new incoming messages in
-hidden tabs or unselected conversations; replayed history never notifies. Web assets
-and the pairing-helper ZIP are public. Every `/v1/` route requires bearer
+polling or re-rendering the whole list. Opening a thumbnail in the image viewer
+asks the phone for the full image when supported and replaces the preview when
+it arrives. Image previews are discarded on lock. An opt-in toggle raises browser
+notifications for new incoming messages in hidden tabs or unselected conversations;
+replayed history never notifies. Web assets and the pairing-helper ZIP are public.
+Every `/v1/` route requires bearer
 authentication except the ticket-only `POST /v1/pairing/credentials` handoff and
 the pairing-agent-token-only `GET /v1/pairing/agent/pending` route.
 

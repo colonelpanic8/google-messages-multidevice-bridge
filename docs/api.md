@@ -426,7 +426,9 @@ cannot supply it.
 Legacy protobuf events are sanitized into schema 1 before replay. Provider media IDs,
 decryption keys, cookies, pairing state, and history cursors are not public schema.
 Attachments use opaque bridge IDs and download as files; clients must not render
-arbitrary attachment HTML in the bridge origin.
+arbitrary attachment HTML in the bridge origin. When present, `part_id` identifies
+a Google Messages attachment within its message across preview and full-media
+updates. Use the updated attachment's `id` to download the full media.
 
 ## Notifications
 
