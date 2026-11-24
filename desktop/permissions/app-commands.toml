@@ -14,4 +14,7 @@ commands.allow = [
   "clear_token",
   "set_unread",
   "notify",
+  "read_clipboard_image",
+  "write_clipboard_image",
+  "read_dropped_files",
 ]

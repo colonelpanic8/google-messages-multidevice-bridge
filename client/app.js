@@ -3717,8 +3717,12 @@ $("text").oninput = () => {
 };
 $("text").onclick = () => renderMentionSuggestions();
 $("text").onblur = () => closeMentionSuggestions();
+function acceptsAttachments() {
+  const conversation = conversations.get(selected);
+  return conversation && !conversation.read_only && !pendingSends.has(selected);
+}
 function addAttachments(files) {
-  if (!files.length || !selected || pendingSends.has(selected)) return;
+  if (!files.length || !acceptsAttachments()) return;
   const next = [...selectedFiles, ...files];
   try {
     validateAttachments(next);
@@ -3730,6 +3734,74 @@ function addAttachments(files) {
   }
   invalidate("compose");
 }
+function canDropAttachments(target) {
+  return (
+    target &&
+    !$("thread").hidden &&
+    $("thread").contains(target) &&
+    acceptsAttachments()
+  );
+}
+document.addEventListener("dragover", (event) => {
+  if (!event.dataTransfer?.types.includes("Files")) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = canDropAttachments(event.target)
+    ? "copy"
+    : "none";
+});
+document.addEventListener("drop", (event) => {
+  const files = [...(event.dataTransfer?.files || [])];
+  if (!files.length) return;
+  event.preventDefault();
+  if (canDropAttachments(event.target)) addAttachments(files);
+});
+
+async function attachDesktopDrop({ paths, position }) {
+  // GTK delivers WebKit a URI list. Tauri supplies the actual OS file paths.
+  const scale = /Linux/.test(navigator.userAgent) ? 1 : window.devicePixelRatio;
+  const target = document.elementFromPoint(
+    position.x / scale,
+    position.y / scale,
+  );
+  if (!paths.length || !canDropAttachments(target)) return;
+  const conversationID = selected,
+    dropGeneration = generation;
+  try {
+    const size = validateAttachments([
+      ...selectedFiles,
+      ...paths.map(() => ({ size: 0 })),
+    ]);
+    const payload = await desktop("read_dropped_files", {
+      paths,
+      limit: 20 * 1024 * 1024 - size,
+    });
+    const bytes = new Uint8Array(payload);
+    const view = new DataView(bytes.buffer);
+    const decode = new TextDecoder();
+    const separator = window.__TAURI__.path.sep();
+    let offset = 0;
+    const files = paths.map((path) => {
+      const size = view.getUint32(offset, true);
+      const typeStart = offset + 4;
+      const typeEnd = bytes.indexOf(0, typeStart);
+      const start = typeEnd + 1;
+      offset = start + size;
+      return new File(
+        [bytes.subarray(start, offset)],
+        path.split(separator).pop(),
+        {
+          type: decode.decode(bytes.subarray(typeStart, typeEnd)),
+        },
+      );
+    });
+    if (selected === conversationID && generation === dropGeneration)
+      addAttachments(files);
+  } catch (error) {
+    if (selected === conversationID && generation === dropGeneration)
+      notice(String(error));
+  }
+}
+
 function attachPastedImages(images) {
   addAttachments(
     images.map((image, index) =>
@@ -3742,24 +3814,34 @@ function attachPastedImages(images) {
     ),
   );
 }
-$("text").onpaste = (event) => {
-  if (pendingSends.has(selected)) return;
+$("text").onpaste = async (event) => {
+  if (!acceptsAttachments()) return;
   const pasted = pastedImages(event.clipboardData);
   if (pasted.length) {
     event.preventDefault();
     attachPastedImages(pasted);
     return;
   }
-  // The desktop window's engine delivers an empty DataTransfer, so the image
-  // only reaches us through a clipboard read started inside this gesture.
-  // Whatever text the engine pastes on its own is left alone.
+  // WebKitGTK can omit images from the paste event. Let it handle text paste
+  // while the desktop reads an image from the system clipboard.
   if (!clipboardDataEmpty(event.clipboardData)) return;
   const conversationID = selected,
     pasteGeneration = generation;
-  void clipboardImages(navigator.clipboard).then((images) => {
+  try {
+    const payload = desktop ? await desktop("read_clipboard_image") : null;
+    const bytes = payload === null ? null : new Uint8Array(payload);
+    const images =
+      bytes === null
+        ? await clipboardImages(navigator.clipboard)
+        : bytes.byteLength
+          ? [new Blob([bytes], { type: "image/png" })]
+          : [];
     if (selected === conversationID && generation === pasteGeneration)
       attachPastedImages(images);
-  });
+  } catch (error) {
+    if (selected === conversationID && generation === pasteGeneration)
+      notice(String(error));
+  }
 };
 function cancelReply() {
   if (pendingSends.has(selected) || !replyTargets.delete(selected))
@@ -4269,6 +4351,19 @@ if (desktop) {
   // The tray's "Change bridge URL…" item.
   void window.__TAURI__?.event
     ?.listen("show-connect", () => showConnect(apiBase))
+    .catch(() => {});
+  void window.__TAURI__.event
+    .listen("tauri://drag-drop", ({ payload }) => attachDesktopDrop(payload))
+    .catch(() => {});
+  void window.__TAURI__?.event
+    ?.listen("copy-image", async ({ payload: url }) => {
+      try {
+        const response = await fetch(url);
+        await desktop("write_clipboard_image", await response.arrayBuffer());
+      } catch (error) {
+        notice(`Could not copy image. ${error.message || error}`);
+      }
+    })
     .catch(() => {});
 } else {
   const fromURL = takeTokenFromURL();
