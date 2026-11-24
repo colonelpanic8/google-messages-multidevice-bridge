@@ -59,11 +59,16 @@ export function splitRequests(
   mentions = [],
 ) {
   const requests = [];
-  if (network === "whatsapp") {
-    for (const id of attachmentIDs)
-      requests.push(newRequest(conversationID, "", [id]));
-  } else if (attachmentIDs.length)
-    requests.push(newRequest(conversationID, "", attachmentIDs));
+  // Identical uploads have the same ID, and a single request requires distinct IDs.
+  let batch = [];
+  for (const id of attachmentIDs) {
+    if (batch.length && (network === "whatsapp" || batch.includes(id))) {
+      requests.push(newRequest(conversationID, "", batch));
+      batch = [];
+    }
+    batch.push(id);
+  }
+  if (batch.length) requests.push(newRequest(conversationID, "", batch));
   if (text.trim())
     requests.push(newRequest(conversationID, text, [], mentions));
   if (replyTo && requests.length) requests[0].body.reply_to = replyTo;

@@ -458,10 +458,10 @@ func TestUploadSerializesPrivateMediaAndSendAppendsIt(t *testing.T) {
 	fake := &fakeGoogleClient{
 		upload: func(_ context.Context, data []byte, name, mime string) (*gmproto.MediaContent, error) {
 			uploadCalls++
-			if string(data) != "file" || name != "photo.jpg" || mime != "image/jpeg" {
+			if string(data) != name || mime != "image/jpeg" {
 				t.Fatalf("upload arguments: %q %q %q", data, name, mime)
 			}
-			return &gmproto.MediaContent{MediaID: "media-1", MediaName: name, MimeType: mime, Size: int64(len(data)), DecryptionKey: key}, nil
+			return &gmproto.MediaContent{MediaID: "media-" + name, MediaName: name, MimeType: mime, Size: int64(len(data)), DecryptionKey: key}, nil
 		},
 		send: func(_ context.Context, req *gmproto.SendMessageRequest) (*gmproto.SendMessageResponse, error) {
 			sent = req
@@ -469,12 +469,12 @@ func TestUploadSerializesPrivateMediaAndSendAppendsIt(t *testing.T) {
 		},
 	}
 	g := newGoogle(fake)
-	private, err := g.Upload(context.Background(), []byte("file"), "photo.jpg", "image/jpeg")
+	private, err := g.Upload(context.Background(), []byte("photo.jpg"), "photo.jpg", "image/jpeg")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var uploaded gmproto.MediaContent
-	if err = unmarshalPrivate(private, &uploaded); err != nil || uploaded.GetMediaID() != "media-1" || !bytes.Equal(uploaded.GetDecryptionKey(), key) {
+	if err = unmarshalPrivate(private, &uploaded); err != nil || uploaded.GetMediaID() != "media-photo.jpg" || !bytes.Equal(uploaded.GetDecryptionKey(), key) {
 		t.Fatalf("private upload descriptor: %+v %v", &uploaded, err)
 	}
 	target := SendTarget{ConversationID: "c1", participantID: "self", sim: &gmproto.SIMPayload{}, Media: [][]byte{private}}
@@ -483,14 +483,19 @@ func TestUploadSerializesPrivateMediaAndSendAppendsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	info := sent.GetMessagePayload().GetMessageInfo()
-	if len(info) != 2 || info[0].GetMediaContent().GetMediaID() != "media-1" || info[1].GetMessageContent().GetContent() != "caption" {
+	if len(info) != 2 || info[0].GetMediaContent().GetMediaID() != "media-photo.jpg" || info[1].GetMessageContent().GetContent() != "caption" {
 		t.Fatalf("message info: %+v", info)
 	}
 	outbox.Request.Text = ""
+	second, err := g.Upload(context.Background(), []byte("second.jpg"), "second.jpg", "image/jpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target.Media = append(target.Media, second)
 	if err = g.Send(context.Background(), target, outbox); err != nil {
 		t.Fatal(err)
 	}
-	if info = sent.GetMessagePayload().GetMessageInfo(); len(info) != 1 || info[0].GetMediaContent().GetMediaID() != "media-1" {
+	if info = sent.GetMessagePayload().GetMessageInfo(); len(info) != 2 || info[0].GetMediaContent().GetMediaID() != "media-photo.jpg" || info[1].GetMediaContent().GetMediaID() != "media-second.jpg" {
 		t.Fatalf("media-only message info: %+v", info)
 	}
 	before := sent
@@ -501,7 +506,7 @@ func TestUploadSerializesPrivateMediaAndSendAppendsIt(t *testing.T) {
 	if sent != before {
 		t.Fatal("invalid media reached send")
 	}
-	if _, err = g.Upload(context.Background(), make([]byte, MaxAttachmentBytes+1), "large", "application/octet-stream"); !errors.Is(err, ErrTooLarge) || uploadCalls != 1 {
+	if _, err = g.Upload(context.Background(), make([]byte, MaxAttachmentBytes+1), "large", "application/octet-stream"); !errors.Is(err, ErrTooLarge) || uploadCalls != 2 {
 		t.Fatalf("oversize: calls=%d err=%v", uploadCalls, err)
 	}
 }

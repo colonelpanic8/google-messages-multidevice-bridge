@@ -20,6 +20,7 @@ lint:
     node --check tools/check-compose.mjs
     node --check tools/check-performance.mjs
     node --check tools/check-sync.mjs
+    node --check tools/check-uploads.mjs
     node --check internal/api/pairinghelper/setup.mjs
     node --check internal/api/pairinghelper/service-worker.js
 

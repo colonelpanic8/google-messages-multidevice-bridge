@@ -257,6 +257,16 @@ test("a reply quotes from the first request only", () => {
   );
 });
 
+test("Google Messages keeps photo order when identical files share an upload ID", () => {
+  const requests = splitRequests("chat", "caption", ["a", "b", "a", "c"]);
+  assert.deepEqual(
+    requests.map((request) => request.body.attachment_ids),
+    [["a", "b"], ["a", "c"], []],
+  );
+  assert.equal(requests[2].body.text, "caption");
+  assert.equal(new Set(requests.map((request) => request.key)).size, 3);
+});
+
 test("paging to the start of a thread stops at the oldest page", async () => {
   const pages = { c: "b", b: "a", a: "" };
   const seen = [];
